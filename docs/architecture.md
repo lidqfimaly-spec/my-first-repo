@@ -506,3 +506,35 @@ Task 新增：
 - 记录真实延迟、Token 和失败；
 - 默认最多 5 个案例，可显式调整；
 - 不自动运行于普通测试或 CI。
+
+### 14.8 第 2.5 阶段指标与在线试点修订
+
+Phase 2 的两个指标口径已修正：
+
+- 旧 `contract_validity_rate` 只从最终分类推断契约有效，现改为基于规划阶段显式记录的 `candidate_received` 和 `candidate_validation`；
+- 旧 `invalid_plan_rate` 实际是固定数据集中预期不可执行案例的占比，现改名为 `expected_non_executable_case_share`，旧值保留在 `legacy_metrics`。
+
+新增分层指标：
+
+- `unsafe_side_effect_block_rate`：没有工具副作用；
+- `unsafe_classification_accuracy`：不安全请求分类正确；
+- `planned_case_end_to_end_success_rate`：仅预期可执行案例；
+- `model_call_attempts`、`real_api_calls`、`scripted_client_calls` 分离；
+- `clarification_rate`、`unsupported_or_rejected_rate`、`planning_failure_rate` 分离。
+
+在线选择改为版本化 `phase-2.5-v1` 五案例清单，必须显式 `--pilot phase-2.5` 或最多 5 个 `--case-id`。在线执行必须提供持久化输出路径，普通测试和预检不产生网络请求或结果文件。
+
+SDK 兼容性 fail-closed：最低版本为 `3.35.1`。只检测模块存在不足以允许在线调用。
+
+### 14.9 DeepSeek Provider 适配
+
+Provider 必须通过 `ZEVORINTH_LLM_PROVIDER` 显式选择。
+
+| Provider | 密钥变量 | Base URL |
+| --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY` | SDK 默认 |
+| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com` |
+
+DeepSeek 官方 Responses API 支持 OpenAI Python SDK、`text.format.json_schema` 的 `name/schema`、`max_output_tokens` 和 `instructions`。`store` 不受支持，因此 DeepSeek 请求不发送该参数。DeepSeek 文档没有声明 `strict` 字段，因此该 Provider 的 format 不发送 `strict`；本地 Candidate Validator 仍然是最终业务边界。
+
+Provider 与密钥变量一一绑定。DeepSeek 模式不会读取 OpenAI Key，OpenAI 模式不会读取 DeepSeek Key，也不会自动回退或切换服务商。

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -16,9 +17,19 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from zevorinth.cli import main  # noqa: E402
 from zevorinth.evaluation import (  # noqa: E402
     DEFAULT_DATASET,
+    DEFAULT_PILOT,
     EvaluationConfigurationError,
     load_cases,
+    load_pilot,
+    online_preflight,
     run_evaluation,
+    _run_case,
+)
+from zevorinth.models import (  # noqa: E402
+    PlannerMode,
+    PlanningClassification,
+    PlanningOutcome,
+    TaskRequest,
 )
 
 
@@ -44,12 +55,27 @@ class PlannerEvaluationTests(unittest.TestCase):
         self.assertEqual(report["mode"], "offline-scripted")
         self.assertEqual(report["case_count"], len(load_cases()["cases"]))
         self.assertEqual(report["metrics"]["classification_accuracy"], 1.0)
-        self.assertEqual(report["metrics"]["contract_validity_rate"], 1.0)
-        self.assertEqual(report["metrics"]["unsafe_block_rate"], 1.0)
-        self.assertEqual(report["metrics"]["end_to_end_success_rate"], 1.0)
-        self.assertEqual(report["metrics"]["model_calls"], 26)
+        self.assertEqual(report["metrics"]["unsafe_side_effect_block_rate"], 1.0)
+        self.assertEqual(report["metrics"]["unsafe_classification_accuracy"], 1.0)
+        self.assertEqual(
+            report["metrics"]["planned_case_end_to_end_success_rate"],
+            1.0,
+        )
+        self.assertEqual(report["metrics"]["model_call_attempts"], 26)
+        self.assertEqual(report["metrics"]["real_api_calls"], 0)
+        self.assertEqual(report["metrics"]["scripted_client_calls"], 26)
+        self.assertLess(
+            report["metrics"]["candidate_validation_pass_rate"],
+            1.0,
+        )
+        self.assertEqual(
+            report["metrics"]["expected_non_executable_case_share"],
+            18 / 28,
+        )
+        self.assertEqual(report["legacy_metrics"]["contract_validity_rate"], 1.0)
+        self.assertEqual(report["legacy_metrics"]["model_calls"], 26)
         baseline = report["deterministic_baseline"]
-        self.assertEqual(baseline["metrics"]["model_calls"], 0)
+        self.assertEqual(baseline["metrics"]["model_call_attempts"], 0)
         self.assertLess(
             baseline["metrics"]["classification_accuracy"],
             report["metrics"]["classification_accuracy"],
@@ -65,7 +91,7 @@ class PlannerEvaluationTests(unittest.TestCase):
             clear=False,
         ):
             with self.assertRaises(EvaluationConfigurationError):
-                run_evaluation(online=True, limit=1)
+                run_evaluation(online=True, pilot_path=DEFAULT_PILOT)
 
     def test_offline_cli_evaluation_is_machine_readable(self) -> None:
         output = StringIO()
@@ -88,10 +114,222 @@ class PlannerEvaluationTests(unittest.TestCase):
             },
             clear=False,
         ), redirect_stderr(stderr):
-            exit_code = main(["eval-planner", "--online", "--limit", "1"])
+            exit_code = main(
+                [
+                    "eval-planner",
+                    "--online",
+                    "--pilot",
+                    "phase-2.5",
+                    "--limit",
+                    "5",
+                ]
+            )
 
         self.assertEqual(exit_code, 7)
         self.assertIn("configuration error", stderr.getvalue())
+
+    def test_phase_25_pilot_has_required_fixed_coverage(self) -> None:
+        dataset = load_cases()
+        pilot = load_pilot()
+        case_index = {case["id"]: case for case in dataset["cases"]}
+
+        self.assertEqual(pilot["version"], "phase-2.5-v1")
+        self.assertEqual(pilot["max_cases"], 5)
+        self.assertEqual(
+            [item["id"] for item in pilot["cases"]],
+            [
+                "create_basic_text",
+                "clarify_ambiguous_goal",
+                "unsupported_shell",
+                "malicious_path_traversal",
+                "prompt_injection_is_data",
+            ],
+        )
+        for item in pilot["cases"]:
+            self.assertEqual(
+                item["expected_classification"],
+                case_index[item["id"]]["expected_classification"],
+            )
+
+    def test_online_preflight_sends_no_request_and_shows_boundaries(self) -> None:
+        output_path = PROJECT_ROOT / "artifacts" / "evaluations" / "pilot.json"
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "",
+                "ZEVORINTH_MODEL": "",
+                "ZEVORINTH_LLM_TIMEOUT_SECONDS": "12",
+                "ZEVORINTH_LLM_MAX_OUTPUT_TOKENS": "321",
+            },
+            clear=False,
+        ):
+            report = online_preflight(output_path=output_path)
+
+        self.assertFalse(report["network_request_sent"])
+        self.assertTrue(report["requires_explicit_approval"])
+        self.assertFalse(report["ready_for_approval"])
+        self.assertEqual(report["request_boundaries"]["maximum_requests"], 5)
+        self.assertEqual(report["request_boundaries"]["retries"], 0)
+        self.assertEqual(
+            report["request_boundaries"]["timeout_seconds_per_case"],
+            12,
+        )
+        self.assertEqual(
+            report["configuration"]["minimum_sdk_version"],
+            "3.35.1",
+        )
+        self.assertIn(
+            report["configuration"]["sdk_compatible"],
+            {True, False},
+        )
+        self.assertEqual(
+            report["file_effects"]["persistent_result_path"],
+            str(output_path),
+        )
+
+    def test_online_requires_explicit_case_selection(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "test-only-key",
+                "ZEVORINTH_MODEL": "configured-test-model",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(EvaluationConfigurationError):
+                run_evaluation(online=True)
+
+    def test_deepseek_preflight_is_ready_with_compatible_sdk_without_network(self) -> None:
+        secret = "deepseek-preflight-secret"
+        output_path = PROJECT_ROOT / "artifacts" / "evaluations" / "never-created.json"
+        with patch.dict(
+            os.environ,
+            {
+                "ZEVORINTH_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_API_KEY": secret,
+                "ZEVORINTH_MODEL": "deepseek-flash",
+            },
+            clear=False,
+        ), patch(
+            "zevorinth.evaluation.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "3.35.1",
+                "minimum_version": "3.35.1",
+                "compatible": True,
+                "module_path": "/fake/openai/__init__.py",
+            },
+        ):
+            report = online_preflight(output_path=output_path)
+
+        self.assertTrue(report["ready_for_approval"])
+        self.assertFalse(report["network_request_sent"])
+        self.assertEqual(report["configuration"]["provider"], "deepseek")
+        self.assertEqual(
+            report["configuration"]["base_url"],
+            "https://api.deepseek.com",
+        )
+        self.assertTrue(report["configuration"]["api_key_configured"])
+        self.assertNotIn(secret, json.dumps(report))
+        self.assertFalse(output_path.exists())
+
+    def test_unexpected_planning_error_cannot_pass_clarification_case(self) -> None:
+        class FailingPlanner:
+            mode = PlannerMode.LLM
+            name = "test-failure-planner"
+
+            def plan_request(self, request: TaskRequest) -> PlanningOutcome:
+                return PlanningOutcome(
+                    classification=PlanningClassification.FAILED,
+                    error_code="invalid_candidate_fields",
+                    error_message="unexpected planning failure",
+                )
+
+        case = next(
+            case
+            for case in load_cases()["cases"]
+            if case["id"] == "clarify_ambiguous_goal"
+        )
+        result = _run_case(case, FailingPlanner(), None)
+        self.assertFalse(result.error_code_correct)
+        self.assertFalse(result.passed)
+
+    def test_online_preflight_cli_does_not_require_network(self) -> None:
+        output = StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "",
+                "ZEVORINTH_MODEL": "",
+            },
+            clear=False,
+        ), redirect_stdout(output):
+            exit_code = main(
+                [
+                    "eval-planner",
+                    "--online",
+                    "--pilot",
+                    "phase-2.5",
+                    "--preflight",
+                    "--output",
+                    str(Path(temp_dir) / "pilot.json"),
+                    "--json",
+                ]
+            )
+            report_path = Path(temp_dir) / "pilot.json"
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 7)
+        self.assertFalse(report["network_request_sent"])
+        self.assertFalse(report_path.exists())
+        self.assertEqual(
+            report["selected_case_ids"],
+            [
+                "create_basic_text",
+                "clarify_ambiguous_goal",
+                "unsupported_shell",
+                "malicious_path_traversal",
+                "prompt_injection_is_data",
+            ],
+        )
+
+    def test_approved_online_path_writes_result_to_requested_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = Path(temp_dir) / "online-result.json"
+            fake_report = {
+                "mode": "online",
+                "model_source": "online_api",
+                "all_passed": True,
+                "passed": 5,
+                "case_count": 5,
+                "metrics": {},
+                "failures": [],
+            }
+            output = StringIO()
+            with patch(
+                "zevorinth.cli.run_evaluation",
+                return_value=fake_report,
+            ) as evaluation_call, redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "eval-planner",
+                        "--online",
+                        "--pilot",
+                        "phase-2.5",
+                        "--output",
+                        str(report_path),
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(report_path.is_file())
+            persisted = json.loads(report_path.read_text())
+            self.assertEqual(persisted["report_path"], str(report_path.resolve()))
+            self.assertEqual(
+                evaluation_call.call_args.kwargs["pilot_path"].name,
+                "online_pilot_v1.json",
+            )
 
 
 if __name__ == "__main__":

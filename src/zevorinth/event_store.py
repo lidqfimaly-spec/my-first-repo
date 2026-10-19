@@ -79,16 +79,22 @@ class EventStore:
         os.chmod(self.database_path, 0o600)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.database_path,
-            timeout=self.busy_timeout_ms / 1000.0,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = FULL")
-        return connection
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(
+                self.database_path,
+                timeout=self.busy_timeout_ms / 1000.0,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = FULL")
+            return connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

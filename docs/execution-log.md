@@ -295,3 +295,142 @@ deterministic_baseline: 4/28
 - Hermes HEAD `bbf27ba`，工作树 0 项变化；
 - `zh` HEAD `e68f74f`，工作树 0 项变化；
 - 本阶段只读取旧项目 Git 状态，没有修改、清理或还原任何旧项目文件。
+
+---
+
+# 第 2.5 阶段预检执行记录
+
+## Git
+
+- 从干净工作树创建 `phase-2.5-online-evaluation`；
+- 起点提交：`7917773b20972ce73b128fc755e263c289c2dee9`；
+- 未设置远程，未推送。
+
+## 指标与案例审计
+
+- 逐行审计 `evaluation.py` 的分子、分母和案例过滤；
+- 数据集版本 1，共 28 个案例：
+  - planned 6；
+  - clarification 4；
+  - unsupported 9；
+  - failed 9；
+  - unsafe 10。
+- 修正混淆指标命名，保留 `legacy_metrics`；
+- 新增 `online_pilot_v1.json` 固定 5 案例；
+- 在线模式必须显式 `--pilot phase-2.5` 或 `--case-id`；
+- 新增 `--preflight`，不实例化 API Client、不发网络请求。
+
+## 初次配置预检（DeepSeek Provider 适配前）
+
+系统 shell 安全探测：
+
+```text
+OPENAI_API_KEY=missing
+ZEVORINTH_MODEL=missing
+ZEVORINTH_PLANNER=<unset>
+ZEVORINTH_LLM_TIMEOUT_SECONDS=<unset>
+ZEVORINTH_LLM_MAX_OUTPUT_TOKENS=<unset>
+```
+
+- 系统 Python 的 `openai`：`2.45.0`，低于最低 `3.35.1`，判定不兼容；
+- 隔离项目环境 `/tmp/zevorinth-phase2.GxQUda/venv` 的 `openai`：`3.35.1`，兼容；
+- 两个环境都缺少 Key 和模型；
+- 预检 `ready_for_approval=false`；
+- 预检没有发送网络请求；
+- 计划输出文件没有被创建。
+
+## 测试
+
+| 命令/环境 | 退出码 | 结果 |
+| --- | ---: | --- |
+| 系统环境完整 unittest（ResourceWarning 视为错误） | 0 | 81/81 通过，2.177 秒 |
+| 隔离安装环境完整 unittest | 0 | 81/81 通过，2.124 秒 |
+| `compileall -q src tests` | 0 | 语法编译通过 |
+| 离线评测 | 0 | 28/28；真实 API 调用 0 |
+| 安装环境离线评测 | 0 | 28/28；真实 API 调用 0 |
+| DeepSeek preflight（系统 Python） | 7 | Provider/Key/模型均识别；SDK 2.45.0 不兼容；网络请求 false |
+| DeepSeek preflight（隔离环境） | 0 | Provider/Key/模型均识别；SDK 3.35.1；ready=true；网络请求 false |
+
+## 当前状态
+
+代码变更保留在 `phase-2.5-online-evaluation` 工作树中，等待模型配置和用户明确批准后，才能执行固定的 5 案例在线试点。
+
+## DeepSeek Provider 适配预检
+
+- `DEEPSEEK_API_KEY`：存在；
+- `OPENAI_API_KEY`：缺失；
+- `ZEVORINTH_LLM_PROVIDER`：当前 shell 未设置；
+- `ZEVORINTH_MODEL`：当前 shell 缺失；
+- Provider 与 Key 变量明确绑定，未发生交叉读取；
+- DeepSeek Base URL：`https://api.deepseek.com`；
+- DeepSeek structured output：`json_schema` + `name/schema`；
+- DeepSeek 请求不发送不受支持的 `store`，不发送未文档化的 `strict`；
+- SDK 最低版本仍为 `3.35.1`，低版本请求前 fail-closed；
+- 系统 Python 的 `openai 2.45.0` 不兼容；
+- 隔离项目环境的 `openai 3.35.1` 兼容。
+
+使用非秘密变量：
+
+```text
+ZEVORINTH_LLM_PROVIDER=deepseek
+ZEVORINTH_MODEL=deepseek-flash
+```
+
+在隔离项目环境重新预检，结果：
+
+```text
+ready_for_approval=true
+network_request_sent=false
+real_api_calls=0
+persistent_report_exists=no
+```
+
+该结果只表示配置满足审批条件；密钥有效性、模型可用性和真实结构化输出尚未通过在线请求验证。
+
+## 用户批准后的 DeepSeek 在线试点
+
+用户明确批准后执行命令：
+
+```text
+/tmp/zevorinth-phase2.GxQUda/venv/bin/zevorinth \
+  eval-planner --online --pilot phase-2.5 \
+  --output artifacts/evaluations/phase-2.5-online-v1.json --json
+```
+
+非秘密 Process 环境：
+
+```text
+ZEVORINTH_LLM_PROVIDER=deepseek
+ZEVORINTH_MODEL=deepseek-flash
+```
+
+实际结果：
+
+- 命令退出码：1（存在失败案例）；
+- 模型请求：5；
+- 重试：0；
+- 端到端通过：3/5；
+- real API calls：5；
+- total tokens：2894；
+- average latency：1674.4124 ms；
+- `unsafe_side_effect_block_rate=1.0`；
+- planned 案例真实端到端成功率：2/2；
+- 失败案例：`clarify_ambiguous_goal`、`unsupported_shell`；
+- 没有文件工具越权副作用；
+- 第二个失败没有自动重试。
+
+报告：
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/evaluations/phase-2.5-online-v1.json`
+- 10187 bytes
+- SHA-256 `9379a1efa8484ddb03c8f8c6ed9da44447b6d0087e5c8b8f6fccf86e1f006476`
+
+## 旧项目并发状态（最终审计）
+
+本任务没有修改旧项目，但最终 Git 审计观察到外部并发变化：
+
+- AutoCodePlay：HEAD 从 `7516cfd` 变为 `85e6f61`，当前 5 项工作树变化；
+- `hermes_seed_副本11`：HEAD 仍为 `bbf27ba`，当前 2 项变化；
+- `zh`：HEAD 仍为 `e68f74f`，当前 1 项变化。
+
+这些变化不属于 Zevorinth，本次没有清理、还原或提交它们。

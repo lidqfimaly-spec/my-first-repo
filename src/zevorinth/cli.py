@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import platform
@@ -14,8 +13,13 @@ from typing import Sequence
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
 from .event_store import EventStoreError, TaskNotFound
-from .evaluation import EvaluationConfigurationError, run_evaluation
-from .llm_planner import LLMPlanner, LLMPlannerConfig
+from .evaluation import (
+    DEFAULT_PILOT,
+    EvaluationConfigurationError,
+    online_preflight,
+    run_evaluation,
+)
+from .llm_planner import LLMPlanner, LLMPlannerConfig, openai_sdk_status
 from .models import PlannerMode, Task, TaskRequest, TaskStatus
 from .planner import WRITE_TEXT_ARTIFACT
 from .planner import DeterministicPlanner
@@ -45,6 +49,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
     """Return a truthful, machine-readable snapshot of current capabilities."""
     root = _project_root(project_root)
     llm_config = LLMPlannerConfig.from_environment()
+    sdk_status = openai_sdk_status()
     return {
         "schema_version": 3,
         "project": "Zevorinth",
@@ -72,10 +77,13 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "durable_event_store": True,
             "resume_interrupted_task": True,
             "sqlite_execution_leases": True,
-            "llm_planner_available": importlib.util.find_spec("openai") is not None,
+            "llm_planner_available": bool(sdk_status["compatible"]),
         },
         "task_types": [WRITE_TEXT_ARTIFACT],
-        "llm_planner": llm_config.public_report(),
+        "llm_planner": {
+            **llm_config.public_report(),
+            "sdk": sdk_status,
+        },
         "deployment_scope": {
             "single_host_shared_sqlite": True,
             "distributed_execution": False,
@@ -106,11 +114,14 @@ def _print_human(report: dict[str, object]) -> None:
     print(f"Task types: {', '.join(report['task_types'])}")
     llm = report.get("llm_planner")
     if isinstance(llm, dict):
+        sdk = llm.get("sdk", {})
+        sdk_version = sdk.get("version") if isinstance(sdk, dict) else None
         print(
             "LLM planner: "
             f"configured={llm.get('configured')} "
             f"model={llm.get('model') or 'not configured'} "
-            f"api_key_configured={llm.get('api_key_configured')}"
+            f"api_key_configured={llm.get('api_key_configured')} "
+            f"sdk_version={sdk_version or 'not installed'}"
         )
     print(f"Notice: {report['notice']}")
 
@@ -271,8 +282,31 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation.add_argument(
         "--limit",
         type=int,
-        default=5,
+        default=None,
         help="maximum online cases (default: 5)",
+    )
+    evaluation.add_argument(
+        "--pilot",
+        choices=["phase-2.5"],
+        default=None,
+        help="use a versioned online pilot case list",
+    )
+    evaluation.add_argument(
+        "--case-id",
+        action="append",
+        default=None,
+        help="explicit online case ID; may be repeated (maximum 5)",
+    )
+    evaluation.add_argument(
+        "--preflight",
+        action="store_true",
+        help="show online plan and configuration without sending API requests",
+    )
+    evaluation.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="persistent JSON report path for an approved online run",
     )
     evaluation.add_argument("--json", action="store_true")
 
@@ -335,13 +369,95 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "eval-planner":
         try:
+            if args.offline and any(
+                (args.pilot, args.case_id, args.preflight, args.output)
+            ):
+                raise EvaluationConfigurationError(
+                    "offline evaluation does not accept online selection or output options"
+                )
+            if args.online and not any((args.pilot, args.case_id)):
+                raise EvaluationConfigurationError(
+                    "online evaluation requires --pilot phase-2.5 or --case-id"
+                )
+            output_path = (
+                args.output
+                or (_project_root(args.home) / "artifacts" / "evaluations" /
+                    "phase-2.5-online-v1.json")
+            )
+            if args.preflight:
+                if not args.online:
+                    raise EvaluationConfigurationError(
+                        "--preflight requires --online"
+                    )
+                if args.case_id or not args.pilot:
+                    raise EvaluationConfigurationError(
+                        "--preflight currently requires --pilot phase-2.5"
+                    )
+                report = online_preflight(
+                    pilot_path=DEFAULT_PILOT if args.pilot else None,
+                    output_path=output_path,
+                )
+                if args.json:
+                    print(
+                        json.dumps(
+                            report,
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(
+                        f"Online preflight: {report['pilot_version']} "
+                        f"({len(report['selected_cases'])} cases)"
+                    )
+                    for case in report["selected_cases"]:
+                        print(
+                            f"  {case['case_id']} [{case['category']}] "
+                            f"expected={case['expected_classification']}"
+                        )
+                    configuration = report["configuration"]
+                    boundaries = report["request_boundaries"]
+                    print(
+                        "Configuration: "
+                        f"ready={report['ready_for_approval']} "
+                        f"model={configuration.get('model') or 'not configured'} "
+                        f"api_key_configured={configuration.get('api_key_configured')} "
+                        f"sdk_version={configuration.get('sdk_version')}"
+                    )
+                    print(
+                        "Boundaries: "
+                        f"max_requests={boundaries['maximum_requests']} "
+                        f"retries={boundaries['retries']} "
+                        f"timeout_seconds={boundaries['timeout_seconds_per_case']} "
+                        f"max_output_tokens={boundaries['max_output_tokens_per_case']}"
+                    )
+                    print(
+                        "Cost: unknown until a verified model price table is available"
+                    )
+                    print(
+                        "Result path: "
+                        f"{report['file_effects']['persistent_result_path']}"
+                    )
+                    print("Network request sent by this preflight: no")
+                return 0 if report["ready_for_approval"] else 7
             report = run_evaluation(
                 online=args.online,
                 limit=args.limit if args.online else None,
+                case_ids=args.case_id,
+                pilot_path=DEFAULT_PILOT if args.pilot else None,
             )
         except EvaluationConfigurationError as exc:
             print(f"evaluation configuration error: {exc}", file=sys.stderr)
             return 7
+        if args.online:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            report["report_path"] = str(output_path.resolve())
+            output_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         else:
@@ -352,15 +468,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"({report['passed']}/{report['case_count']} cases passed)"
             )
             for name in (
-                "contract_validity_rate",
+                "candidate_received_count",
+                "candidate_validation_pass_rate",
                 "classification_accuracy",
                 "status_accuracy",
-                "unsafe_block_rate",
-                "invalid_plan_rate",
+                "unsafe_side_effect_block_rate",
+                "unsafe_classification_accuracy",
                 "planning_failure_rate",
-                "end_to_end_success_rate",
+                "planned_case_end_to_end_success_rate",
+                "expected_non_executable_case_share",
                 "average_latency_ms",
-                "model_calls",
+                "model_call_attempts",
+                "real_api_calls",
+                "scripted_client_calls",
                 "total_tokens",
             ):
                 print(f"{name}: {metrics[name]}")
@@ -373,7 +493,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"{baseline.get('passed')}/{baseline.get('case_count')} cases, "
                         f"classification_accuracy="
                         f"{baseline_metrics.get('classification_accuracy')}, "
-                        f"model_calls={baseline_metrics.get('model_calls')}"
+                        f"model_call_attempts="
+                        f"{baseline_metrics.get('model_call_attempts')}"
                     )
         return 0 if report["all_passed"] else 1
 

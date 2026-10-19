@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import time
 from dataclasses import dataclass
+from enum import Enum
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Protocol
 
 from .models import PlannerMode, PlanningClassification, PlanningOutcome, TaskRequest
@@ -17,6 +20,26 @@ MAX_GOAL_BYTES = 16 * 1024
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_OUTPUT_TOKENS = 1500
 MAX_OUTPUT_TOKENS_LIMIT = 4096
+MIN_OPENAI_SDK_VERSION = "3.35.1"
+
+
+class LLMProvider(str, Enum):
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+
+
+PROVIDER_SETTINGS: dict[LLMProvider, dict[str, str | None]] = {
+    LLMProvider.OPENAI: {
+        "api_key_env": "OPENAI_API_KEY",
+        "base_url": None,
+        "default_base_url": "https://api.openai.com/v1",
+    },
+    LLMProvider.DEEPSEEK: {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com",
+        "default_base_url": "https://api.deepseek.com",
+    },
+}
 
 
 PLANNER_INSTRUCTIONS = """You are a constrained planning component.
@@ -93,10 +116,14 @@ CANDIDATE_JSON_SCHEMA: dict[str, Any] = {
 
 @dataclass(frozen=True, slots=True)
 class LLMPlannerConfig:
-    model: str | None
-    api_key_present: bool
+    provider: LLMProvider | None = LLMProvider.OPENAI
+    model: str | None = None
+    api_key_present: bool = False
+    api_key_env: str | None = "OPENAI_API_KEY"
+    base_url: str | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    provider_error: str | None = None
 
     @classmethod
     def from_environment(cls) -> "LLMPlannerConfig":
@@ -112,17 +139,42 @@ class LLMPlannerConfig:
             minimum=1,
             maximum=MAX_OUTPUT_TOKENS_LIMIT,
         )
+        raw_provider = (
+            os.environ.get("ZEVORINTH_LLM_PROVIDER") or LLMProvider.OPENAI.value
+        ).strip().lower()
+        provider: LLMProvider | None
+        provider_error: str | None = None
+        try:
+            provider = LLMProvider(raw_provider)
+        except ValueError:
+            provider = None
+            provider_error = "unsupported_provider"
+        settings = PROVIDER_SETTINGS.get(provider, {}) if provider else {}
+        api_key_env = str(settings.get("api_key_env") or "") or None
         model = (os.environ.get("ZEVORINTH_MODEL") or "").strip() or None
         return cls(
+            provider=provider,
             model=model,
-            api_key_present=bool(os.environ.get("OPENAI_API_KEY")),
+            api_key_present=bool(
+                api_key_env and os.environ.get(api_key_env)
+            ),
+            api_key_env=api_key_env,
+            base_url=str(settings.get("base_url") or "") or None,
             timeout_seconds=timeout,
             max_output_tokens=max_tokens,
+            provider_error=provider_error,
         )
 
     def validation_error(self) -> tuple[str, str] | None:
+        if self.provider_error:
+            return self.provider_error, "unsupported LLM provider"
+        if self.provider is None:
+            return "unsupported_provider", "LLM provider is not configured"
         if not self.api_key_present:
-            return "missing_api_key", "OPENAI_API_KEY is not configured"
+            return (
+                "missing_api_key",
+                f"{self.api_key_env or 'provider API key'} is not configured",
+            )
         if not self.model:
             return "missing_model", "ZEVORINTH_MODEL is not configured"
         return None
@@ -131,7 +183,15 @@ class LLMPlannerConfig:
         error = self.validation_error()
         return {
             "configured": error is None,
+            "provider": self.provider.value if self.provider else None,
             "api_key_configured": self.api_key_present,
+            "api_key_env": self.api_key_env,
+            "base_url": self.base_url
+            or (
+                PROVIDER_SETTINGS[self.provider]["default_base_url"]
+                if self.provider
+                else None
+            ),
             "model": self.model,
             "timeout_seconds": self.timeout_seconds,
             "max_output_tokens": self.max_output_tokens,
@@ -145,7 +205,6 @@ class ModelCallResult:
     candidate: object | None = None
     refusal: str | None = None
     status: str | None = None
-    error: str | None = None
     incomplete_reason: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -173,26 +232,36 @@ class OpenAIResponsesClient:
 
     def __init__(
         self,
-        *,
-        model: str,
-        timeout_seconds: float,
+        config: LLMPlannerConfig,
     ) -> None:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        if config.provider is None or config.api_key_env is None:
+            raise LLMConfigurationError("LLM provider is not configured")
+        api_key = os.environ.get(config.api_key_env)
         if not api_key:
-            raise LLMConfigurationError("OPENAI_API_KEY is not configured")
+            raise LLMConfigurationError(
+                f"{config.api_key_env} is not configured"
+            )
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise LLMConfigurationError(
                 "OpenAI SDK is not installed; install the 'llm' extra"
             ) from exc
-        self.model = model
-        self.timeout_seconds = timeout_seconds
-        self._client = OpenAI(
-            api_key=api_key,
-            timeout=timeout_seconds,
-            max_retries=0,
-        )
+        sdk_status = openai_sdk_status()
+        if not sdk_status["compatible"]:
+            raise LLMConfigurationError(
+                "OpenAI SDK must be >= "
+                f"{MIN_OPENAI_SDK_VERSION}; found {sdk_status['version']}"
+            )
+        self.config = config
+        client_options: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": config.timeout_seconds,
+            "max_retries": 0,
+        }
+        if config.base_url:
+            client_options["base_url"] = config.base_url
+        self._client = OpenAI(**client_options)
 
     def create_candidate(
         self,
@@ -201,21 +270,27 @@ class OpenAIResponsesClient:
         instructions: str,
         max_output_tokens: int,
     ) -> ModelCallResult:
+        if self.config.provider is None:
+            raise LLMConfigurationError("LLM provider is not configured")
+        format_spec: dict[str, object] = {
+            "type": "json_schema",
+            "name": "zevorinth_planner_candidate",
+            "schema": CANDIDATE_JSON_SCHEMA,
+        }
+        if self.config.provider is LLMProvider.OPENAI:
+            format_spec["strict"] = True
+        request: dict[str, Any] = {
+            "model": self.config.model,
+            "instructions": instructions,
+            "input": json.dumps({"user_goal": goal}, ensure_ascii=False),
+            "max_output_tokens": max_output_tokens,
+            "text": {"format": format_spec},
+            "timeout": self.config.timeout_seconds,
+        }
+        if self.config.provider is LLMProvider.OPENAI:
+            request["store"] = False
         response = self._client.responses.create(
-            model=self.model,
-            instructions=instructions,
-            input=json.dumps({"user_goal": goal}, ensure_ascii=False),
-            max_output_tokens=max_output_tokens,
-            store=False,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "zevorinth_planner_candidate",
-                    "schema": CANDIDATE_JSON_SCHEMA,
-                    "strict": True,
-                }
-            },
-            timeout=self.timeout_seconds,
+            **request,
         )
         refusal = _extract_refusal(response)
         output_text = response.output_text or ""
@@ -233,7 +308,6 @@ class OpenAIResponsesClient:
             candidate=candidate,
             refusal=refusal,
             status=response.status,
-            error=response.error.message if response.error else None,
             incomplete_reason=(
                 getattr(incomplete, "reason", None) if incomplete else None
             ),
@@ -278,8 +352,7 @@ class LLMPlanner:
             return cls(config=config)
         try:
             client = OpenAIResponsesClient(
-                model=config.model or "",
-                timeout_seconds=config.timeout_seconds,
+                config,
             )
         except LLMConfigurationError:
             return cls(config=config)
@@ -293,6 +366,8 @@ class LLMPlanner:
             "timeout_seconds": self.config.timeout_seconds,
             "max_output_tokens": self.config.max_output_tokens,
             "max_calls": 1,
+            "candidate_received": False,
+            "candidate_validation": "not_received",
         }
         goal = request.goal
         if goal is None or not goal.strip():
@@ -371,7 +446,7 @@ class LLMPlanner:
             return PlanningOutcome(
                 classification=PlanningClassification.FAILED,
                 error_code="model_response_failed",
-                error_message=result.error or f"model response status: {result.status}",
+                error_message="model response failed or was cancelled",
                 metadata=call_metadata,
             )
         if result.status == "incomplete":
@@ -454,3 +529,49 @@ def _parse_int(
     except ValueError:
         return default
     return min(max(value, minimum), maximum)
+
+
+def openai_sdk_status() -> dict[str, object]:
+    try:
+        spec = importlib.util.find_spec("openai")
+        module_path = spec.origin if spec else None
+    except (ImportError, ValueError):
+        module_path = None
+    try:
+        installed = version("openai")
+    except PackageNotFoundError:
+        return {
+            "installed": False,
+            "version": None,
+            "minimum_version": MIN_OPENAI_SDK_VERSION,
+            "compatible": False,
+            "module_path": module_path,
+        }
+    return {
+        "installed": True,
+        "version": installed,
+        "minimum_version": MIN_OPENAI_SDK_VERSION,
+        "module_path": module_path,
+        "compatible": _version_at_least(
+            installed,
+            MIN_OPENAI_SDK_VERSION,
+        ),
+    }
+
+
+def _version_at_least(installed: str, minimum: str) -> bool:
+    def parts(value: str) -> tuple[int, ...]:
+        numeric: list[int] = []
+        for part in value.split("."):
+            digits = "".join(ch for ch in part if ch.isdigit())
+            if not digits:
+                break
+            numeric.append(int(digits))
+        return tuple(numeric)
+
+    current = parts(installed)
+    required = parts(minimum)
+    length = max(len(current), len(required))
+    return current + (0,) * (length - len(current)) >= required + (
+        0,
+    ) * (length - len(required))

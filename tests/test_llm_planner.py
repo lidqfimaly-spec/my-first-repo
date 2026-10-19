@@ -17,8 +17,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from zevorinth.artifact_tool import SimulatedArtifactWriter  # noqa: E402
 from zevorinth.llm_planner import (  # noqa: E402
     CANDIDATE_JSON_SCHEMA,
+    LLMProvider,
     LLMPlanner,
     LLMPlannerConfig,
+    LLMConfigurationError,
     ModelCallResult,
     OpenAIResponsesClient,
     StructuredOutputError,
@@ -83,8 +85,10 @@ def planner_with(result: ModelCallResult | Exception) -> tuple[LLMPlanner, FakeC
     client = FakeClient(result)
     planner = LLMPlanner(
         config=LLMPlannerConfig(
+            provider=LLMProvider.OPENAI,
             model="test-model",
             api_key_present=True,
+            api_key_env="OPENAI_API_KEY",
             timeout_seconds=1,
             max_output_tokens=200,
         ),
@@ -192,11 +196,24 @@ class LLMPlannerTests(unittest.TestCase):
             os.environ,
             {"OPENAI_API_KEY": "test-only-key"},
             clear=False,
+        ), patch(
+            "zevorinth.llm_planner.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "3.35.1",
+                "minimum_version": "3.35.1",
+                "compatible": True,
+                "module_path": "/fake/openai/__init__.py",
+            },
         ):
-            client = OpenAIResponsesClient(
+            config = LLMPlannerConfig(
+                provider=LLMProvider.OPENAI,
                 model="configured-model",
+                api_key_present=True,
+                api_key_env="OPENAI_API_KEY",
                 timeout_seconds=7,
             )
+            client = OpenAIResponsesClient(config)
             result = client.create_candidate(
                 goal="Create result.txt",
                 instructions="bounded instructions",
@@ -205,6 +222,7 @@ class LLMPlannerTests(unittest.TestCase):
 
         self.assertEqual(captured["client"]["max_retries"], 0)
         self.assertEqual(captured["client"]["timeout"], 7)
+        self.assertNotIn("base_url", captured["client"])
         request = captured["request"]
         self.assertEqual(request["model"], "configured-model")
         self.assertEqual(request["max_output_tokens"], 321)
@@ -215,16 +233,200 @@ class LLMPlannerTests(unittest.TestCase):
         self.assertEqual(result.total_tokens, 20)
         self.assertEqual(result.candidate["artifact_path"], "result.txt")
 
+    def test_deepseek_environment_is_explicit_and_secret_is_not_reported(self) -> None:
+        secret = "deepseek-test-secret-value"
+        with patch.dict(
+            os.environ,
+            {
+                "ZEVORINTH_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_API_KEY": secret,
+                "OPENAI_API_KEY": "must-not-be-used",
+                "ZEVORINTH_MODEL": "deepseek-flash",
+            },
+            clear=False,
+        ):
+            config = LLMPlannerConfig.from_environment()
+            report = config.public_report()
+
+        self.assertEqual(config.provider, LLMProvider.DEEPSEEK)
+        self.assertEqual(config.api_key_env, "DEEPSEEK_API_KEY")
+        self.assertTrue(config.api_key_present)
+        self.assertEqual(config.base_url, "https://api.deepseek.com")
+        self.assertEqual(config.model, "deepseek-flash")
+        self.assertNotIn(secret, json.dumps(report))
+
+    def test_deepseek_adapter_uses_own_key_and_base_url(self) -> None:
+        captured: dict[str, Any] = {}
+
+        class FakeResponses:
+            def create(self, **kwargs: Any) -> Any:
+                captured["request"] = kwargs
+                return SimpleNamespace(
+                    output_text=json.dumps(
+                        candidate(artifact_path="deepseek.txt")
+                    ),
+                    output=[],
+                    status="completed",
+                    error=None,
+                    incomplete_details=None,
+                    usage=None,
+                    id="deepseek-test",
+                )
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs: Any) -> None:
+                captured["client"] = kwargs
+                self.responses = FakeResponses()
+
+        fake_module = ModuleType("openai")
+        fake_module.OpenAI = FakeOpenAI
+        config = LLMPlannerConfig(
+            provider=LLMProvider.DEEPSEEK,
+            model="deepseek-flash",
+            api_key_present=True,
+            api_key_env="DEEPSEEK_API_KEY",
+            base_url="https://api.deepseek.com",
+            timeout_seconds=8,
+        )
+        with patch.dict(sys.modules, {"openai": fake_module}), patch.dict(
+            os.environ,
+            {
+                "DEEPSEEK_API_KEY": "deepseek-test-key",
+                "OPENAI_API_KEY": "openai-test-key",
+            },
+            clear=False,
+        ), patch(
+            "zevorinth.llm_planner.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "3.35.1",
+                "minimum_version": "3.35.1",
+                "compatible": True,
+                "module_path": "/fake/openai/__init__.py",
+            },
+        ):
+            client = OpenAIResponsesClient(config)
+            result = client.create_candidate(
+                goal="Create deepseek.txt",
+                instructions="bounded",
+                max_output_tokens=222,
+            )
+
+        self.assertEqual(
+            captured["client"]["base_url"],
+            "https://api.deepseek.com",
+        )
+        self.assertEqual(captured["client"]["api_key"], "deepseek-test-key")
+        self.assertEqual(captured["client"]["max_retries"], 0)
+        request = captured["request"]
+        self.assertNotIn("store", request)
+        self.assertNotIn("tools", request)
+        self.assertNotIn("strict", request["text"]["format"])
+        self.assertEqual(request["text"]["format"]["type"], "json_schema")
+        self.assertEqual(request["max_output_tokens"], 222)
+        self.assertEqual(result.candidate["artifact_path"], "deepseek.txt")
+
+    def test_provider_keys_do_not_cross(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ZEVORINTH_LLM_PROVIDER": "deepseek",
+                "DEEPSEEK_API_KEY": "",
+                "OPENAI_API_KEY": "openai-only",
+                "ZEVORINTH_MODEL": "deepseek-flash",
+            },
+            clear=False,
+        ):
+            deepseek_config = LLMPlannerConfig.from_environment()
+        self.assertFalse(deepseek_config.api_key_present)
+        self.assertEqual(
+            deepseek_config.validation_error()[0],
+            "missing_api_key",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "ZEVORINTH_LLM_PROVIDER": "openai",
+                "DEEPSEEK_API_KEY": "deepseek-only",
+                "OPENAI_API_KEY": "",
+                "ZEVORINTH_MODEL": "configured-model",
+            },
+            clear=False,
+        ):
+            openai_config = LLMPlannerConfig.from_environment()
+        self.assertFalse(openai_config.api_key_present)
+        self.assertEqual(openai_config.api_key_env, "OPENAI_API_KEY")
+
+    def test_secret_in_client_exception_is_not_echoed(self) -> None:
+        secret = "deepseek-secret-must-not-escape"
+        planner, _ = planner_with(RuntimeError(secret))
+        outcome = planner.plan_request(
+            TaskRequest(
+                goal="Create a file.",
+                operation=None,
+                parameters={},
+            )
+        )
+        serialized = json.dumps(outcome.to_dict(), ensure_ascii=False)
+        self.assertNotIn(secret, serialized)
+        self.assertEqual(outcome.error_code, "model_api_error")
+
+    def test_unknown_provider_fails_configuration_validation(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ZEVORINTH_LLM_PROVIDER": "unknown",
+                "ZEVORINTH_MODEL": "some-model",
+            },
+            clear=False,
+        ):
+            config = LLMPlannerConfig.from_environment()
+        self.assertEqual(config.provider, None)
+        self.assertEqual(config.validation_error()[0], "unsupported_provider")
+
+    def test_incompatible_sdk_version_is_rejected_before_client_creation(self) -> None:
+        fake_module = ModuleType("openai")
+        fake_module.OpenAI = object
+        with patch.dict(sys.modules, {"openai": fake_module}), patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "test-only-key"},
+            clear=False,
+        ), patch(
+            "zevorinth.llm_planner.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "2.45.0",
+                "minimum_version": "3.35.1",
+                "compatible": False,
+                "module_path": "/fake/openai/__init__.py",
+            },
+        ):
+            with self.assertRaises(LLMConfigurationError):
+                OpenAIResponsesClient(
+                    LLMPlannerConfig(
+                        provider=LLMProvider.OPENAI,
+                        model="configured-model",
+                        api_key_present=True,
+                        api_key_env="OPENAI_API_KEY",
+                        timeout_seconds=5,
+                    )
+                )
+
     def test_missing_configuration_never_calls_client(self) -> None:
         client = FakeClient(ModelCallResult(candidate=candidate()))
         for config in [
             LLMPlannerConfig(
+                provider=LLMProvider.OPENAI,
                 model="test-model",
                 api_key_present=False,
+                api_key_env="OPENAI_API_KEY",
             ),
             LLMPlannerConfig(
+                provider=LLMProvider.OPENAI,
                 model=None,
                 api_key_present=True,
+                api_key_env="OPENAI_API_KEY",
             ),
         ]:
             with self.subTest(config=config):
@@ -242,8 +444,10 @@ class LLMPlannerTests(unittest.TestCase):
     def test_missing_sdk_client_is_explicit_planning_failure(self) -> None:
         planner = LLMPlanner(
             config=LLMPlannerConfig(
+                provider=LLMProvider.OPENAI,
                 model="test-model",
                 api_key_present=True,
+                api_key_env="OPENAI_API_KEY",
             ),
             client=None,
         )

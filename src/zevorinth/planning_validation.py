@@ -42,7 +42,10 @@ class PlanningCandidateValidator:
         base_request: TaskRequest,
         metadata: Mapping[str, Any] | None = None,
     ) -> PlanningOutcome:
-        base_metadata = dict(metadata or {})
+        base_metadata = {
+            **dict(metadata or {}),
+            "candidate_received": True,
+        }
         if not isinstance(candidate, Mapping):
             return self._failed(
                 "invalid_candidate",
@@ -86,7 +89,10 @@ class PlanningCandidateValidator:
                 request=base_request,
                 error_code="unsupported_request",
                 error_message=reason.strip()[:1000],
-                metadata=base_metadata,
+                metadata={
+                    **base_metadata,
+                    "candidate_validation": "passed",
+                },
             )
         if classification != "plan":
             return self._failed(
@@ -109,7 +115,11 @@ class PlanningCandidateValidator:
                 request=base_request,
                 error_code="unsupported_operation",
                 error_message="candidate operation is not locally allowed",
-                metadata=metadata,
+                metadata={
+                    **metadata,
+                    "candidate_validation": "rejected",
+                    "validation_error_code": "unsupported_operation",
+                },
             )
         try:
             artifact_path = validate_artifact_name(candidate.get("artifact_path"))
@@ -119,7 +129,11 @@ class PlanningCandidateValidator:
                 request=base_request,
                 error_code=exc.code,
                 error_message=exc.message,
-                metadata=metadata,
+                metadata={
+                    **metadata,
+                    "candidate_validation": "rejected",
+                    "validation_error_code": exc.code,
+                },
             )
         content = candidate.get("content")
         if not isinstance(content, str) or not content:
@@ -154,7 +168,10 @@ class PlanningCandidateValidator:
             classification=PlanningClassification.PLANNED,
             request=request,
             plan=plan,
-            metadata=metadata,
+            metadata={
+                **metadata,
+                "candidate_validation": "passed",
+            },
         )
 
     def _clarification(
@@ -207,7 +224,10 @@ class PlanningCandidateValidator:
             request=base_request,
             missing_fields=missing_fields,
             clarification_questions=questions,
-            metadata=metadata,
+            metadata={
+                **metadata,
+                "candidate_validation": "passed",
+            },
         )
 
     @staticmethod
@@ -220,5 +240,9 @@ class PlanningCandidateValidator:
             classification=PlanningClassification.FAILED,
             error_code=code,
             error_message=message,
-            metadata=metadata,
+            metadata={
+                **metadata,
+                "candidate_validation": "rejected",
+                "validation_error_code": code,
+            },
         )

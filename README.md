@@ -60,11 +60,19 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" events TASK_ID --json
 
 ## LLM 模式
 
-通过本地环境提供变量，不要把实际值写入仓库：
+Provider 必须显式选择，密钥变量和地址不会交叉使用。
+
+| Provider | Key 变量 | Base URL | 当前支持 |
+| --- | --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | OpenAI SDK 默认地址 | 保留 |
+| `deepseek` | `DEEPSEEK_API_KEY` | `https://api.deepseek.com` | 新增 |
+
+DeepSeek 示例，实际值只在本机 shell 设置：
 
 ```bash
-export OPENAI_API_KEY=...
-export ZEVORINTH_MODEL=...
+export ZEVORINTH_LLM_PROVIDER=deepseek
+export DEEPSEEK_API_KEY=...  # 仅在本机设置，不要写入仓库
+export ZEVORINTH_MODEL=deepseek-flash
 export ZEVORINTH_PLANNER=llm
 export ZEVORINTH_LLM_TIMEOUT_SECONDS=30
 export ZEVORINTH_LLM_MAX_OUTPUT_TOKENS=1500
@@ -86,6 +94,8 @@ PYTHONPATH=src python3 -m zevorinth \
 `--planner` 未指定时，读取 `ZEVORINTH_PLANNER`；该变量也未设置时默认 `deterministic`。只有显式选择 `llm` 才允许真实模型请求。
 
 缺少 Key 或模型配置时，任务进入 `planning_failed`，执行模式为 `not_executed`，退出码为 `7`，不会调用文件工具。
+
+DeepSeek Provider 使用官方文档要求的 OpenAI SDK + `base_url=https://api.deepseek.com`。Responses 请求使用 `text.format=json_schema`，不发送 DeepSeek 不支持的 `store` 参数，也不依赖未在其文档中声明的 `strict` 字段。本地 Candidate Validator 始终独立运行。
 
 ## Planner 结果语义
 
@@ -130,10 +140,24 @@ PYTHONPATH=src python3 -m zevorinth eval-planner --offline --json
 只有明确配置后才可人工运行：
 
 ```bash
-OPENAI_API_KEY=... \
-ZEVORINTH_MODEL=... \
 PYTHONPATH=src python3 -m zevorinth \
-  eval-planner --online --limit 5 --json
+  eval-planner \
+  --online \
+  --pilot phase-2.5 \
+  --preflight \
+  --output artifacts/evaluations/phase-2.5-online-v1.json \
+  --json
+```
+
+预检不发送网络请求。需要 Key 和模型配置齐备，并明确批准后才执行：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  eval-planner \
+  --online \
+  --pilot phase-2.5 \
+  --output artifacts/evaluations/phase-2.5-online-v1.json \
+  --json
 ```
 
 该命令最多执行指定数量的真实模型规划和对应的临时真实文件任务。它会报告：
@@ -147,7 +171,9 @@ PYTHONPATH=src python3 -m zevorinth \
 - 离线脚本化结果与真实在线结果的明确区分；
 - 未测量成本及未覆盖范围。
 
-本次交付没有在未显式授权的情况下调用真实 API，因此不报告在线模型通过率。
+固定试点清单位于 `src/zevorinth/evals/online_pilot_v1.json`，包含 5 个明确类别。未使用 `--pilot` 或显式 `--case-id` 时，在线模式会拒绝运行，避免误把数据集前几项当作代表性试点。
+
+当前预检没有在未显式授权的情况下调用真实 API，因此不报告在线模型通过率。指标口径审计见 `docs/phase-2.5-preflight.md`。
 
 ## 模拟与未执行
 
@@ -205,5 +231,7 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 1.5 阶段结果](docs/phase-1.5-results.md)
 - [第 2 阶段架构](docs/phase-2-llm-planner.md)
 - [第 2 阶段评测结果](docs/phase-2-results.md)
+- [第 2.5 阶段预检](docs/phase-2.5-preflight.md)
+- [第 2.5 阶段 DeepSeek 在线结果](docs/phase-2.5-online-results.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

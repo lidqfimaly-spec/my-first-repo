@@ -45,9 +45,12 @@ class EventStoreTests(unittest.TestCase):
             self.assertEqual(sequences, sorted(sequences))
             self.assertEqual(len(sequences), len(set(sequences)))
 
-            with sqlite3.connect(root / "data" / "zevorinth.sqlite3") as connection:
+            connection = sqlite3.connect(root / "data" / "zevorinth.sqlite3")
+            try:
                 task_count = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
                 event_count = connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            finally:
+                connection.close()
             self.assertEqual(task_count, 1)
             self.assertGreater(event_count, 0)
             db_mode = stat.S_IMODE(

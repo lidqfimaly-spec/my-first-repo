@@ -4,6 +4,9 @@
 基线提交：`177c3c3 feat: harden task execution and recovery`
 工作分支：`phase-2-llm-planner`
 
+> 历史结果声明：本文件保留 Phase 2 当时的原始输出。
+> 其中 `contract_validity_rate` 和 `invalid_plan_rate` 的口径已在 Phase 2.5 中审计并修正；旧值不删除，但不再作为新的模型质量指标使用。见 `phase-2.5-preflight.md`。
+
 ## 1. SDK 与官方资料
 
 - OpenAI Python SDK：`3.35.1`
