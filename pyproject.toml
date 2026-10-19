@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zevorinth"
+version = "0.1.0"
+description = "A bounded, evidence-first general-purpose AI agent system"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Zevorinth project" }]
+dependencies = []
+
+[project.scripts]
+zevorinth = "zevorinth.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

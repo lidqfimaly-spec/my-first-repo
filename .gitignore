@@ -1,0 +1,26 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+.omx/
+logs/
+tmp/
+
+# Runtime outputs are deliberately local. Keep the policy document tracked.
+artifacts/*
+!artifacts/README.md
+data/*
+!data/README.md
