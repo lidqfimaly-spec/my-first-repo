@@ -26,6 +26,9 @@ class StateMachineTests(unittest.TestCase):
             (TaskStatus.VERIFYING, TaskStatus.SUCCEEDED),
             (TaskStatus.VERIFYING, TaskStatus.INTERRUPTED),
             (TaskStatus.INTERRUPTED, TaskStatus.VERIFYING),
+            (TaskStatus.INTERRUPTED, TaskStatus.AWAITING_CLARIFICATION),
+            (TaskStatus.QUEUED, TaskStatus.PLANNING_FAILED),
+            (TaskStatus.INTERRUPTED, TaskStatus.PLANNING_FAILED),
         ]
         for current, target in transitions:
             with self.subTest(current=current, target=target):
@@ -35,6 +38,7 @@ class StateMachineTests(unittest.TestCase):
         for status in [
             TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
+            TaskStatus.PLANNING_FAILED,
             TaskStatus.CANCELLED,
             TaskStatus.SIMULATED,
         ]:

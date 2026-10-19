@@ -412,3 +412,97 @@ queued
 - 独立 Verifier 尚未执行。
 
 父进程等待明确的进程输出，不使用固定睡眠猜测时点；超时会清理子进程。测试确认返回码是 `-SIGKILL`。租约到期后新运行时恢复并验证文件；文件被修改时恢复失败且不覆盖。
+
+## 14. 第 2 阶段：受限 LLM Planner
+
+### 14.1 Planner 边界
+
+Planner 只负责把目标转换成统一 `PlanningOutcome`，不能拥有执行能力。
+
+```text
+TaskService（持有租约）
+  -> Planner.plan_request(TaskRequest)
+  -> PlanningOutcome
+       planned / clarification / unsupported / failed
+  -> 本地状态转换
+  -> Policy
+  -> 既有 Tool / Verifier / EventStore
+```
+
+保留 `deterministic-v1`。LLM Planner 返回候选后，由独立 `PlanningCandidateValidator` 转换为现有 `TaskRequest` 和单步 `Plan`。
+
+### 14.2 LLM 调用约束
+
+- 使用 OpenAI 官方 Python SDK 的 Responses API。
+- 当前验证的 SDK 版本：`3.35.1`。
+- 客户端设置 `max_retries=0`。
+- 每次规划最多一次 API 调用。
+- `store=False`。
+- 有界 `timeout`、`max_output_tokens` 和输入大小。
+- strict JSON Schema 约束候选字段。
+- 不提供 tools、shell、code interpreter、MCP 或文件访问。
+
+官方文档域在实施时返回 HTTP 403；API 形状通过隔离环境中的官方 SDK 签名和源码核对。该证据不替代未来在线行为验证。
+
+### 14.3 统一规划结果
+
+| 分类 | 状态 | 执行模式 |
+| --- | --- | --- |
+| planned | 继续 `running`，但还要过 Policy | 尚未执行时为 `not_executed` |
+| clarification | `awaiting_clarification` | `not_executed` |
+| unsupported | `blocked` | `not_executed` |
+| failed | `planning_failed` | `not_executed` |
+
+模型失败不会回退到确定性 Planner。不同 Planner 可通过 CLI 显式选择。
+
+### 14.4 本地双重校验
+
+第一层是 Responses API 的 strict JSON Schema，第二层是本地业务校验：
+
+- 候选必须是对象且字段集合完全一致；
+- 操作必须在白名单；
+- 文件名必须通过现有安全校验；
+- 内容必须非空且有界；
+- 澄清字段和问题数量有界；
+- 未知字段、shell、Python、SQL、绝对路径和路径穿越被拒绝；
+- 候选大小有上限。
+
+Schema 通过不等于执行授权。后续仍需现有 Policy、租约和 Verifier。
+
+### 14.5 持久化与隐私
+
+Task 新增：
+
+- `planner_mode`；
+- `planning_metadata`；
+- `clarification_questions`。
+
+规划事件记录分类、模型名称、耗时、Token、响应 ID、输入哈希和错误类别，不默认保存完整模型响应或 Prompt。任务快照保存执行所需的最终结构化请求。
+
+### 14.6 恢复
+
+- 已有计划时，恢复继续使用持久化计划，不再次调用模型。
+- 中断在规划阶段且没有计划时，恢复会重新取得租约并重新规划。
+- 规划失败是终态，不自动重试或切换 Planner。
+- 既有 SIGKILL、并发、fencing 和真实工具语义保持。
+
+### 14.7 评测
+
+固定案例位于 `src/zevorinth/evals/planner_cases.json`，至少 20 个，当前 28 个。
+
+离线测试：
+
+- 使用脚本化 Client；
+- 不需要 API Key；
+- 不发起网络请求；
+- 只评估本地契约、分类、安全失败和端到端执行语义；
+- 不代表真实模型质量。
+
+在线模式：
+
+- 必须显式 `eval-planner --online`；
+- 需要 API Key 和模型配置；
+- 每个案例使用隔离临时数据库与产物目录；
+- 记录真实延迟、Token 和失败；
+- 默认最多 5 个案例，可显式调整；
+- 不自动运行于普通测试或 CI。

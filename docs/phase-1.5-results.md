@@ -178,6 +178,8 @@ Verifier 尚未执行
 
 不支持分布式执行。不得把 SQLite 租约外推为跨机器一致性、网络文件系统安全或高可用队列。
 
+Phase 2 在此可靠性内核上增加了受限 LLM Planner；执行租约、fencing、并发和 SIGKILL 语义保持不变。
+
 ## 11. 隔离安装与 CLI 冒烟
 
 在 `/tmp/zevorinth-phase1.5.xdT5hm/venv` 中执行：

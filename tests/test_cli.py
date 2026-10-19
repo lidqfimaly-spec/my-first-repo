@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,10 +20,23 @@ from zevorinth.service import TaskService  # noqa: E402
 
 
 class CliTests(unittest.TestCase):
-    def test_doctor_reports_phase_one_without_overstating_model_support(self) -> None:
+    def setUp(self) -> None:
+        self._env = patch.dict(
+            os.environ,
+            {
+                "ZEVORINTH_PLANNER": "deterministic",
+                "OPENAI_API_KEY": "",
+                "ZEVORINTH_MODEL": "",
+            },
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def test_doctor_reports_phase_two_without_overstating_model_support(self) -> None:
         report = doctor_report(PROJECT_ROOT)
 
-        self.assertEqual(report["phase"], 1)
+        self.assertEqual(report["phase"], 2)
         self.assertEqual(report["hardening_phase"], "1.5")
         self.assertEqual(report["project_root"], str(PROJECT_ROOT.resolve()))
         self.assertEqual(report["runtime_dependencies"], [])
@@ -38,7 +53,7 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["project"], "Zevorinth")
-        self.assertEqual(payload["phase"], 1)
+        self.assertEqual(payload["phase"], 2)
 
     def test_run_status_and_events_are_persisted_across_cli_calls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -206,6 +221,50 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 6)
             self.assertIn("storage or execution-claim error", stderr.getvalue())
+
+    def test_llm_mode_without_configuration_fails_before_side_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--home",
+                        temp_dir,
+                        "run",
+                        "--planner",
+                        "llm",
+                        "--goal",
+                        "Create a file.",
+                        "--json",
+                    ]
+                )
+            task = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 7)
+            self.assertEqual(task["status"], "planning_failed")
+            self.assertEqual(task["error"]["code"], "missing_api_key")
+            self.assertEqual(task["execution_mode"], "not_executed")
+            task_artifacts = Path(temp_dir) / "artifacts" / task["task_id"]
+            self.assertFalse(task_artifacts.exists())
+
+    def test_doctor_never_prints_api_key_value(self) -> None:
+        sentinel = "test-only-secret-that-must-not-leak"
+        output = StringIO()
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": sentinel,
+                "ZEVORINTH_MODEL": "configured-test-model",
+            },
+            clear=False,
+        ):
+            with redirect_stdout(output):
+                exit_code = main(["doctor", "--json"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertNotIn(sentinel, output.getvalue())
+        self.assertTrue(payload["llm_planner"]["api_key_configured"])
+        self.assertEqual(payload["llm_planner"]["model"], "configured-test-model")
 
 
 if __name__ == "__main__":

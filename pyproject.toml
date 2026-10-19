@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zevorinth"
-version = "0.2.0"
+version = "0.3.0"
 description = "A bounded, evidence-first general-purpose AI agent system"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Zevorinth project" }]
 dependencies = []
+
+[project.optional-dependencies]
+llm = ["openai>=3.35.1,<4"]
 
 [project.scripts]
 zevorinth = "zevorinth.cli:main"
@@ -19,3 +22,6 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+zevorinth = ["evals/*.json"]

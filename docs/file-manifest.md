@@ -26,6 +26,48 @@
 - `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
 - `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
 
+---
+
+# 第 2 阶段新增与修改
+
+## 新增源码与评测数据
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/planning_validation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evaluation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evals/planner_cases.json`
+
+## 新增测试
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_planner_eval.py`
+
+## 新增文档
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2-llm-planner.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2-results.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/.env.example`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/pyproject.toml`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/__init__.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/models.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/state_machine.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_planner_eval.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_state_machine.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/architecture.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-1-implementation.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-1.5-results.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
 ## 运行目录说明
 
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/README.md`

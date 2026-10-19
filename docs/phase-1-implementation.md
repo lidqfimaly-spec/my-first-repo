@@ -152,3 +152,5 @@ Policy 在执行前检查：
 - 没有外部框架或数据库依赖。
 
 > Phase 1.5 更新：已增加真实 SIGKILL 测试、同任务多进程竞争测试和 SQLite 锁失败测试。上面的“没有真实崩溃恢复证明”与“没有并发任务压力测试”仅描述 Phase 1 原始提交 `752cae3`，已被后续阶段覆盖。
+
+> Phase 2 更新：新增可选 LLM Planner。模型只生成候选，最终仍通过本文件定义的 TaskService、Policy、Tool、Verifier 和 EventStore。详见 `phase-2-llm-planner.md`。

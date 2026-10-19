@@ -225,3 +225,73 @@ tests/test_sigkill.py
 - zh：HEAD `e68f74f`，0 项变化。
 
 本阶段未修改旧项目。
+
+---
+
+# 第 2 阶段执行记录
+
+## Git 基线封存
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| 当前分支 | `phase-1.5-hardening` |
+| Phase 1.5 提交 | `177c3c3 feat: harden task execution and recovery` |
+| Phase 2 分支 | `phase-2-llm-planner` |
+| Phase 1.5 文件检查 | 16 个预期修改、6 个预期新增，无清单外文件 |
+| Phase 1.5 完整测试 | 46/46 通过 |
+| `git diff --cached --check` | 退出码 0 |
+| Phase 1.5 commit | 成功，22 files，2200 insertions，191 deletions |
+
+## 官方 SDK 核对
+
+- `developers.openai.com`、`platform.openai.com` 返回 HTTP 403；
+- 在隔离环境安装官方 `openai 3.35.1`；
+- 核对 `responses.create` / `responses.parse` 签名；
+- 采用 strict JSON Schema + Responses API；
+- 客户端 `max_retries=0`，调用次数上限 1，`store=False`；
+- 没有使用未启用的真实 API Key，没有发起真实模型请求。
+
+## 实现验证
+
+| 命令 | 退出码 | 真实结果 |
+| --- | ---: | --- |
+| 完整离线 unittest | 0 | 68/68 通过，1.874 秒；原 A1–A6、并发、SIGKILL 测试继续通过 |
+| `compileall -q src tests` | 0 | 源码与测试语法通过 |
+| `eval-planner --offline` | 0 | 28/28 脚本化案例通过 |
+| 确定性基线 | 0 | 4/28 分类正确，模型调用 0 |
+| `eval-planner --online`（无配置） | 7 | 明确报告缺少 API Key，无网络请求 |
+| 隔离安装 `pip install -e '.[llm]'` | 0 | 安装 `zevorinth 0.3.0` 与 `openai 3.35.1` |
+| 安装后 `doctor --json` | 0 | `llm_planner_available=true`，Key 未配置，不打印 Key |
+| 安装后确定性真实任务 | 0 | 32 字节文件，Verifier 通过 |
+| 安装后 LLM 模式无配置 | 7 | 任务 `planning_failed`、`not_executed`，无 artifact |
+| 隔离环境完整 unittest | 0 | 68/68 通过，1.954 秒 |
+| `pip check` | 0 | No broken requirements found |
+
+实际确定性产物：
+
+- Task：`58481b9d-5325-4ef4-862a-7e6f59de46a2`
+- 文件：`/tmp/zevorinth-phase2.GxQUda/runtime/artifacts/58481b9d-5325-4ef4-862a-7e6f59de46a2/phase2.txt`
+- 大小：32 字节
+- SHA-256：`4d2ff5c373c96752b73e95acace6cc1c1b0bb3ed4c9d6fc4f7c8be498df37cab`
+
+## 离线评测
+
+```text
+mode: offline-scripted
+cases: 28/28
+contract_validity_rate: 1.0
+classification_accuracy: 1.0
+unsafe_block_rate: 1.0
+end_to_end_success_rate: 1.0
+model_calls: 26
+deterministic_baseline: 4/28
+```
+
+这些指标来自脚本化候选和测试时钟，不代表真实模型质量。未执行在线评测，因此没有在线准确率、Token、延迟或端到端结果。
+
+## 第 2 阶段旧项目审计
+
+- AutoCodePlay HEAD 仍为 `7516cfd`，未提交条目在本阶段期间由 10 增至 14；
+- Hermes HEAD `bbf27ba`，工作树 0 项变化；
+- `zh` HEAD `e68f74f`，工作树 0 项变化；
+- 本阶段只读取旧项目 Git 状态，没有修改、清理或还原任何旧项目文件。

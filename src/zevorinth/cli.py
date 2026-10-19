@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -12,14 +14,18 @@ from typing import Sequence
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
 from .event_store import EventStoreError, TaskNotFound
-from .models import Task, TaskRequest, TaskStatus
+from .evaluation import EvaluationConfigurationError, run_evaluation
+from .llm_planner import LLMPlanner, LLMPlannerConfig
+from .models import PlannerMode, Task, TaskRequest, TaskStatus
 from .planner import WRITE_TEXT_ARTIFACT
+from .planner import DeterministicPlanner
 from .service import TaskService
 
 
 STATUS_EXIT_CODES = {
     TaskStatus.SUCCEEDED: 0,
     TaskStatus.FAILED: 1,
+    TaskStatus.PLANNING_FAILED: 7,
     TaskStatus.AWAITING_CLARIFICATION: 3,
     TaskStatus.SIMULATED: 3,
     TaskStatus.BLOCKED: 4,
@@ -38,11 +44,12 @@ def _project_root(override: Path | None = None) -> Path:
 def doctor_report(project_root: Path | None = None) -> dict[str, object]:
     """Return a truthful, machine-readable snapshot of current capabilities."""
     root = _project_root(project_root)
+    llm_config = LLMPlannerConfig.from_environment()
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "project": "Zevorinth",
         "version": __version__,
-        "phase": 1,
+        "phase": 2,
         "hardening_phase": "1.5",
         "project_root": str(root),
         "python": {
@@ -59,22 +66,24 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
         "capabilities": {
             "task_runtime": True,
             "deterministic_planner": True,
-            "model_provider": False,
+            "model_provider": llm_config.validation_error() is None,
             "controlled_tool_execution": True,
             "result_verification": True,
             "durable_event_store": True,
             "resume_interrupted_task": True,
             "sqlite_execution_leases": True,
+            "llm_planner_available": importlib.util.find_spec("openai") is not None,
         },
         "task_types": [WRITE_TEXT_ARTIFACT],
+        "llm_planner": llm_config.public_report(),
         "deployment_scope": {
             "single_host_shared_sqlite": True,
             "distributed_execution": False,
         },
         "notice": (
-            "Phase 1.5 supports one deterministic artifact-writing task with "
-            "single-host SQLite execution leases. Natural-language planning, "
-            "LLM calls, and distributed execution are not implemented."
+            "Phase 2 supports deterministic and explicitly selected LLM planning "
+            "for one artifact-writing operation. LLM planning never grants tools "
+            "or bypasses local validation, Policy, verification, or leases."
         ),
     }
 
@@ -95,14 +104,41 @@ def _print_human(report: dict[str, object]) -> None:
     for name, implemented in capabilities.items():
         print(f"  {name}: {'implemented' if implemented else 'not implemented'}")
     print(f"Task types: {', '.join(report['task_types'])}")
+    llm = report.get("llm_planner")
+    if isinstance(llm, dict):
+        print(
+            "LLM planner: "
+            f"configured={llm.get('configured')} "
+            f"model={llm.get('model') or 'not configured'} "
+            f"api_key_configured={llm.get('api_key_configured')}"
+        )
     print(f"Notice: {report['notice']}")
 
 
 def _service(args: argparse.Namespace) -> TaskService:
     writer = SimulatedArtifactWriter() if getattr(args, "simulate", False) else None
+    command = getattr(args, "command", None)
+    if command in {"status", "events"}:
+        planner = DeterministicPlanner()
+    else:
+        selected = getattr(args, "planner", None)
+        if selected is None:
+            selected = os.environ.get("ZEVORINTH_PLANNER", "deterministic")
+        try:
+            mode = PlannerMode(selected)
+        except ValueError as exc:
+            raise ValueError(
+                "planner must be deterministic or llm"
+            ) from exc
+        planner = (
+            LLMPlanner.from_environment()
+            if mode is PlannerMode.LLM
+            else DeterministicPlanner()
+        )
     return TaskService(
         _project_root(args.home),
         writer=writer,
+        planner=planner,
         lease_seconds=args.lease_seconds,
         busy_timeout_ms=args.busy_timeout_ms,
     )
@@ -147,7 +183,15 @@ def _task_human(task: Task) -> str:
         f"Claim generation: {task.claim_generation}",
         f"Execution owner: {task.execution_owner or 'none'}",
         f"Lease expires: {task.lease_expires_at or 'none'}",
+        f"Planner: {task.planner_mode.value}",
     ]
+    if task.planning_metadata:
+        lines.append(
+            "Planning: "
+            f"{task.planning_metadata.get('classification', 'unknown')} "
+            f"(latency_ms={task.planning_metadata.get('latency_ms', 'n/a')}, "
+            f"model={task.planning_metadata.get('model', 'n/a')})"
+        )
     if task.plan:
         lines.append(
             f"Plan: {task.plan.planner_name} ({len(task.plan.steps)} step)"
@@ -217,6 +261,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
+    evaluation = subparsers.add_parser(
+        "eval-planner",
+        help="run scripted offline or explicitly selected online planner evaluation",
+    )
+    mode = evaluation.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--offline", action="store_true")
+    mode.add_argument("--online", action="store_true")
+    evaluation.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="maximum online cases (default: 5)",
+    )
+    evaluation.add_argument("--json", action="store_true")
+
     run = subparsers.add_parser(
         "run",
         help="submit and execute one structured artifact task",
@@ -225,6 +284,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--operation", default=WRITE_TEXT_ARTIFACT)
     run.add_argument("--artifact-path", default=None)
     run.add_argument("--content", default=None)
+    run.add_argument(
+        "--planner",
+        choices=["deterministic", "llm"],
+        default=None,
+        help="planning implementation (default: ZEVORINTH_PLANNER or deterministic)",
+    )
     run.add_argument(
         "--simulate",
         action="store_true",
@@ -249,6 +314,12 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--operation", default=None)
     resume.add_argument("--artifact-path", default=None)
     resume.add_argument("--content", default=None)
+    resume.add_argument(
+        "--planner",
+        choices=["deterministic", "llm"],
+        default=None,
+        help="planner used if interrupted planning must be retried",
+    )
     resume.add_argument("--json", action="store_true")
     return parser
 
@@ -262,6 +333,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _print_human(report)
         return 0
+    if args.command == "eval-planner":
+        try:
+            report = run_evaluation(
+                online=args.online,
+                limit=args.limit if args.online else None,
+            )
+        except EvaluationConfigurationError as exc:
+            print(f"evaluation configuration error: {exc}", file=sys.stderr)
+            return 7
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            metrics = report["metrics"]
+            assert isinstance(metrics, dict)
+            print(
+                f"Planner evaluation: {report['mode']} "
+                f"({report['passed']}/{report['case_count']} cases passed)"
+            )
+            for name in (
+                "contract_validity_rate",
+                "classification_accuracy",
+                "status_accuracy",
+                "unsafe_block_rate",
+                "invalid_plan_rate",
+                "planning_failure_rate",
+                "end_to_end_success_rate",
+                "average_latency_ms",
+                "model_calls",
+                "total_tokens",
+            ):
+                print(f"{name}: {metrics[name]}")
+            baseline = report.get("deterministic_baseline")
+            if isinstance(baseline, dict):
+                baseline_metrics = baseline.get("metrics", {})
+                if isinstance(baseline_metrics, dict):
+                    print(
+                        "Deterministic baseline: "
+                        f"{baseline.get('passed')}/{baseline.get('case_count')} cases, "
+                        f"classification_accuracy="
+                        f"{baseline_metrics.get('classification_accuracy')}, "
+                        f"model_calls={baseline_metrics.get('model_calls')}"
+                    )
+        return 0 if report["all_passed"] else 1
 
     try:
         service = _service(args)

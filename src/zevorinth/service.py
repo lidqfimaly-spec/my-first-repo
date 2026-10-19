@@ -20,8 +20,10 @@ from .models import (
     TaskStatus,
     ToolResult,
     VerificationResult,
+    PlanningClassification,
+    PlanningOutcome,
 )
-from .planner import DeterministicPlanner, PlanningError
+from .planner import DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
 from .verifier import ArtifactVerifier
@@ -61,6 +63,7 @@ class TaskService:
         project_root: Path,
         *,
         writer: ArtifactWriter | None = None,
+        planner: Planner | None = None,
         fault_hook: FaultHook | None = None,
         clock: Callable[[], str] = utc_now,
         lease_seconds: float = 60.0,
@@ -77,7 +80,7 @@ class TaskService:
         self.owner_id = owner_id or str(uuid4())
         self.writer = writer or RealArtifactWriter(self.artifacts_root)
         self.fault_hook = fault_hook
-        self.planner = DeterministicPlanner()
+        self.planner = planner or DeterministicPlanner()
         self.policy = ArtifactPolicy()
         self.verifier = ArtifactVerifier(self.artifacts_root)
         self.store = EventStore(
@@ -96,6 +99,7 @@ class TaskService:
             execution_mode=ExecutionMode.NOT_EXECUTED,
             attempt_id=str(uuid4()),
             phase="queued",
+            planner_mode=self.planner.mode,
             created_at=now,
             updated_at=now,
         )
@@ -111,25 +115,10 @@ class TaskService:
                 },
             ),
         )
-        missing = missing_required_fields(request)
-        if missing:
-            task, _ = self.store.transition(
-                task.task_id,
-                TaskStatus.AWAITING_CLARIFICATION,
-                EventType.CLARIFICATION_REQUIRED,
-                self.clock(),
-                payload={"missing_fields": missing},
-                updates={
-                    "missing_fields": missing,
-                    "phase": "awaiting_clarification",
-                },
-            )
         return task
 
     def submit(self, request: TaskRequest) -> Task:
         task = self.enqueue(request)
-        if task.status is TaskStatus.AWAITING_CLARIFICATION:
-            return task
         return self.execute_task(task.task_id)
 
     def execute_task(self, task_id: str) -> Task:
@@ -285,7 +274,11 @@ class TaskService:
 
     def _lease_deadline(self, now: str) -> str:
         current = datetime.fromisoformat(now)
-        return (current + timedelta(seconds=self.lease_seconds)).isoformat(
+        required = max(
+            self.lease_seconds,
+            float(getattr(self.planner, "required_lease_seconds", 0.0)),
+        )
+        return (current + timedelta(seconds=required)).isoformat(
             timespec="milliseconds"
         )
 
@@ -310,35 +303,175 @@ class TaskService:
         )
 
     def _plan_and_execute(self, task: Task, lease_token: str) -> Task:
-        try:
-            plan = self.planner.plan(task.request)
-        except PlanningError as exc:
-            return self._block(
-                task,
-                lease_token,
-                code=exc.code,
-                reason=exc.message,
-                phase="planning_rejected",
-                mark_not_executed=True,
-            )
-        running, _ = self.store.transition(
+        return self._plan_with_current_status(task, lease_token)
+
+    def _plan_with_current_status(self, task: Task, lease_token: str) -> Task:
+        task, _ = self.store.record_event_and_update(
             task.task_id,
+            EventType.PLANNING_STARTED,
+            self.clock(),
+            payload={
+                "planner_mode": self.planner.mode.value,
+                "planner_name": self.planner.name,
+            },
+            updates={"phase": "planning"},
+            lease_token=lease_token,
+        )
+        try:
+            outcome = self.planner.plan_request(task.request)
+        except Exception as exc:
+            outcome = PlanningOutcome(
+                classification=PlanningClassification.FAILED,
+                error_code="planner_internal_error",
+                error_message=f"planner raised {type(exc).__name__}",
+                metadata={
+                    "planner_mode": self.planner.mode.value,
+                    "planner_name": self.planner.name,
+                },
+            )
+
+        planning_metadata = {
+            "classification": outcome.classification.value,
+            **dict(outcome.metadata),
+        }
+        if outcome.classification is PlanningClassification.CLARIFICATION:
+            clarified_request = outcome.request or task.request
+            missing = outcome.missing_fields or missing_required_fields(clarified_request)
+            clarified, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.AWAITING_CLARIFICATION,
+                EventType.PLANNING_CLARIFICATION,
+                self.clock(),
+                payload={
+                    "missing_fields": missing,
+                    "clarification_questions": outcome.clarification_questions,
+                    "planning_metadata": planning_metadata,
+                },
+                updates={
+                    **self._clear_claim_updates(),
+                    "request": clarified_request,
+                    "planner_mode": self.planner.mode,
+                    "missing_fields": missing,
+                    "clarification_questions": outcome.clarification_questions,
+                    "planning_metadata": planning_metadata,
+                    "phase": "awaiting_clarification",
+                    "execution_mode": ExecutionMode.NOT_EXECUTED,
+                },
+                lease_token=lease_token,
+            )
+            return clarified
+        if outcome.classification is PlanningClassification.UNSUPPORTED:
+            blocked, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.BLOCKED,
+                EventType.PLANNING_REJECTED,
+                self.clock(),
+                payload={
+                    "code": outcome.error_code,
+                    "reason": outcome.error_message,
+                    "planning_metadata": planning_metadata,
+                    "planner_mode": self.planner.mode.value,
+                },
+                updates={
+                    **self._clear_claim_updates(),
+                    "planning_metadata": planning_metadata,
+                    "planner_mode": self.planner.mode,
+                    "phase": "planning_unsupported",
+                    "execution_mode": ExecutionMode.NOT_EXECUTED,
+                    "error": TaskError(
+                        outcome.error_code or "unsupported_request",
+                        outcome.error_message or "request is not supported",
+                    ),
+                },
+                lease_token=lease_token,
+            )
+            return blocked
+        if outcome.classification is PlanningClassification.FAILED:
+            failed, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.PLANNING_FAILED,
+                EventType.PLANNING_FAILED,
+                self.clock(),
+                payload={
+                    "code": outcome.error_code,
+                    "reason": outcome.error_message,
+                    "planning_metadata": planning_metadata,
+                },
+                updates={
+                    **self._clear_claim_updates(),
+                    "planning_metadata": planning_metadata,
+                    "planner_mode": self.planner.mode,
+                    "phase": "planning_failed",
+                    "execution_mode": ExecutionMode.NOT_EXECUTED,
+                    "error": TaskError(
+                        outcome.error_code or "planning_failed",
+                        outcome.error_message or "planning failed",
+                    ),
+                },
+                lease_token=lease_token,
+            )
+            return failed
+
+        if outcome.request is None or outcome.plan is None:
+            failed, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.PLANNING_FAILED,
+                EventType.PLANNING_FAILED,
+                self.clock(),
+                payload={
+                    "code": "incomplete_planning_outcome",
+                    "planning_metadata": planning_metadata,
+                },
+                updates={
+                    **self._clear_claim_updates(),
+                    "planning_metadata": planning_metadata,
+                    "planner_mode": self.planner.mode,
+                    "phase": "planning_failed",
+                    "execution_mode": ExecutionMode.NOT_EXECUTED,
+                    "error": TaskError(
+                        "incomplete_planning_outcome",
+                        "planned outcome is missing request or plan",
+                    ),
+                },
+                lease_token=lease_token,
+            )
+            return failed
+
+        planned, _ = self.store.record_event_and_update(
+            task.task_id,
+            EventType.PLANNING_COMPLETED,
+            self.clock(),
+            payload={"planning_metadata": planning_metadata},
+            updates={
+                "request": outcome.request,
+                "plan": outcome.plan,
+                "planner_mode": self.planner.mode,
+                "planning_metadata": planning_metadata,
+                "clarification_questions": [],
+                "missing_fields": [],
+                "error": None,
+                "phase": "plan_ready",
+            },
+            lease_token=lease_token,
+        )
+        running, _ = self.store.transition(
+            planned.task_id,
             TaskStatus.RUNNING,
             EventType.TASK_PLANNED,
             self.clock(),
-            payload={"plan": plan.to_dict()},
-            updates={"plan": plan, "phase": "planned"},
+            payload={"plan": outcome.plan.to_dict()},
+            updates={"phase": "planned"},
             lease_token=lease_token,
         )
         decision = self.policy.evaluate(
             request=running.request,
-            plan=plan,
+            plan=outcome.plan,
             task_id=running.task_id,
             artifacts_root=self.artifacts_root,
         )
         if not decision.allowed:
             return self._block(
-                running,
+                task,
                 lease_token,
                 code=decision.code,
                 reason=decision.reason,
@@ -367,13 +500,7 @@ class TaskService:
 
         plan = task.plan
         if plan is None:
-            return self._fail(
-                task,
-                lease_token,
-                code="missing_plan_checkpoint",
-                message="interrupted task has no persisted plan",
-                phase="failed",
-            )
+            return self._plan_with_current_status(task, lease_token)
         decision = self.policy.evaluate(
             request=task.request,
             plan=plan,

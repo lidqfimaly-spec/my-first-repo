@@ -19,6 +19,7 @@ class TaskStatus(str, Enum):
     VERIFYING = "verifying"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    PLANNING_FAILED = "planning_failed"
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
     SIMULATED = "simulated"
@@ -30,8 +31,25 @@ class ExecutionMode(str, Enum):
     SIMULATED = "simulated"
 
 
+class PlannerMode(str, Enum):
+    DETERMINISTIC = "deterministic"
+    LLM = "llm"
+
+
+class PlanningClassification(str, Enum):
+    PLANNED = "planned"
+    CLARIFICATION = "clarification"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+
+
 class EventType(str, Enum):
     TASK_CREATED = "task_created"
+    PLANNING_STARTED = "planning_started"
+    PLANNING_COMPLETED = "planning_completed"
+    PLANNING_CLARIFICATION = "planning_clarification"
+    PLANNING_REJECTED = "planning_rejected"
+    PLANNING_FAILED = "planning_failed"
     CLARIFICATION_REQUIRED = "clarification_required"
     CLARIFICATION_UPDATED = "clarification_updated"
     TASK_PLANNED = "task_planned"
@@ -317,6 +335,9 @@ class Task:
     lease_token: str | None = None
     lease_expires_at: str | None = None
     claim_generation: int = 0
+    planner_mode: PlannerMode = PlannerMode.DETERMINISTIC
+    planning_metadata: JsonObject = field(default_factory=dict)
+    clarification_questions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -338,6 +359,9 @@ class Task:
             "lease_token": self.lease_token,
             "lease_expires_at": self.lease_expires_at,
             "claim_generation": self.claim_generation,
+            "planner_mode": self.planner_mode.value,
+            "planning_metadata": self.planning_metadata,
+            "clarification_questions": list(self.clarification_questions),
         }
 
     @classmethod
@@ -366,6 +390,11 @@ class Task:
             lease_token=data.get("lease_token"),
             lease_expires_at=data.get("lease_expires_at"),
             claim_generation=int(data.get("claim_generation", 0)),
+            planner_mode=PlannerMode(data.get("planner_mode", "deterministic")),
+            planning_metadata=dict(data.get("planning_metadata", {})),
+            clarification_questions=[
+                str(item) for item in data.get("clarification_questions", [])
+            ],
         )
 
 
@@ -381,3 +410,27 @@ class ClaimResult:
     acquired: bool
     task: Task
     reason: str
+
+
+@dataclass(slots=True)
+class PlanningOutcome:
+    classification: PlanningClassification
+    request: TaskRequest | None = None
+    plan: Plan | None = None
+    missing_fields: list[str] = field(default_factory=list)
+    clarification_questions: list[str] = field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+    metadata: JsonObject = field(default_factory=dict)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "classification": self.classification.value,
+            "request": self.request.to_dict() if self.request else None,
+            "plan": self.plan.to_dict() if self.plan else None,
+            "missing_fields": list(self.missing_fields),
+            "clarification_questions": list(self.clarification_questions),
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+            "metadata": self.metadata,
+        }
