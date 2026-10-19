@@ -556,3 +556,42 @@ ZEVORINTH_MODEL=deepseek-flash
 - 新报告 SHA-256：`d117bd7661202d9cef89f189e8b96a311f535e9a9635d905530d549812508761`；
 - Phase 2.5 报告哈希保持 `9379a1efa8484ddb03c8f8c6ed9da44447b6d0087e5c8b8f6fccf86e1f006476`；
 - 结果与限制见 `docs/phase-2.7-results.md`。
+
+---
+
+# 第 3.2 阶段执行记录
+
+## 实现范围
+
+- 增加 Conversation/Message/ConversationTurn 领域模型；
+- 增加会话创建、会话读取、消息追加和有界历史读取；
+- 消息/turn/conversation event 在同一写事务中提交；
+- 相同 `client_message_id` + 相同内容幂等返回；
+- 相同 ID + 不同内容抛出 `MessageConflict`；
+- TaskService 支持可选 `conversation_id`/`turn_id`；
+- task、`task_created`、`task_linked` 和 turn 关联在同一事务中提交；
+- 新增 `conversation create/send/history` CLI；
+- `run` 支持 `--conversation-id`/`--turn-id`。
+
+## 验证
+
+| 检查 | 结果 |
+| --- | --- |
+| ConversationStore 测试 | 6/6 通过 |
+| ConversationService 测试 | 5/5 通过 |
+| Task conversation 测试 | 5/5 通过 |
+| Conversation CLI 测试 | 4/4 通过 |
+| Conversation schema 测试 | 16/16 通过 |
+| 服务层并发场景 | 20 轮，0 失败 |
+| 系统 Python 完整 unittest | 134/134 通过，exit 0 |
+| 隔离环境完整 unittest | 134/134 通过，exit 0 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version 保持 3；
+- 没有真实模型 API 调用；
+- 没有在线评测；
+- 没有实现意图分类、上下文压缩或自动任务续接；
+- 未提交、未推送。

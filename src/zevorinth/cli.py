@@ -12,7 +12,16 @@ from typing import Sequence
 
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
-from .event_store import EventStoreError, TaskNotFound
+from .conversation_service import ConversationService
+from .event_store import (
+    ActiveTaskConflict,
+    ConversationNotFound,
+    ConversationTurnNotFound,
+    EventStoreError,
+    MessageConflict,
+    TaskLinkConflict,
+    TaskNotFound,
+)
 from .evaluation import (
     DEFAULT_PILOT,
     DEFAULT_RETEST_PILOT,
@@ -240,6 +249,49 @@ def _print_task(task: Task, as_json: bool) -> None:
         print(_task_human(task))
 
 
+def _parse_json_object(raw: str | None) -> dict[str, object] | None:
+    if raw is None:
+        return None
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("metadata must be a JSON object")
+    return value
+
+
+def _print_conversation(conversation: object, as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                conversation.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    print(f"Conversation: {conversation.conversation_id}")
+    print(f"Status: {conversation.status.value}")
+    print(f"Version: {conversation.version}")
+
+
+def _print_history(messages: list[object], as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                [message.to_dict() for message in messages],
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    for message in messages:
+        print(
+            f"{message.created_at} [{message.role.value}] "
+            f"{message.message_id}: {message.content}"
+        )
+
+
 def _exit_code(task: Task) -> int:
     return STATUS_EXIT_CODES[task.status]
 
@@ -272,6 +324,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="report environment and implemented capabilities",
     )
     doctor.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    conversation = subparsers.add_parser(
+        "conversation",
+        help="create conversations, append idempotent messages, and read history",
+    )
+    conversation_sub = conversation.add_subparsers(
+        dest="conversation_command",
+        required=True,
+    )
+    create_conversation = conversation_sub.add_parser("create")
+    create_conversation.add_argument("--conversation-id", default=None)
+    create_conversation.add_argument("--metadata", default=None)
+    create_conversation.add_argument("--json", action="store_true")
+    send_message = conversation_sub.add_parser("send")
+    send_message.add_argument("conversation_id")
+    send_message.add_argument("--content", required=True)
+    send_message.add_argument("--client-message-id", required=True)
+    send_message.add_argument("--metadata", default=None)
+    send_message.add_argument("--json", action="store_true")
+    history = conversation_sub.add_parser("history")
+    history.add_argument("conversation_id")
+    history.add_argument("--limit", type=int, default=50)
+    history.add_argument("--json", action="store_true")
 
     evaluation = subparsers.add_parser(
         "eval-planner",
@@ -319,6 +394,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--operation", default=WRITE_TEXT_ARTIFACT)
     run.add_argument("--artifact-path", default=None)
     run.add_argument("--content", default=None)
+    run.add_argument("--conversation-id", default=None)
+    run.add_argument("--turn-id", default=None)
     run.add_argument(
         "--planner",
         choices=["deterministic", "llm"],
@@ -368,6 +445,57 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _print_human(report)
         return 0
+    if args.command == "conversation":
+        try:
+            service = ConversationService(_project_root(args.home))
+            if args.conversation_command == "create":
+                conversation = service.create_conversation(
+                    conversation_id=args.conversation_id,
+                    metadata=_parse_json_object(args.metadata),
+                )
+                _print_conversation(conversation, args.json)
+                return 0
+            if args.conversation_command == "send":
+                turn, message = service.append_user_message(
+                    args.conversation_id,
+                    args.content,
+                    client_message_id=args.client_message_id,
+                    metadata=_parse_json_object(args.metadata),
+                )
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "turn": turn.to_dict(),
+                                "message": message.to_dict(),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Turn: {turn.turn_id} (index={turn.turn_index})")
+                    print(f"Message: {message.message_id} ({message.byte_count} bytes)")
+                return 0
+            messages = service.history(
+                args.conversation_id,
+                limit=args.limit,
+            )
+            _print_history(messages, args.json)
+            return 0
+        except ConversationNotFound:
+            print(f"conversation not found: {args.conversation_id}", file=sys.stderr)
+            return 2
+        except MessageConflict as exc:
+            print(f"message conflict: {exc}", file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            print(f"invalid conversation request: {exc}", file=sys.stderr)
+            return 2
+        except EventStoreError as exc:
+            print(f"storage error: {exc}", file=sys.stderr)
+            return 6
     if args.command == "eval-planner":
         try:
             if args.offline and any(
@@ -519,7 +647,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         service = _service(args)
         if args.command == "run":
-            task = service.submit(_request_from_args(args))
+            task = service.submit(
+                _request_from_args(args),
+                conversation_id=args.conversation_id,
+                turn_id=args.turn_id,
+            )
             _print_task(task, args.json)
             return _exit_code(task)
         if args.command == "status":
@@ -550,6 +682,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _exit_code(task)
     except TaskNotFound:
         print(f"task not found: {args.task_id}", file=sys.stderr)
+        return 2
+    except ConversationNotFound:
+        print(
+            f"conversation not found: {getattr(args, 'conversation_id', None)}",
+            file=sys.stderr,
+        )
+        return 2
+    except ConversationTurnNotFound:
+        print(f"conversation turn not found: {args.turn_id}", file=sys.stderr)
+        return 2
+    except (TaskLinkConflict, ActiveTaskConflict) as exc:
+        print(f"task conversation conflict: {exc}", file=sys.stderr)
         return 2
     except ValueError as exc:
         print(f"invalid request: {exc}", file=sys.stderr)

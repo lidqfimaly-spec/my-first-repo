@@ -3,20 +3,43 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
+from uuid import uuid4
 
-from .models import ClaimResult, Event, EventType, Task, TaskError, TaskStatus
+from .models import (
+    ClaimResult,
+    Conversation,
+    ConversationStatus,
+    ConversationTurn,
+    Event,
+    EventType,
+    Message,
+    MessageRole,
+    Task,
+    TaskError,
+    TaskStatus,
+    TurnStatus,
+)
 from .state_machine import ensure_transition
 
 
 class TaskNotFound(LookupError):
+    pass
+
+
+class ConversationNotFound(LookupError):
+    pass
+
+
+class ConversationTurnNotFound(LookupError):
     pass
 
 
@@ -36,9 +59,22 @@ class ClaimLost(EventStoreError):
     pass
 
 
+class MessageConflict(EventStoreError):
+    pass
+
+
+class TaskLinkConflict(EventStoreError):
+    pass
+
+
+class ActiveTaskConflict(EventStoreError):
+    pass
+
+
 class EventStore:
     SCHEMA_VERSION = 3
     LEGACY_SCHEMA_VERSION = 2
+    MAX_CONVERSATION_HISTORY = 200
     ACTIVE_TASK_STATUSES = (
         "queued",
         "running",
@@ -104,7 +140,13 @@ class EventStore:
         os.chmod(self.database_path, 0o600)
 
     def _preflight_schema_version(self) -> int | None:
-        """Reject a newer/ambiguous schema before opening a write connection."""
+        """Peek at a committed version and reject only a newer schema early.
+
+        Structural checks are intentionally deferred until the write transaction
+        holds BEGIN IMMEDIATE, where the schema snapshot is consistent with the
+        initializer that owns the lock. A malformed or partially visible schema
+        must not be mistaken for a safely initialized database here.
+        """
         if not self.database_path.exists():
             return None
         connection = sqlite3.connect(
@@ -114,12 +156,21 @@ class EventStore:
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA foreign_keys = ON")
-            version = self._read_schema_version(connection)
-            if version is None and self._has_user_tables(connection):
-                raise SchemaVersionError(
-                    "database has user tables but no metadata.schema_version"
-                )
-            if version is not None and version > self.SCHEMA_VERSION:
+            if not self._table_exists(connection, "metadata"):
+                return None
+            try:
+                row = connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'"
+                ).fetchone()
+            except sqlite3.DatabaseError:
+                return None
+            if row is None:
+                return None
+            try:
+                version = int(row["value"])
+            except (TypeError, ValueError):
+                return None
+            if version > self.SCHEMA_VERSION:
                 raise SchemaVersionError(
                     f"database schema version {version} is newer than "
                     f"supported version {self.SCHEMA_VERSION}"
@@ -697,11 +748,446 @@ class EventStore:
             if connection is not None:
                 connection.close()
 
-    def create_task(self, task: Task, event: Event) -> tuple[Task, Event]:
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+    def create_conversation(
+        self,
+        *,
+        conversation_id: str | None = None,
+        now: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Conversation:
+        timestamp = now or self._now()
+        conversation = Conversation(
+            conversation_id=conversation_id or str(uuid4()),
+            status=ConversationStatus.ACTIVE,
+            version=1,
+            created_at=timestamp,
+            updated_at=timestamp,
+            metadata=dict(metadata or {}),
+        )
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    conversation_id, status, version,
+                    created_at, updated_at, metadata_json
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation.conversation_id,
+                    conversation.status.value,
+                    conversation.version,
+                    conversation.created_at,
+                    conversation.updated_at,
+                    json.dumps(
+                        conversation.metadata,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ),
+            )
+            self._insert_conversation_event(
+                connection,
+                conversation.conversation_id,
+                turn_id=None,
+                task_id=None,
+                event_type="conversation_created",
+                occurred_at=timestamp,
+                payload={"status": conversation.status.value},
+            )
+            connection.commit()
+        return conversation
+
+    def get_conversation(self, conversation_id: str) -> Conversation | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT conversation_id, status, version,
+                       created_at, updated_at, metadata_json
+                FROM conversations
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Conversation(
+            conversation_id=str(row["conversation_id"]),
+            status=ConversationStatus(row["status"]),
+            version=int(row["version"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            metadata=json.loads(row["metadata_json"]),
+        )
+
+    def append_user_message(
+        self,
+        conversation_id: str,
+        content: str,
+        *,
+        client_message_id: str | None = None,
+        now: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> tuple[ConversationTurn, Message]:
+        if not isinstance(content, str) or not content:
+            raise ValueError("content must be a non-empty string")
+        if client_message_id is not None and not client_message_id.strip():
+            raise ValueError("client_message_id must not be empty")
+        timestamp = now or self._now()
+        turn_id = str(uuid4())
+        message_id = str(uuid4())
+        encoded = content.encode("utf-8")
+        digest = hashlib.sha256(encoded).hexdigest()
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone() is None:
+                raise ConversationNotFound(conversation_id)
+            if client_message_id is not None:
+                existing = connection.execute(
+                    """
+                    SELECT m.message_id, m.conversation_id, m.turn_id,
+                           m.role, m.kind, m.content, m.content_sha256,
+                           m.byte_count, m.client_message_id, m.created_at,
+                           m.metadata_json,
+                           t.turn_index, t.status AS turn_status,
+                           t.intent_kind, t.task_id,
+                           t.created_at AS turn_created_at,
+                           t.updated_at AS turn_updated_at
+                    FROM messages AS m
+                    JOIN conversation_turns AS t ON t.turn_id = m.turn_id
+                    WHERE m.conversation_id = ?
+                      AND m.client_message_id = ?
+                    """,
+                    (conversation_id, client_message_id),
+                ).fetchone()
+                if existing is not None:
+                    existing_message = Message(
+                        message_id=str(existing["message_id"]),
+                        conversation_id=str(existing["conversation_id"]),
+                        turn_id=str(existing["turn_id"]),
+                        role=MessageRole(existing["role"]),
+                        kind=str(existing["kind"]),
+                        content=str(existing["content"]),
+                        content_sha256=str(existing["content_sha256"]),
+                        byte_count=int(existing["byte_count"]),
+                        client_message_id=(
+                            str(existing["client_message_id"])
+                            if existing["client_message_id"] is not None
+                            else None
+                        ),
+                        created_at=str(existing["created_at"]),
+                        metadata=json.loads(existing["metadata_json"]),
+                    )
+                    if (
+                        existing_message.content_sha256 == digest
+                        and existing_message.content == content
+                        and existing_message.byte_count == len(encoded)
+                    ):
+                        existing_turn = ConversationTurn(
+                            turn_id=existing_message.turn_id,
+                            conversation_id=conversation_id,
+                            turn_index=int(existing["turn_index"]),
+                            status=TurnStatus(existing["turn_status"]),
+                            intent_kind=(
+                                str(existing["intent_kind"])
+                                if existing["intent_kind"] is not None
+                                else None
+                            ),
+                            task_id=(
+                                str(existing["task_id"])
+                                if existing["task_id"] is not None
+                                else None
+                            ),
+                            created_at=str(existing["turn_created_at"]),
+                            updated_at=str(existing["turn_updated_at"]),
+                        )
+                        connection.rollback()
+                        return existing_turn, existing_message
+                    raise MessageConflict(
+                        "client_message_id exists with different content"
+                    )
+            row = connection.execute(
+                """
+                SELECT COALESCE(MAX(turn_index), -1) + 1
+                FROM conversation_turns
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ).fetchone()
+            turn_index = int(row[0])
+            turn = ConversationTurn(
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                turn_index=turn_index,
+                status=TurnStatus.RECEIVED,
+                intent_kind=None,
+                task_id=None,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            message = Message(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                role=MessageRole.USER,
+                kind="user_input",
+                content=content,
+                content_sha256=digest,
+                byte_count=len(encoded),
+                client_message_id=client_message_id,
+                created_at=timestamp,
+                metadata=dict(metadata or {}),
+            )
+            connection.execute(
+                """
+                INSERT INTO conversation_turns(
+                    turn_id, conversation_id, turn_index, status,
+                    intent_kind, task_id, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    turn.turn_id,
+                    turn.conversation_id,
+                    turn.turn_index,
+                    turn.status.value,
+                    turn.intent_kind,
+                    turn.task_id,
+                    turn.created_at,
+                    turn.updated_at,
+                ),
+            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO messages(
+                        message_id, conversation_id, turn_id, role, kind,
+                        content, content_sha256, byte_count,
+                        client_message_id, created_at, metadata_json
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message.message_id,
+                        message.conversation_id,
+                        message.turn_id,
+                        message.role.value,
+                        message.kind,
+                        message.content,
+                        message.content_sha256,
+                        message.byte_count,
+                        message.client_message_id,
+                        message.created_at,
+                        json.dumps(
+                            message.metadata,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise MessageConflict(
+                    "client_message_id already exists in this conversation"
+                ) from exc
+            self._insert_conversation_event(
+                connection,
+                conversation_id,
+                turn_id=turn.turn_id,
+                task_id=None,
+                event_type="message_recorded",
+                occurred_at=timestamp,
+                payload={
+                    "message_id": message.message_id,
+                    "turn_id": turn.turn_id,
+                    "content_sha256": message.content_sha256,
+                    "byte_count": message.byte_count,
+                },
+            )
+            updated = connection.execute(
+                """
+                UPDATE conversations
+                SET updated_at = ?, version = version + 1
+                WHERE conversation_id = ?
+                """,
+                (timestamp, conversation_id),
+            )
+            if updated.rowcount != 1:
+                raise ConversationNotFound(conversation_id)
+            connection.commit()
+        return turn, message
+
+    def list_conversation_messages(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[Message]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if limit > self.MAX_CONVERSATION_HISTORY:
+            raise ValueError(
+                f"limit exceeds the {self.MAX_CONVERSATION_HISTORY} message cap"
+            )
+        with self._connection() as connection:
+            if connection.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone() is None:
+                raise ConversationNotFound(conversation_id)
+            rows = connection.execute(
+                """
+                SELECT m.message_id, m.conversation_id, m.turn_id,
+                       m.role, m.kind, m.content, m.content_sha256,
+                       m.byte_count, m.client_message_id, m.created_at,
+                       m.metadata_json
+                FROM messages AS m
+                JOIN conversation_turns AS t ON t.turn_id = m.turn_id
+                WHERE m.conversation_id = ?
+                ORDER BY t.turn_index ASC, m.created_at ASC, m.message_id ASC
+                LIMIT ?
+                """,
+                (conversation_id, limit),
+            ).fetchall()
+        return [
+            Message(
+                message_id=str(row["message_id"]),
+                conversation_id=str(row["conversation_id"]),
+                turn_id=str(row["turn_id"]),
+                role=MessageRole(row["role"]),
+                kind=str(row["kind"]),
+                content=str(row["content"]),
+                content_sha256=str(row["content_sha256"]),
+                byte_count=int(row["byte_count"]),
+                client_message_id=(
+                    str(row["client_message_id"])
+                    if row["client_message_id"] is not None
+                    else None
+                ),
+                created_at=str(row["created_at"]),
+                metadata=json.loads(row["metadata_json"]),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _insert_conversation_event(
+        connection: sqlite3.Connection,
+        conversation_id: str,
+        *,
+        turn_id: str | None,
+        task_id: str | None,
+        event_type: str,
+        occurred_at: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO conversation_events(
+                event_id, conversation_id, turn_id, task_id,
+                event_type, occurred_at, payload_json
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid4()),
+                conversation_id,
+                turn_id,
+                task_id,
+                event_type,
+                occurred_at,
+                json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
+    def create_task(
+        self,
+        task: Task,
+        event: Event,
+        *,
+        turn_id: str | None = None,
+    ) -> tuple[Task, Event]:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if task.conversation_id is not None:
+                if connection.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                    (task.conversation_id,),
+                ).fetchone() is None:
+                    raise ConversationNotFound(task.conversation_id)
+            if turn_id is not None:
+                if task.conversation_id is None:
+                    raise TaskLinkConflict(
+                        "turn association requires a conversation_id"
+                    )
+                turn = connection.execute(
+                    """
+                    SELECT conversation_id, task_id
+                    FROM conversation_turns
+                    WHERE turn_id = ?
+                    """,
+                    (turn_id,),
+                ).fetchone()
+                if turn is None:
+                    raise ConversationTurnNotFound(turn_id)
+                if turn["conversation_id"] != task.conversation_id:
+                    raise TaskLinkConflict(
+                        "task and turn belong to different conversations"
+                    )
+                if turn["task_id"] is not None:
+                    raise TaskLinkConflict("turn is already linked to a task")
+            if task.conversation_id is not None:
+                placeholders = ", ".join(
+                    "?" for _ in self.ACTIVE_TASK_STATUSES
+                )
+                active = connection.execute(
+                    f"""
+                    SELECT 1 FROM tasks
+                    WHERE conversation_id = ?
+                      AND status IN ({placeholders})
+                    """,
+                    (task.conversation_id, *self.ACTIVE_TASK_STATUSES),
+                ).fetchone()
+                if active is not None:
+                    raise ActiveTaskConflict(
+                        "conversation already has an active task"
+                    )
             self._insert_task(connection, task)
             stored_event = self._insert_event(connection, event)
+            if turn_id is not None:
+                cursor = connection.execute(
+                    """
+                    UPDATE conversation_turns
+                    SET task_id = ?, updated_at = ?
+                    WHERE turn_id = ?
+                      AND conversation_id = ?
+                      AND task_id IS NULL
+                    """,
+                    (
+                        task.task_id,
+                        task.updated_at,
+                        turn_id,
+                        task.conversation_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise TaskLinkConflict("turn association changed concurrently")
+                self._insert_conversation_event(
+                    connection,
+                    task.conversation_id,
+                    turn_id=turn_id,
+                    task_id=task.task_id,
+                    event_type="task_linked",
+                    occurred_at=task.created_at,
+                    payload={
+                        "task_id": task.task_id,
+                        "turn_id": turn_id,
+                    },
+                )
             connection.commit()
         return task, stored_event
 

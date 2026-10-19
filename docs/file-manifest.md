@@ -104,6 +104,32 @@
 
 ---
 
+# 第 3.2 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/conversation_service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_conversation_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_conversation_service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_task_conversation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_conversation_cli.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3-design.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/event_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/models.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_conversation_schema.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+Schema version 保持 3；运行产物和 `.idea/` 不纳入源码清单。
+
+---
+
 # 第 2 阶段新增与修改
 
 ## 新增源码与评测数据

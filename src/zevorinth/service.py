@@ -90,7 +90,13 @@ class TaskService:
         self.store.initialize()
         self.recover_expired_leases()
 
-    def enqueue(self, request: TaskRequest) -> Task:
+    def enqueue(
+        self,
+        request: TaskRequest,
+        *,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Task:
         now = self.clock()
         task = Task(
             task_id=str(uuid4()),
@@ -102,6 +108,7 @@ class TaskService:
             planner_mode=self.planner.mode,
             created_at=now,
             updated_at=now,
+            conversation_id=conversation_id,
         )
         task, _ = self.store.create_task(
             task,
@@ -112,13 +119,26 @@ class TaskService:
                 {
                     "operation": request.operation,
                     "goal_present": bool(request.goal),
+                    "conversation_id": conversation_id,
+                    "turn_id": turn_id,
                 },
             ),
+            turn_id=turn_id,
         )
         return task
 
-    def submit(self, request: TaskRequest) -> Task:
-        task = self.enqueue(request)
+    def submit(
+        self,
+        request: TaskRequest,
+        *,
+        conversation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Task:
+        task = self.enqueue(
+            request,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
         return self.execute_task(task.task_id)
 
     def execute_task(self, task_id: str) -> Task:

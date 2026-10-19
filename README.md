@@ -191,6 +191,43 @@ ZEVORINTH_MODEL=deepseek-flash \
 
 该预检的 `selected_case_ids` 必须严格为 `clarify_ambiguous_goal` 和 `unsupported_shell`，请求上限为 2，重试为 0。上面的可执行文件必须来自已安装 `openai>=3.35.1` 的隔离环境；本机系统 Python 的旧 SDK 不适用。用户批准后把 `--preflight` 移除才会发起请求。预检记录见 `docs/phase-2.7-preflight.md`，实际 2/2 在线结果与限制见 `docs/phase-2.7-results.md`。
 
+## 会话持久化 CLI
+
+当前提供基础会话命令，不自动创建任务或执行工具：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  conversation create --conversation-id demo --json
+
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  conversation send demo \
+  --content "继续完善这个任务" \
+  --client-message-id request-1 \
+  --json
+
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  conversation history demo --limit 20 --json
+```
+
+需要把任务绑定到已有 turn 时，可使用：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  run \
+  --conversation-id demo \
+  --turn-id TURN_ID \
+  --goal "创建绑定会话的任务" \
+  --artifact-path "result.txt" \
+  --content "verified" \
+  --json
+```
+
+相同 `client-message-id` 和相同内容返回原消息与 turn；相同 ID 但内容不同会明确报冲突。会话消息持久化不等同于任务执行，自动多轮规划和上下文压缩仍未完成。
+
 ## 模拟与未执行
 
 ```bash

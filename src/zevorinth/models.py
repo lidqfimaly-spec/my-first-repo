@@ -31,6 +31,20 @@ class ExecutionMode(str, Enum):
     SIMULATED = "simulated"
 
 
+class ConversationStatus(str, Enum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class MessageRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class TurnStatus(str, Enum):
+    RECEIVED = "received"
+
+
 class PlannerMode(str, Enum):
     DETERMINISTIC = "deterministic"
     LLM = "llm"
@@ -402,6 +416,130 @@ class Task:
             clarification_questions=[
                 str(item) for item in data.get("clarification_questions", [])
             ],
+        )
+
+
+@dataclass(slots=True)
+class Conversation:
+    conversation_id: str
+    status: ConversationStatus
+    version: int
+    created_at: str
+    updated_at: str
+    metadata: JsonObject = field(default_factory=dict)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "conversation_id": self.conversation_id,
+            "status": self.status.value,
+            "version": self.version,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Conversation":
+        return cls(
+            conversation_id=str(data["conversation_id"]),
+            status=ConversationStatus(data["status"]),
+            version=int(data["version"]),
+            created_at=str(data["created_at"]),
+            updated_at=str(data["updated_at"]),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(slots=True)
+class Message:
+    message_id: str
+    conversation_id: str
+    turn_id: str
+    role: MessageRole
+    kind: str
+    content: str
+    content_sha256: str
+    byte_count: int
+    client_message_id: str | None
+    created_at: str
+    metadata: JsonObject = field(default_factory=dict)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "message_id": self.message_id,
+            "conversation_id": self.conversation_id,
+            "turn_id": self.turn_id,
+            "role": self.role.value,
+            "kind": self.kind,
+            "content": self.content,
+            "content_sha256": self.content_sha256,
+            "byte_count": self.byte_count,
+            "client_message_id": self.client_message_id,
+            "created_at": self.created_at,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Message":
+        return cls(
+            message_id=str(data["message_id"]),
+            conversation_id=str(data["conversation_id"]),
+            turn_id=str(data["turn_id"]),
+            role=MessageRole(data["role"]),
+            kind=str(data["kind"]),
+            content=str(data["content"]),
+            content_sha256=str(data["content_sha256"]),
+            byte_count=int(data["byte_count"]),
+            client_message_id=(
+                str(data["client_message_id"])
+                if data.get("client_message_id") is not None
+                else None
+            ),
+            created_at=str(data["created_at"]),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass(slots=True)
+class ConversationTurn:
+    turn_id: str
+    conversation_id: str
+    turn_index: int
+    status: TurnStatus
+    intent_kind: str | None
+    task_id: str | None
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "turn_id": self.turn_id,
+            "conversation_id": self.conversation_id,
+            "turn_index": self.turn_index,
+            "status": self.status.value,
+            "intent_kind": self.intent_kind,
+            "task_id": self.task_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ConversationTurn":
+        return cls(
+            turn_id=str(data["turn_id"]),
+            conversation_id=str(data["conversation_id"]),
+            turn_index=int(data["turn_index"]),
+            status=TurnStatus(data["status"]),
+            intent_kind=(
+                str(data["intent_kind"])
+                if data.get("intent_kind") is not None
+                else None
+            ),
+            task_id=(
+                str(data["task_id"]) if data.get("task_id") is not None else None
+            ),
+            created_at=str(data["created_at"]),
+            updated_at=str(data["updated_at"]),
         )
 
 

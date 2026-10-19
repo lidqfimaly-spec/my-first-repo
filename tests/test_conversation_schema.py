@@ -412,6 +412,36 @@ class ConversationSchemaTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(tables, {"tasks"})
 
+    def test_preflight_defers_partial_schema_until_locked_recheck(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "data" / "zevorinth.sqlite3"
+            path.parent.mkdir(parents=True)
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute(
+                    "CREATE TABLE tasks (task_id TEXT PRIMARY KEY)"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            store = EventStore(path)
+            self.assertIsNone(store._preflight_schema_version())
+            with self.assertRaises(SchemaVersionError):
+                store.initialize()
+
+            connection = sqlite3.connect(path)
+            try:
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+            finally:
+                connection.close()
+            self.assertEqual(tables, {"tasks"})
+
     def test_concurrent_initialization_is_serialized_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "data" / "zevorinth.sqlite3"

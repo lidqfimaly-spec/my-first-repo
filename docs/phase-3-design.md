@@ -1,6 +1,6 @@
 # Zevorinth Phase 3 设计：多轮会话与任务上下文连续性
 
-状态：Phase 3.1 已实现 SQLite schema v3 与安全迁移；完整会话服务、意图分类和上下文压缩仍未实现。本文其余拟议流程不因 schema 落地而视为已验证。
+状态：Phase 3.1 已提交（HEAD `629420c5f69719753883e75df574878f48318eaf`）；Phase 3.2 已实现领域模型、EventStore 持久化、ConversationService、消息幂等、TaskService 会话关联、task/turn 原子关联和基础会话 CLI，但尚未提交。意图分类和上下文压缩仍未实现。早期章节保留设计草案，实际状态以第 16–20 节为准。
 
 日期：2026-10-20（Asia/Shanghai）
 
@@ -10,7 +10,7 @@
 | --- | --- |
 | 仓库 | `/Users/lidequan/PythonProject/Zevorinth` |
 | 分支 | `phase-2.6-response-hardening` |
-| HEAD | `3e15609117cc41e786271c21fa1823f218fed331` |
+| HEAD | `629420c5f69719753883e75df574878f48318eaf` |
 | Phase 2.7 提交 | `test: seal phase 2.7 targeted DeepSeek retest` |
 | 工作树 | 仅有既有 `.idea/` 未跟踪文件；本次未修改、删除或暂存 |
 | 远程 | 未配置 |
@@ -163,20 +163,20 @@ LLM Planner 只把 `request.goal` 作为一次 Responses API 请求的输入；�
 
 | 缺口 | 证据 | 影响 |
 | --- | --- | --- |
-| 没有会话实体 | `models.py`、`event_store.py`、`service.py`、`cli.py` 中没有任何 conversation/message/turn 持久化 | 无法保存多轮输入，也无法重建对话历史 |
-| 没有任务到会话的关联 | `Task` 没有 `conversation_id`、`origin_turn_id`、`parent_task_id` | 任务无法归属会话或后续意图 |
+| 会话服务已实现，任务接入尚未实现 | `conversation_service.py` 已提供创建、追加、历史和同内容幂等；`TaskService`/CLI 仍未接入 conversation_id 和 turn 关联 | 多轮输入可以独立持久化，但还没有进入任务执行流程 |
+| 任务会话关联已接通，后续意图字段未建立 | `TaskService.enqueue/submit` 已支持 conversation/turn；`origin_turn_id`、`parent_task_id` 尚未建立 | 基础会话任务可创建；后续 intent supersede 仍未实现 |
 | 澄清答案没有结构化持久化 | `Task.clarification_questions` 只是字符串列表；`CLARIFICATION_UPDATED` 只有 `missing_fields` | 无法证明哪个答案对应哪个问题，也无法审计回填 |
 | 没有意图变化判定 | `resume()` 对 `awaiting_clarification`/`blocked` 接受任意允许字段 patch | 用户改变目标时可能被当作普通补充，导致错误计划 |
 | 没有上下文输入 Planner | `Planner.plan_request()` 只接收 `TaskRequest`；LLM 只发送 goal | 多轮要求无法进入规划，除非人工把全部内容拼进 goal |
-| 重复消息会重复建任务 | `enqueue()` 每次生成新 UUID；无消息幂等键 | 网络/CLI 重试可能产生多个任务和多个产物目录 |
-| 没有会话级并发边界 | 任务有 SQLite 租约，但会话/消息没有唯一活动任务约束 | 两个并发消息可能各自创建任务 |
-| 没有 v2 到 v3 迁移 | `EventStore.initialize()` 只 `CREATE TABLE IF NOT EXISTS` 并写 v2 | 新增表/字段没有版本化迁移与回滚证明 |
+| 重复消息尚无幂等返回 | `messages` 已有唯一索引，但 `append_user_message()` 目前对重复客户端 ID 抛 `MessageConflict` | 网络/CLI 重试还没有返回原记录的幂等语义 |
+| 会话级活动任务边界尚未接入服务 | 数据库已有 `uq_tasks_one_active_per_conversation`，但 TaskService 不写会话 ID | 并发创建会话任务尚未经过服务级验证 |
+| v2 到 v3 迁移已实现 | `EventStore.initialize()` 已有版本预检、原子迁移和回滚测试 | 迁移能力本身不再是缺口；后续变更仍需保持测试 |
 | 没有上下文预算/压缩 | 现有 Planner 只限制 goal 16 KiB | 长对话可能超限、截断当前意图或泄露旧内容 |
-| 没有会话测试 | 现有测试只覆盖任务、租约、恢复、Planner 和评测 | 新功能的原子性、顺序、隔离和恢复均未证明 |
+| 会话服务级测试尚未完成 | 已有 schema/迁移测试和 EventStore 基础持久化测试；尚无 ConversationService、消息幂等和并发 turn 服务测试 | 服务层的原子性、顺序和并发行为仍未证明 |
 
 ## 4. 拟议数据模型
 
-以下为拟议 schema v3，尚未实现。目标是**追加式**扩展，不重写现有 `tasks` 和 `events` 数据。
+以下为 Phase 3.1 已实现的 schema v3；Phase 3.2 只逐步接入服务层，不回写或重写现有 `tasks` 和 `events` 数据。
 
 ### 4.1 实体关系
 
@@ -200,7 +200,7 @@ Conversation 1 ── N ConversationEvent
 | --- | --- | --- |
 | `conversation_id` | TEXT | UUID 主键 |
 | `status` | TEXT | `active` / `archived`；首版不实现删除 |
-| `active_task_id` | TEXT NULL | 当前会话唯一活动任务指针 |
+| `active_task_id` | TEXT NULL | 设计草案字段；Phase 3.1 实际未建立 |
 | `version` | INTEGER | 乐观并发版本，每次会话变更递增 |
 | `created_at` | TEXT | UTC ISO-8601 |
 | `updated_at` | TEXT | UTC ISO-8601 |
@@ -800,4 +800,103 @@ plan_request(
 
 ### 16.4 Phase 3.1 测试
 
-新增 `tests/test_conversation_schema.py`，当前共 15 个测试，覆盖空白数据库、v2 迁移、旧任务读取与执行、重复初始化、迁移失败回滚与 WAL 行为、高版本拒绝、并发初始化、并发 v2 迁移、消息/turn 唯一键和外键、任务活动唯一约束、任务会话外键、旧索引/触发器保留、伪造 v3 拒绝和 `Task` 位置参数兼容性。
+新增 `tests/test_conversation_schema.py`，当前共 16 个测试，覆盖空白数据库、v2 迁移、旧任务读取与执行、重复初始化、迁移失败回滚与 WAL 行为、高版本拒绝、并发初始化、并发 v2 迁移、消息/turn 唯一键和外键、任务活动唯一约束、任务会话外键、旧索引/触发器保留、伪造 v3 拒绝和 `Task` 位置参数兼容性。
+
+## 17. Phase 3.2 第一小阶段实际实现
+
+本节记录第一小阶段。当时只实现领域模型和 EventStore 持久化；随后第 18 节增加了 ConversationService 和消息幂等。TaskService 关联和上下文压缩仍未实现。
+
+已新增：
+
+- `Conversation`、`Message`、`ConversationTurn` 数据类及基础枚举；
+- `EventStore.create_conversation()`；
+- `EventStore.get_conversation()`；
+- `EventStore.append_user_message()`；
+- `EventStore.list_conversation_messages()`；
+- 会话创建、消息写入和 `message_recorded` conversation event 的事务写入。
+
+实际行为：
+
+- `create_conversation()` 创建 active 会话并写入 `conversation_created` 事件；
+- `append_user_message()` 在 `BEGIN IMMEDIATE` 内验证会话、分配 turn 序号、写 turn、写 message、写 conversation event，并更新会话时间和版本；
+- 历史按 `turn_index`、`created_at`、`message_id` 排序，默认 50 条，最大 200 条；
+- 重复 `client_message_id` 当前抛出 `MessageConflict`，尚未实现“相同内容返回原记录”的幂等返回；
+- 任务与 turn 的关联、TaskService 的 `conversation_id` 参数和 ConversationService 仍未实现；
+- 未改变 Schema version 3。
+
+新增测试 `tests/test_conversation_store.py` 覆盖会话重开、消息/turn/event 原子写入、历史排序和上限、重复客户端消息拒绝、无效会话拒绝和注入事件写入失败回滚。
+
+## 18. Phase 3.2 第二小阶段实际实现
+
+本轮在已有 EventStore 持久化之上增加服务层和消息幂等，不接入 TaskService。
+
+已新增：
+
+- `src/zevorinth/conversation_service.py`
+- `ConversationService.create_conversation()`
+- `ConversationService.get_conversation()`
+- `ConversationService.append_user_message()`
+- `ConversationService.history()`
+
+幂等行为：
+
+- `append_user_message()` 在 `BEGIN IMMEDIATE` 内按 `(conversation_id, client_message_id)` 查询已有消息；
+- 相同 key 且内容、哈希和字节数一致：返回已有 `ConversationTurn` 和 `Message`，不新增 turn；
+- 相同 key 但内容不同：抛出 `MessageConflict`，不覆盖原记录；
+- 不同 key：正常创建新 turn 和 message；
+- 数据库 `uq_messages_client_id` 仍是最终唯一约束。
+
+并发测试覆盖：
+
+- 两个进程同时提交相同客户端 ID 和相同内容，只产生一条消息和一个 turn；
+- 两个进程使用不同客户端 ID，turn 序号唯一、消息不丢失；
+- 两个进程使用相同客户端 ID 和不同内容，一个成功、一个 `MessageConflict`，只保留原记录。
+
+本小节记录服务层完成时的状态；TaskService 会话关联随后在第 19 节实现。尚未实现意图分类、上下文压缩和自动任务续接，也没有任何真实模型 API 调用。
+
+本轮没有改变 Schema version 3。
+
+## 19. Phase 3.2 任务会话关联实际实现
+
+已新增：
+
+- `TaskService.enqueue(request, conversation_id=None, turn_id=None)`；
+- `TaskService.submit(request, conversation_id=None, turn_id=None)`；
+- `EventStore.create_task(task, event, turn_id=None)`。
+
+事务行为：
+
+- 在 `BEGIN IMMEDIATE` 内验证 conversation 存在；
+- 验证 turn 存在、属于同一 conversation 且尚未关联任务；
+- 检查同一 conversation 是否已有活动任务；
+- 插入 task 和 `task_created` 事件；
+- 更新 `conversation_turns.task_id`；
+- 写入 `task_linked` conversation event；
+- 任一步失败整体回滚。
+
+兼容性：
+
+- 不传 conversation_id/turn_id 的旧调用仍创建 `conversation_id=NULL` 的任务；
+- 非法 conversation、跨会话 turn、已关联 turn 和活动任务冲突都有明确错误；
+- 没有改变任务状态机、租约/fencing、Policy、工具、Verifier 或恢复规则。
+
+新增 `tests/test_task_conversation.py` 覆盖会话任务创建、旧路径、活动任务冲突、跨会话 turn 拒绝、合法关联后真实执行，以及 turn 关联失败后的任务回滚。
+
+## 20. Phase 3.2 基础会话 CLI 实际实现
+
+`cli.py` 新增：
+
+```text
+zevorinth conversation create
+zevorinth conversation send
+zevorinth conversation history
+```
+
+- `create` 支持可选的 `--conversation-id` 和 JSON `--metadata`；
+- `send` 要求 `--client-message-id`，在写事务内执行相同内容幂等或内容冲突判断；
+- `history` 支持 `--limit`，受 EventStore 的 200 条上限约束；
+- `run` 支持可选的 `--conversation-id` 和 `--turn-id`，把任务创建与 turn 关联交给 TaskService；
+- 三个命令都支持 `--json`；
+- 会话不存在和幂等冲突返回非零退出码并给出明确错误。
+
+会话命令本身只访问会话持久化层；`run` 的会话参数只负责任务关联，仍使用原有 TaskService、Planner、Policy、工具和 Verifier。没有调用 LLM，也没有自动多轮意图分类。
