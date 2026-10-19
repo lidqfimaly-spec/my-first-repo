@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -249,13 +251,19 @@ class AcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             interrupted_ids: list[str] = []
+            base_time = "2026-10-19T00:00:00.000+00:00"
+            future_time = "2026-10-19T00:01:01.000+00:00"
 
             def simulate_process_death(stage: str, task: Task) -> None:
                 self.assertEqual(stage, "after_write_before_verification")
                 interrupted_ids.append(task.task_id)
                 raise RuntimeError("simulated process death before verification")
 
-            crashing_service = TaskService(root, fault_hook=simulate_process_death)
+            crashing_service = TaskService(
+                root,
+                fault_hook=simulate_process_death,
+                clock=lambda: base_time,
+            )
             with self.assertRaises(RuntimeError):
                 crashing_service.submit(request(content="recover me\n"))
 
@@ -265,7 +273,11 @@ class AcceptanceTests(unittest.TestCase):
             self.assertTrue((root / "artifacts" / task_id / "result.txt").is_file())
 
             no_write = FailIfCalledWriter()
-            restarted = TaskService(root, writer=no_write)
+            restarted = TaskService(
+                root,
+                writer=no_write,
+                clock=lambda: future_time,
+            )
             recovered = restarted.require_task(task_id)
             self.assertEqual(recovered.status, TaskStatus.INTERRUPTED)
             self.assertEqual(no_write.calls, 0)
@@ -291,12 +303,18 @@ class AcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             task_ids: list[str] = []
+            base_time = "2026-10-19T00:00:00.000+00:00"
+            future_time = "2026-10-19T00:01:01.000+00:00"
 
             def interrupt(_: str, task: Task) -> None:
                 task_ids.append(task.task_id)
                 raise RuntimeError("interrupt")
 
-            crashing = TaskService(root, fault_hook=interrupt)
+            crashing = TaskService(
+                root,
+                fault_hook=interrupt,
+                clock=lambda: base_time,
+            )
             with self.assertRaises(RuntimeError):
                 crashing.submit(request(content="original"))
             task_id = task_ids[0]
@@ -304,7 +322,11 @@ class AcceptanceTests(unittest.TestCase):
             artifact.write_text("tampered")
 
             no_write = FailIfCalledWriter()
-            restarted = TaskService(root, writer=no_write)
+            restarted = TaskService(
+                root,
+                writer=no_write,
+                clock=lambda: future_time,
+            )
             self.assertEqual(restarted.require_task(task_id).status, TaskStatus.INTERRUPTED)
             failed = restarted.resume(task_id)
 
@@ -336,13 +358,24 @@ class AcceptanceTests(unittest.TestCase):
             )
 
             self.assertEqual(completed.returncode, 23, completed.stderr)
-            task_id = completed.stdout.strip()
+            checkpoint = json.loads(completed.stdout)
+            task_id = checkpoint["task_id"]
+            lease_expires_at = datetime.fromisoformat(
+                checkpoint["lease_expires_at"]
+            )
+            recovery_time = (
+                lease_expires_at + timedelta(seconds=1)
+            ).isoformat(timespec="milliseconds")
             artifact = root / "artifacts" / task_id / "process-proof.txt"
             self.assertTrue(artifact.is_file())
             self.assertEqual(artifact.read_text(), "survives a process exit\n")
 
             no_write = FailIfCalledWriter()
-            restarted = TaskService(root, writer=no_write)
+            restarted = TaskService(
+                root,
+                writer=no_write,
+                clock=lambda: recovery_time,
+            )
             self.assertEqual(restarted.require_task(task_id).status, TaskStatus.INTERRUPTED)
             resumed = restarted.resume(task_id)
             self.assertEqual(resumed.status, TaskStatus.SUCCEEDED)

@@ -1,19 +1,16 @@
-"""Bounded end-to-end task orchestration."""
+"""Bounded artifact task orchestration with SQLite-backed execution leases."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 from uuid import uuid4
 
-from .artifact_tool import (
-    ArtifactToolError,
-    ArtifactWriter,
-    RealArtifactWriter,
-)
+from .artifact_tool import ArtifactToolError, ArtifactWriter, RealArtifactWriter
 from .event_store import EventStore
 from .models import (
+    ClaimResult,
     Event,
     EventType,
     ExecutionMode,
@@ -38,7 +35,26 @@ FaultHook = Callable[[str, Task], None]
 
 
 class TaskService:
-    """Single-process coordinator for the Phase 1 artifact task."""
+    """Single-host coordinator using SQLite transactions for task ownership."""
+
+    RUNNABLE_STATUSES = frozenset(
+        {
+            TaskStatus.QUEUED,
+            TaskStatus.INTERRUPTED,
+            TaskStatus.RUNNING,
+            TaskStatus.VERIFYING,
+        }
+    )
+    RESUMABLE_STATUSES = frozenset(
+        {
+            TaskStatus.QUEUED,
+            TaskStatus.AWAITING_CLARIFICATION,
+            TaskStatus.BLOCKED,
+            TaskStatus.INTERRUPTED,
+            TaskStatus.RUNNING,
+            TaskStatus.VERIFYING,
+        }
+    )
 
     def __init__(
         self,
@@ -47,21 +63,31 @@ class TaskService:
         writer: ArtifactWriter | None = None,
         fault_hook: FaultHook | None = None,
         clock: Callable[[], str] = utc_now,
+        lease_seconds: float = 60.0,
+        busy_timeout_ms: int = 10_000,
+        owner_id: str | None = None,
     ) -> None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
         self.project_root = project_root.resolve()
         self.artifacts_root = self.project_root / "artifacts"
         self.database_path = self.project_root / "data" / "zevorinth.sqlite3"
         self.clock = clock
+        self.lease_seconds = lease_seconds
+        self.owner_id = owner_id or str(uuid4())
         self.writer = writer or RealArtifactWriter(self.artifacts_root)
         self.fault_hook = fault_hook
         self.planner = DeterministicPlanner()
         self.policy = ArtifactPolicy()
         self.verifier = ArtifactVerifier(self.artifacts_root)
-        self.store = EventStore(self.database_path)
+        self.store = EventStore(
+            self.database_path,
+            busy_timeout_ms=busy_timeout_ms,
+        )
         self.store.initialize()
-        self.recover_in_progress_tasks()
+        self.recover_expired_leases()
 
-    def submit(self, request: TaskRequest) -> Task:
+    def enqueue(self, request: TaskRequest) -> Task:
         now = self.clock()
         task = Task(
             task_id=str(uuid4()),
@@ -79,7 +105,10 @@ class TaskService:
                 task.task_id,
                 EventType.TASK_CREATED,
                 now,
-                {"operation": request.operation, "goal_present": bool(request.goal)},
+                {
+                    "operation": request.operation,
+                    "goal_present": bool(request.goal),
+                },
             ),
         )
         missing = missing_required_fields(request)
@@ -95,8 +124,105 @@ class TaskService:
                     "phase": "awaiting_clarification",
                 },
             )
+        return task
+
+    def submit(self, request: TaskRequest) -> Task:
+        task = self.enqueue(request)
+        if task.status is TaskStatus.AWAITING_CLARIFICATION:
             return task
-        return self._execute_queued_task(task.task_id)
+        return self.execute_task(task.task_id)
+
+    def execute_task(self, task_id: str) -> Task:
+        task = self.store.require_task(task_id)
+        if is_terminal(task.status):
+            return task
+        claim = self._claim(task_id, allowed=self.RUNNABLE_STATUSES)
+        if not claim.acquired:
+            return claim.task
+        return self._run_claimed(claim.task, claim.task.lease_token)
+
+    def resume(
+        self,
+        task_id: str,
+        request_patch: Mapping[str, object] | None = None,
+    ) -> Task:
+        task = self.store.require_task(task_id)
+        if is_terminal(task.status):
+            return task
+        if task.status is TaskStatus.BLOCKED and request_patch is None:
+            return task
+
+        updated_request = task.request
+        if task.status in {
+            TaskStatus.AWAITING_CLARIFICATION,
+            TaskStatus.BLOCKED,
+        } and request_patch is not None:
+            unknown = set(request_patch) - {"goal", "operation", "parameters"}
+            if unknown:
+                raise ValueError(f"unsupported request fields: {sorted(unknown)}")
+            updated_request = task.request.merged(request_patch)
+
+        claim = self._claim(task_id, allowed=self.RESUMABLE_STATUSES)
+        if not claim.acquired:
+            return claim.task
+        claimed = claim.task
+        lease_token = claimed.lease_token
+        assert lease_token is not None
+
+        if claimed.status in {
+            TaskStatus.AWAITING_CLARIFICATION,
+            TaskStatus.BLOCKED,
+        }:
+            missing = missing_required_fields(updated_request)
+            if missing:
+                remains_blocked = claimed.status is TaskStatus.BLOCKED
+                updated, _ = self.store.record_event_and_update(
+                    claimed.task_id,
+                    EventType.CLARIFICATION_UPDATED,
+                    self.clock(),
+                    payload={"missing_fields": missing},
+                    updates={
+                        "request": updated_request,
+                        "missing_fields": missing,
+                        "phase": (
+                            "blocked_clarification_incomplete"
+                            if remains_blocked
+                            else "awaiting_clarification"
+                        ),
+                        "error": (
+                            TaskError(
+                                "clarification_incomplete",
+                                "request is still missing required fields",
+                            )
+                            if remains_blocked
+                            else claimed.error
+                        ),
+                    },
+                    lease_token=lease_token,
+                )
+                updated, _ = self.store.release_claim(
+                    updated.task_id,
+                    lease_token=lease_token,
+                    now=self.clock(),
+                    payload={"reason": "clarification_incomplete"},
+                )
+                return updated
+            claimed, _ = self.store.transition(
+                claimed.task_id,
+                TaskStatus.QUEUED,
+                EventType.CLARIFICATION_UPDATED,
+                self.clock(),
+                payload={"missing_fields": []},
+                updates={
+                    "request": updated_request,
+                    "missing_fields": [],
+                    "error": None,
+                    "phase": "clarification_completed",
+                },
+                lease_token=lease_token,
+            )
+
+        return self._run_claimed(claimed, lease_token)
 
     def get_task(self, task_id: str) -> Task | None:
         return self.store.get_task(task_id)
@@ -107,174 +233,94 @@ class TaskService:
     def events(self, task_id: str) -> list[Event]:
         return self.store.list_events(task_id)
 
-    def recover_in_progress_tasks(self) -> list[Task]:
-        """Treat stale RUNNING/VERIFYING rows as interrupted on process start."""
+    def recover_expired_leases(self) -> list[Task]:
+        """Expire stale leases, preserving tasks actively owned by another instance."""
+        now = self._normalize_time(self.clock())
         recovered: list[Task] = []
         for task in self.store.find_tasks_by_statuses(
-            {TaskStatus.RUNNING, TaskStatus.VERIFYING}
+            {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.VERIFYING}
         ):
-            interrupted, _ = self.store.transition(
-                task.task_id,
-                TaskStatus.INTERRUPTED,
-                EventType.TASK_INTERRUPTED,
-                self.clock(),
-                payload={
-                    "reason": "process_restart_before_terminal_state",
-                    "previous_status": task.status.value,
-                    "previous_phase": task.phase,
-                },
-                updates={
-                    "phase": "recovered_after_restart",
-                    "error": TaskError(
-                        "interrupted",
-                        "task was in progress when a new runtime started",
-                    ),
-                },
-            )
-            recovered.append(interrupted)
-        return recovered
-
-    def resume(
-        self,
-        task_id: str,
-        request_patch: Mapping[str, object] | None = None,
-    ) -> Task:
-        task = self.store.require_task(task_id)
-        if is_terminal(task.status):
-            return task
-
-        if task.status is TaskStatus.BLOCKED and request_patch is None:
-            return task
-
-        if task.status in {TaskStatus.AWAITING_CLARIFICATION, TaskStatus.BLOCKED}:
-            if request_patch is not None:
-                unknown = set(request_patch) - {"goal", "operation", "parameters"}
-                if unknown:
-                    raise ValueError(f"unsupported request fields: {sorted(unknown)}")
-                updated_request = task.request.merged(request_patch)
-            else:
-                updated_request = task.request
-            missing = missing_required_fields(updated_request)
-            if missing:
-                updated, _ = self.store.record_event_and_update(
+            if task.lease_token:
+                updated = self.store.expire_claim(task.task_id, now=now)
+                if updated != task:
+                    recovered.append(updated)
+            elif task.status in {TaskStatus.RUNNING, TaskStatus.VERIFYING}:
+                updated, _ = self.store.transition(
                     task.task_id,
-                    EventType.CLARIFICATION_UPDATED,
-                    self.clock(),
-                    payload={"missing_fields": missing},
-                    updates={
-                        "request": updated_request,
-                        "missing_fields": missing,
-                        "phase": "awaiting_clarification",
+                    TaskStatus.INTERRUPTED,
+                    EventType.TASK_INTERRUPTED,
+                    now,
+                    payload={
+                        "reason": "legacy_in_progress_without_lease",
+                        "previous_status": task.status.value,
+                        "previous_phase": task.phase,
                     },
-                )
-                return updated
-            queued, _ = self.store.transition(
-                task.task_id,
-                TaskStatus.QUEUED,
-                EventType.CLARIFICATION_UPDATED,
-                self.clock(),
-                payload={"missing_fields": []},
-                updates={
-                    "request": updated_request,
-                    "missing_fields": [],
-                    "error": None,
-                    "phase": "clarification_completed",
-                    "attempt_id": str(uuid4()),
-                },
-            )
-            return self._execute_queued_task(queued.task_id)
-
-        if task.status is TaskStatus.INTERRUPTED:
-            can_verify_existing = (
-                task.tool_result is not None
-                and task.tool_result.execution_mode is ExecutionMode.REAL
-                and task.artifact is not None
-            )
-            if can_verify_existing:
-                verifying, _ = self.store.transition(
-                    task.task_id,
-                    TaskStatus.VERIFYING,
-                    EventType.VERIFICATION_STARTED,
-                    self.clock(),
-                    payload={"resume": True, "source": "persisted_tool_evidence"},
                     updates={
-                        "phase": "resumed_verification",
-                        "attempt_id": str(uuid4()),
-                        "error": None,
-                    },
-                )
-                return self._verify_and_finish(verifying)
-            plan = task.plan
-            if plan is None:
-                failed, _ = self.store.transition(
-                    task.task_id,
-                    TaskStatus.FAILED,
-                    EventType.TASK_FAILED,
-                    self.clock(),
-                    payload={"reason": "missing_plan_checkpoint"},
-                    updates={
-                        "phase": "failed",
+                        "phase": "recovered_legacy_state",
                         "error": TaskError(
-                            "missing_plan_checkpoint",
-                            "interrupted task has no persisted plan",
+                            "interrupted",
+                            "legacy in-progress task had no execution lease",
                         ),
                     },
                 )
-                return failed
-            decision = self.policy.evaluate(
-                request=task.request,
-                plan=plan,
-                task_id=task.task_id,
-                artifacts_root=self.artifacts_root,
-            )
-            if not decision.allowed:
-                blocked, _ = self.store.transition(
-                    task.task_id,
-                    TaskStatus.BLOCKED,
-                    EventType.POLICY_REJECTED,
-                    self.clock(),
-                    payload={"code": decision.code, "reason": decision.reason},
-                    updates={
-                        "phase": "blocked",
-                        "error": TaskError(decision.code, decision.reason),
-                    },
-                )
-                return blocked
-            running, _ = self.store.transition(
-                task.task_id,
-                TaskStatus.RUNNING,
-                EventType.TASK_RESUMED,
-                self.clock(),
-                payload={"resume": True, "source": "no_persisted_artifact"},
-                updates={
-                    "phase": "resumed_before_tool",
-                    "attempt_id": str(uuid4()),
-                    "error": None,
-                },
-            )
-            return self._execute_tool(running)
+                recovered.append(updated)
+        return recovered
 
-        return task
+    def recover_in_progress_tasks(self) -> list[Task]:
+        """Compatibility alias with lease-safe semantics."""
+        return self.recover_expired_leases()
 
-    def _execute_queued_task(self, task_id: str) -> Task:
-        task = self.store.require_task(task_id)
-        if task.status is not TaskStatus.QUEUED:
-            return task
+    def _claim(self, task_id: str, *, allowed: frozenset[TaskStatus]) -> ClaimResult:
+        now = self._normalize_time(self.clock())
+        expires_at = self._lease_deadline(now)
+        return self.store.claim_task(
+            task_id,
+            owner_id=self.owner_id,
+            lease_token=str(uuid4()),
+            attempt_id=str(uuid4()),
+            now=now,
+            expires_at=expires_at,
+            allowed_statuses=allowed,
+        )
+
+    def _lease_deadline(self, now: str) -> str:
+        current = datetime.fromisoformat(now)
+        return (current + timedelta(seconds=self.lease_seconds)).isoformat(
+            timespec="milliseconds"
+        )
+
+    @staticmethod
+    def _normalize_time(value: str) -> str:
+        current = datetime.fromisoformat(value)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current.isoformat(timespec="milliseconds")
+
+    def _run_claimed(self, task: Task, lease_token: str | None) -> Task:
+        if lease_token is None:
+            raise ValueError("claimed task is missing lease token")
+        if task.status is TaskStatus.QUEUED:
+            return self._plan_and_execute(task, lease_token)
+        if task.status is TaskStatus.INTERRUPTED:
+            return self._resume_interrupted(task, lease_token)
+        return self._release_claim(
+            task,
+            lease_token,
+            reason=f"claim_not_executable:{task.status.value}",
+        )
+
+    def _plan_and_execute(self, task: Task, lease_token: str) -> Task:
         try:
             plan = self.planner.plan(task.request)
         except PlanningError as exc:
-            blocked, _ = self.store.transition(
-                task.task_id,
-                TaskStatus.BLOCKED,
-                EventType.POLICY_REJECTED,
-                self.clock(),
-                payload={"code": exc.code, "reason": exc.message},
-                updates={
-                    "phase": "planning_rejected",
-                    "error": TaskError(exc.code, exc.message),
-                },
+            return self._block(
+                task,
+                lease_token,
+                code=exc.code,
+                reason=exc.message,
+                phase="planning_rejected",
+                mark_not_executed=True,
             )
-            return blocked
         running, _ = self.store.transition(
             task.task_id,
             TaskStatus.RUNNING,
@@ -282,6 +328,7 @@ class TaskService:
             self.clock(),
             payload={"plan": plan.to_dict()},
             updates={"plan": plan, "phase": "planned"},
+            lease_token=lease_token,
         )
         decision = self.policy.evaluate(
             request=running.request,
@@ -290,22 +337,72 @@ class TaskService:
             artifacts_root=self.artifacts_root,
         )
         if not decision.allowed:
-            blocked, _ = self.store.transition(
-                running.task_id,
-                TaskStatus.BLOCKED,
-                EventType.POLICY_REJECTED,
-                self.clock(),
-                payload={"code": decision.code, "reason": decision.reason},
-                updates={
-                    "phase": "blocked",
-                    "execution_mode": ExecutionMode.NOT_EXECUTED,
-                    "error": TaskError(decision.code, decision.reason),
-                },
+            return self._block(
+                running,
+                lease_token,
+                code=decision.code,
+                reason=decision.reason,
+                phase="blocked",
+                mark_not_executed=True,
             )
-            return blocked
-        return self._execute_tool(running)
+        return self._execute_tool(running, lease_token)
 
-    def _execute_tool(self, task: Task) -> Task:
+    def _resume_interrupted(self, task: Task, lease_token: str) -> Task:
+        can_verify_existing = (
+            task.tool_result is not None
+            and task.tool_result.execution_mode is ExecutionMode.REAL
+            and task.artifact is not None
+        )
+        if can_verify_existing:
+            verifying, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.VERIFYING,
+                EventType.VERIFICATION_STARTED,
+                self.clock(),
+                payload={"resume": True, "source": "persisted_tool_evidence"},
+                updates={"phase": "resumed_verification", "error": None},
+                lease_token=lease_token,
+            )
+            return self._verify_and_finish(verifying, lease_token)
+
+        plan = task.plan
+        if plan is None:
+            return self._fail(
+                task,
+                lease_token,
+                code="missing_plan_checkpoint",
+                message="interrupted task has no persisted plan",
+                phase="failed",
+            )
+        decision = self.policy.evaluate(
+            request=task.request,
+            plan=plan,
+            task_id=task.task_id,
+            artifacts_root=self.artifacts_root,
+        )
+        if not decision.allowed:
+            return self._block(
+                task,
+                lease_token,
+                code=decision.code,
+                reason=decision.reason,
+                phase="blocked",
+                mark_not_executed=(
+                    task.execution_mode is ExecutionMode.NOT_EXECUTED
+                ),
+            )
+        running, _ = self.store.transition(
+            task.task_id,
+            TaskStatus.RUNNING,
+            EventType.TASK_RESUMED,
+            self.clock(),
+            payload={"resume": True, "source": "no_persisted_artifact"},
+            updates={"phase": "resumed_before_tool", "error": None},
+            lease_token=lease_token,
+        )
+        return self._execute_tool(running, lease_token)
+
+    def _execute_tool(self, task: Task, lease_token: str) -> Task:
         parameters = task.request.parameters
         artifact_path = parameters["artifact_path"]
         content = parameters["content"]
@@ -323,11 +420,13 @@ class TaskService:
                 "artifact_path": artifact_path,
                 "attempt_id": task.attempt_id,
                 "intended_execution_mode": intended_mode.value,
+                "claim_generation": task.claim_generation,
             },
             updates={
                 "execution_mode": intended_mode,
                 "phase": "tool_started",
             },
+            lease_token=lease_token,
         )
         try:
             result = self.writer.write(
@@ -339,10 +438,17 @@ class TaskService:
                 finished_at=self.clock(),
             )
         except ArtifactToolError as exc:
-            return self._finish_tool_failure(task, exc.code, exc.message, started_at)
+            return self._finish_tool_failure(
+                task,
+                lease_token,
+                exc.code,
+                exc.message,
+                started_at,
+            )
         except Exception as exc:
             return self._finish_tool_failure(
                 task,
+                lease_token,
                 "tool_exception",
                 f"tool execution raised {type(exc).__name__}: {exc}",
                 started_at,
@@ -351,6 +457,7 @@ class TaskService:
         if not result.success:
             return self._finish_tool_failure(
                 task,
+                lease_token,
                 result.error_code or "tool_failed",
                 result.error_message or "tool reported failure",
                 started_at,
@@ -367,6 +474,7 @@ class TaskService:
                     "execution_mode": ExecutionMode.SIMULATED,
                     "phase": "simulation_completed",
                 },
+                lease_token=lease_token,
             )
             simulated, _ = self.store.transition(
                 simulated.task_id,
@@ -377,6 +485,8 @@ class TaskService:
                     "reason": "simulated tool produced no real artifact",
                     "real_artifact_created": False,
                 },
+                updates=self._clear_claim_updates(),
+                lease_token=lease_token,
             )
             return simulated
 
@@ -395,6 +505,7 @@ class TaskService:
                         "real execution must return artifact evidence",
                     ),
                 },
+                lease_token=lease_token,
             )
             failed, _ = self.store.transition(
                 failed.task_id,
@@ -402,6 +513,8 @@ class TaskService:
                 EventType.TASK_FAILED,
                 self.clock(),
                 payload={"code": "invalid_tool_result"},
+                updates=self._clear_claim_updates(),
+                lease_token=lease_token,
             )
             return failed
 
@@ -416,6 +529,7 @@ class TaskService:
                 "execution_mode": ExecutionMode.REAL,
                 "phase": "tool_completed",
             },
+            lease_token=lease_token,
         )
         verifying, _ = self.store.transition(
             task.task_id,
@@ -427,14 +541,16 @@ class TaskService:
                 "tool_result_trusted": False,
             },
             updates={"phase": "verification_started"},
+            lease_token=lease_token,
         )
         if self.fault_hook is not None:
             self.fault_hook("after_write_before_verification", verifying)
-        return self._verify_and_finish(verifying)
+        return self._verify_and_finish(verifying, lease_token)
 
     def _finish_tool_failure(
         self,
         task: Task,
+        lease_token: str,
         code: str,
         message: str,
         started_at: str,
@@ -469,6 +585,7 @@ class TaskService:
                 "phase": "tool_failed",
                 "error": TaskError(code, message),
             },
+            lease_token=lease_token,
         )
         failed, _ = self.store.transition(
             failed.task_id,
@@ -476,10 +593,12 @@ class TaskService:
             EventType.TASK_FAILED,
             self.clock(),
             payload={"code": code, "verification_performed": False},
+            updates=self._clear_claim_updates(),
+            lease_token=lease_token,
         )
         return failed
 
-    def _verify_and_finish(self, task: Task) -> Task:
+    def _verify_and_finish(self, task: Task, lease_token: str) -> Task:
         parameters = task.request.parameters
         artifact_path = parameters["artifact_path"]
         content = parameters["content"]
@@ -516,6 +635,7 @@ class TaskService:
                 "artifact": verification.artifact or task.artifact,
                 "phase": "verified" if verification.passed else "verification_failed",
             },
+            lease_token=lease_token,
         )
         if verification.passed:
             succeeded, _ = self.store.transition(
@@ -531,22 +651,85 @@ class TaskService:
                     ),
                     "verifier": verification.verifier_name,
                 },
+                updates=self._clear_claim_updates(),
+                lease_token=lease_token,
             )
             return succeeded
+        return self._fail(
+            task,
+            lease_token,
+            code="verification_failed",
+            message=f"artifact verification failed: {verification.reason}",
+            phase="verification_failed",
+            payload_extra={"reason": verification.reason},
+        )
+
+    def _block(
+        self,
+        task: Task,
+        lease_token: str,
+        *,
+        code: str,
+        reason: str,
+        phase: str,
+        mark_not_executed: bool,
+    ) -> Task:
+        updates = {
+            **self._clear_claim_updates(),
+            "phase": phase,
+            "error": TaskError(code, reason),
+        }
+        if mark_not_executed:
+            updates["execution_mode"] = ExecutionMode.NOT_EXECUTED
+        blocked, _ = self.store.transition(
+            task.task_id,
+            TaskStatus.BLOCKED,
+            EventType.POLICY_REJECTED,
+            self.clock(),
+            payload={"code": code, "reason": reason},
+            updates=updates,
+            lease_token=lease_token,
+        )
+        return blocked
+
+    def _fail(
+        self,
+        task: Task,
+        lease_token: str,
+        *,
+        code: str,
+        message: str,
+        phase: str,
+        payload_extra: Mapping[str, object] | None = None,
+    ) -> Task:
         failed, _ = self.store.transition(
             task.task_id,
             TaskStatus.FAILED,
             EventType.TASK_FAILED,
             self.clock(),
-            payload={
-                "code": "verification_failed",
-                "reason": verification.reason,
-            },
+            payload={"code": code, **dict(payload_extra or {})},
             updates={
-                "error": TaskError(
-                    "verification_failed",
-                    f"artifact verification failed: {verification.reason}",
-                )
+                **self._clear_claim_updates(),
+                "phase": phase,
+                "error": TaskError(code, message),
             },
+            lease_token=lease_token,
         )
         return failed
+
+    def _release_claim(self, task: Task, lease_token: str, *, reason: str) -> Task:
+        released, _ = self.store.release_claim(
+            task.task_id,
+            lease_token=lease_token,
+            now=self.clock(),
+            payload={"reason": reason},
+        )
+        return released
+
+    @staticmethod
+    def _clear_claim_updates() -> dict[str, object]:
+        return {
+            "execution_owner": None,
+            "lease_token": None,
+            "lease_expires_at": None,
+        }

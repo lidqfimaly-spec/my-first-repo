@@ -1,6 +1,6 @@
 # Zevorinth（衍序）
 
-Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前完成第 1 阶段：一个确定性规划、单步执行、真实受控工具、独立验证、SQLite 持久化和安全恢复的最小闭环。
+Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前完成第 1.5 阶段：在 Phase 1 最小闭环上增加单机跨进程执行租约、围栏令牌、真实 SIGKILL 恢复和并发竞争测试。
 
 当前不是通用 Agent：尚未接入 LLM，不能理解任意自然语言，也不能执行 shell、网络操作或多 Agent 协作。
 
@@ -12,8 +12,11 @@ Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前�
 - 在 `artifacts/<task-id>/` 内真实创建文本文件。
 - 独立重新打开文件，比较内容、字节数和 SHA-256。
 - 用 SQLite 在同一事务中保存任务状态和有序事件。
+- 用 SQLite 原子认领同一任务的执行权，活动租约存在时拒绝第二执行者。
+- 用 lease token 围栏阻止过期执行者覆盖较新的任务状态。
 - 区分 `real`、`simulated`、`not_executed` 三种执行模式。
-- 识别重启前仍处于运行中的任务，并优先验证已写产物而不是盲目重写。
+- 只把租约已经过期的运行中任务视为中断，不误伤仍由其他进程持有的任务。
+- 真实 SIGKILL 后优先验证已写产物而不是盲目重写。
 
 ## 快速开始
 
@@ -98,17 +101,23 @@ python3 -m venv /tmp/zevorinth-venv
 | `3` | 等待澄清、模拟完成或取消 |
 | `4` | 计划/策略阻断 |
 | `5` | 中断或非终态 |
+| `6` | SQLite 忙、存储错误或执行权围栏失效 |
 
 ## 持久化与恢复
 
 - 数据库：`<home>/data/zevorinth.sqlite3`
 - 产物：`<home>/artifacts/<task-id>/`
 - 状态与事件由 SQLite 事务共同提交。
-- 新运行实例会把上次遗留的 `running`、`verifying` 任务标为 `interrupted`。
+- 新运行实例不会把活动租约任务标为中断；只有租约过期后才允许恢复。
+- 默认执行租约为 60 秒，可通过全局 `--lease-seconds` 调整。
+- 同一任务通过 SQLite `BEGIN IMMEDIATE` 原子认领；竞争者会收到 `claim_rejected` 事件，不能执行工具。
+- 每次认领会增加 `claim_generation`，所有执行写回都必须携带当前 lease token。
 - 若已有真实工具证据，`resume` 先重新验证产物，不重复写入。
 - 若现有文件缺失、内容不一致或证据冲突，任务进入显式失败，不覆盖原文件。
 
-当前只支持单进程运行时。已测试的是“确定性进程重启”：在真实文件写入后、验证前让独立子进程直接异常退出，再由新实例识别和恢复；尚未证明 `kill -9`、断电或文件系统损坏后的全部边界。
+已执行真实 `SIGKILL` 测试：子进程在文件完成、工具证据和 `verifying` 检查点落库后等待父进程强制终止；新运行时在租约到期后恢复并重新验证文件。仍不声称覆盖断电、物理磁盘故障或文件系统损坏。
+
+当前支持**同机、多进程、共享本地 SQLite 数据库**的单任务互斥。不支持跨机器分布式锁或分布式文件系统围栏。任务执行不得超过租约；当前绑定工具为 64 KiB 文本，未实现长任务租约心跳。
 
 ## 安全边界
 
@@ -123,8 +132,10 @@ python3 -m venv /tmp/zevorinth-venv
 - Planner 是确定性的，不理解任意自然语言；用户必须提供结构化参数。
 - 只支持一种工具和一种任务类型。
 - 不调用模型 API，不需要 API Key。
+- 相同请求重复 `run` 会创建不同任务；同一 task ID 的 `execute`/`resume` 在终态后保持幂等。
 - 无多 Agent、插件市场、自动修改源码、无限自主循环。
 - 不使用外部数据库服务；SQLite 由 Python 标准库提供。
+- 多实例只支持单机共享本地文件系统，不支持分布式部署。
 
 ## 文档
 
@@ -134,5 +145,7 @@ python3 -m venv /tmp/zevorinth-venv
 - [原始验收标准](docs/acceptance-criteria.md)
 - [第 1 阶段实现说明](docs/phase-1-implementation.md)
 - [第 1 阶段验收结果](docs/phase-1-results.md)
+- [第 1.5 阶段审计](docs/phase-1.5-audit.md)
+- [第 1.5 阶段结果](docs/phase-1.5-results.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

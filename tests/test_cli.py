@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from zevorinth.cli import doctor_report, main  # noqa: E402
+from zevorinth.service import TaskService  # noqa: E402
 
 
 class CliTests(unittest.TestCase):
@@ -20,10 +22,12 @@ class CliTests(unittest.TestCase):
         report = doctor_report(PROJECT_ROOT)
 
         self.assertEqual(report["phase"], 1)
+        self.assertEqual(report["hardening_phase"], "1.5")
         self.assertEqual(report["project_root"], str(PROJECT_ROOT.resolve()))
         self.assertEqual(report["runtime_dependencies"], [])
         self.assertTrue(report["capabilities"]["task_runtime"])
         self.assertTrue(report["capabilities"]["result_verification"])
+        self.assertTrue(report["capabilities"]["sqlite_execution_leases"])
         self.assertFalse(report["capabilities"]["model_provider"])
 
     def test_doctor_json_is_machine_readable(self) -> None:
@@ -169,6 +173,39 @@ class CliTests(unittest.TestCase):
                 )
             self.assertEqual(exit_code, 2)
             self.assertIn("task not found", stderr.getvalue())
+
+    def test_sqlite_busy_returns_explicit_exit_six(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            TaskService(root, busy_timeout_ms=50)
+            database = root / "data" / "zevorinth.sqlite3"
+            blocker = sqlite3.connect(database, timeout=0.05)
+            blocker.execute("PRAGMA journal_mode = WAL")
+            blocker.execute("BEGIN IMMEDIATE")
+            stderr = StringIO()
+            try:
+                with redirect_stderr(stderr):
+                    exit_code = main(
+                        [
+                            "--home",
+                            temp_dir,
+                            "--busy-timeout-ms",
+                            "50",
+                            "run",
+                            "--goal",
+                            "locked",
+                            "--artifact-path",
+                            "locked.txt",
+                            "--content",
+                            "locked",
+                        ]
+                    )
+            finally:
+                blocker.rollback()
+                blocker.close()
+
+            self.assertEqual(exit_code, 6)
+            self.assertIn("storage or execution-claim error", stderr.getvalue())
 
 
 if __name__ == "__main__":

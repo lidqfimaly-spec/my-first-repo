@@ -325,3 +325,90 @@ CLI
 - 硬链接提交依赖支持该操作的文件系统。
 - 路径安全针对产物目录和文件名，不是完整 OS 沙箱。
 - 模型规划器和多工具选择仍未实现。
+
+## 13. 第 1.5 阶段：执行租约、围栏与崩溃恢复
+
+### 13.1 新增执行权协议
+
+每次运行既有任务都必须在 SQLite 事务中取得执行权：
+
+```text
+owner_id
+lease_token
+lease_expires_at
+claim_generation
+attempt_id
+```
+
+认领规则：
+
+1. 在 `BEGIN IMMEDIATE` 中读取最新 Task。
+2. 终态或不可运行状态拒绝认领。
+3. 其他执行者持有未过期 lease 时拒绝，并记录 `claim_rejected`。
+4. lease 已过期时先记录 `lease_expired`；`running/verifying` 转为 `interrupted`。
+5. 授予新 token，增加 `claim_generation`，记录 `task_claimed`。
+
+所有执行中的状态更新和事件写入都必须携带当前 lease token。token 不匹配时抛出 `ClaimLost`，旧执行者不能覆盖新执行者的状态。
+
+### 13.2 正常执行时间线
+
+```text
+queued
+  -> task_claimed（持久化执行者与租约）
+  -> task_planned (running)
+  -> tool_started
+  -> 文件写入
+  -> tool_succeeded + 工具证据
+  -> verification_started
+  -> verification_completed
+  -> succeeded / failed
+  -> 清除租约
+```
+
+如果策略阻断、模拟结束或工具失败，终态转换同样在事务中清除租约。
+
+### 13.3 恢复协议
+
+- 新实例不会中断活动租约。
+- 租约到期后，`running/verifying` 才转为 `interrupted`。
+- 有持久化工具证据时，只重新验证产物。
+- 没有工具证据但目标文件已存在时，Policy 返回 `artifact_exists`，不覆盖。
+- 有证据但文件缺失、修改或证据不一致时进入显式失败。
+- 终态任务再次 `execute`/`resume` 直接返回原结果，不重复成功。
+
+### 13.4 SQLite 一致性
+
+- 任务快照和事件在同一事务中提交。
+- 状态转换前重新读取数据库，避免使用进程内旧快照决定转换。
+- `busy_timeout` 有界；超时转换为 `StoreBusyError`，CLI 退出码为 6。
+- 事件插入异常会回滚整个事务。
+- lease token 围栏保护关键写回。
+
+### 13.5 多实例结论
+
+当前支持：
+
+- 同一主机、多个 TaskService 实例；
+- 同一本地文件系统上的多个 Python 进程共享同一 SQLite 数据库；
+- 同一任务单执行者；
+- 不同任务并发执行。
+
+当前不支持：
+
+- 跨主机分布式锁；
+- 网络文件系统上的可靠租约语义；
+- 长任务自动租约续期；
+- 分布式文件系统围栏或其他外部存储事务。
+
+因此不得把当前实现描述为分布式执行系统。
+
+### 13.6 真实 SIGKILL 覆盖点
+
+测试子进程在以下时点被父进程发送 `SIGKILL`：
+
+- 真实文件已经写入；
+- 工具结果与产物证据已经持久化；
+- 任务已提交 `verifying` 检查点；
+- 独立 Verifier 尚未执行。
+
+父进程等待明确的进程输出，不使用固定睡眠猜测时点；超时会清理子进程。测试确认返回码是 `-SIGKILL`。租约到期后新运行时恢复并验证文件；文件被修改时恢复失败且不覆盖。

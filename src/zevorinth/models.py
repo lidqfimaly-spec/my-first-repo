@@ -35,6 +35,10 @@ class EventType(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     CLARIFICATION_UPDATED = "clarification_updated"
     TASK_PLANNED = "task_planned"
+    TASK_CLAIMED = "task_claimed"
+    CLAIM_REJECTED = "claim_rejected"
+    LEASE_EXPIRED = "lease_expired"
+    LEASE_RELEASED = "lease_released"
     POLICY_REJECTED = "policy_rejected"
     TOOL_STARTED = "tool_started"
     TOOL_SUCCEEDED = "tool_succeeded"
@@ -309,6 +313,10 @@ class Task:
     verification: VerificationResult | None = None
     missing_fields: list[str] = field(default_factory=list)
     error: TaskError | None = None
+    execution_owner: str | None = None
+    lease_token: str | None = None
+    lease_expires_at: str | None = None
+    claim_generation: int = 0
 
     def to_dict(self) -> JsonObject:
         return {
@@ -326,6 +334,10 @@ class Task:
             "verification": self.verification.to_dict() if self.verification else None,
             "missing_fields": list(self.missing_fields),
             "error": self.error.to_dict() if self.error else None,
+            "execution_owner": self.execution_owner,
+            "lease_token": self.lease_token,
+            "lease_expires_at": self.lease_expires_at,
+            "claim_generation": self.claim_generation,
         }
 
     @classmethod
@@ -350,6 +362,10 @@ class Task:
             verification=VerificationResult.from_dict(verification) if verification else None,
             missing_fields=[str(item) for item in data.get("missing_fields", [])],
             error=TaskError.from_dict(error) if error else None,
+            execution_owner=data.get("execution_owner"),
+            lease_token=data.get("lease_token"),
+            lease_expires_at=data.get("lease_expires_at"),
+            claim_generation=int(data.get("claim_generation", 0)),
         )
 
 
@@ -357,4 +373,11 @@ class Task:
 class PolicyDecision:
     allowed: bool
     code: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimResult:
+    acquired: bool
+    task: Task
     reason: str

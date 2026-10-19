@@ -99,3 +99,44 @@ Zevorinth/
 - `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
 
 Phase 0 的环境核查、复用矩阵、研究计划与原始验收标准均保留。
+
+---
+
+# 第 1.5 阶段新增与修改
+
+## 新增测试与测试辅助
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/sigkill_worker.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_sigkill.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_concurrency.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_hardening.py`
+
+## 新增文档
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-1.5-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-1.5-results.md`
+
+## 核心修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/models.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/event_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/__init__.py`
+- `/Users/lidequan/PythonProject/Zevorinth/pyproject.toml`
+
+## 测试修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/process_exit_helper.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_acceptance.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_event_store.py`
+
+## 文档修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/architecture.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-1-implementation.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-1-results.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`

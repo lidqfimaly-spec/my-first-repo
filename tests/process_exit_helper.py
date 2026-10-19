@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -21,7 +22,16 @@ def main() -> int:
     def exit_after_write(stage: str, task: Task) -> None:
         if stage != "after_write_before_verification":
             os._exit(41)
-        print(task.task_id, flush=True)
+        print(
+            json.dumps(
+                {
+                    "task_id": task.task_id,
+                    "lease_expires_at": task.lease_expires_at,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         os._exit(23)
 
     service = TaskService(runtime_root, fault_hook=exit_after_write)

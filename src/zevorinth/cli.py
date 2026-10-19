@@ -11,7 +11,7 @@ from typing import Sequence
 
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
-from .event_store import TaskNotFound
+from .event_store import EventStoreError, TaskNotFound
 from .models import Task, TaskRequest, TaskStatus
 from .planner import WRITE_TEXT_ARTIFACT
 from .service import TaskService
@@ -43,6 +43,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
         "project": "Zevorinth",
         "version": __version__,
         "phase": 1,
+        "hardening_phase": "1.5",
         "project_root": str(root),
         "python": {
             "version": platform.python_version(),
@@ -63,11 +64,17 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "result_verification": True,
             "durable_event_store": True,
             "resume_interrupted_task": True,
+            "sqlite_execution_leases": True,
         },
         "task_types": [WRITE_TEXT_ARTIFACT],
+        "deployment_scope": {
+            "single_host_shared_sqlite": True,
+            "distributed_execution": False,
+        },
         "notice": (
-            "Phase 1 supports one deterministic artifact-writing task. "
-            "Natural-language planning, LLM calls, and multi-agent execution are not implemented."
+            "Phase 1.5 supports one deterministic artifact-writing task with "
+            "single-host SQLite execution leases. Natural-language planning, "
+            "LLM calls, and distributed execution are not implemented."
         ),
     }
 
@@ -93,7 +100,12 @@ def _print_human(report: dict[str, object]) -> None:
 
 def _service(args: argparse.Namespace) -> TaskService:
     writer = SimulatedArtifactWriter() if getattr(args, "simulate", False) else None
-    return TaskService(_project_root(args.home), writer=writer)
+    return TaskService(
+        _project_root(args.home),
+        writer=writer,
+        lease_seconds=args.lease_seconds,
+        busy_timeout_ms=args.busy_timeout_ms,
+    )
 
 
 def _request_from_args(args: argparse.Namespace) -> TaskRequest:
@@ -132,6 +144,9 @@ def _task_human(task: Task) -> str:
         f"Attempt: {task.attempt_id}",
         f"Created: {task.created_at}",
         f"Updated: {task.updated_at}",
+        f"Claim generation: {task.claim_generation}",
+        f"Execution owner: {task.execution_owner or 'none'}",
+        f"Lease expires: {task.lease_expires_at or 'none'}",
     ]
     if task.plan:
         lines.append(
@@ -181,6 +196,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="runtime root containing data/ and artifacts/ (default: current directory)",
+    )
+    parser.add_argument(
+        "--lease-seconds",
+        type=float,
+        default=60.0,
+        help="execution lease duration for cross-process coordination",
+    )
+    parser.add_argument(
+        "--busy-timeout-ms",
+        type=int,
+        default=10_000,
+        help="maximum SQLite lock wait before returning exit code 6",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -274,4 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         print(f"invalid request: {exc}", file=sys.stderr)
         return 2
+    except EventStoreError as exc:
+        print(f"storage or execution-claim error: {exc}", file=sys.stderr)
+        return 6
     raise AssertionError(f"unhandled command: {args.command}")

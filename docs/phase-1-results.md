@@ -170,3 +170,7 @@ pip install --no-deps -e .
 - `wc -c`：24
 - `shasum -a 256`：`d355873498018fc790e082dea31a57087b630abba0582677cdb5000c6261c321`
 - `status --json` 返回同一字节数、SHA-256、`succeeded` 和 `real`。
+
+## Phase 1.5 后续状态
+
+本文件保留为 Phase 1 基线 `752cae3` 的真实验收记录。Phase 1.5 在不删除 A1–A6 的前提下增加了执行租约、真实 SIGKILL、并发竞争和 SQLite 故障测试；最新结果见 `phase-1.5-results.md`。

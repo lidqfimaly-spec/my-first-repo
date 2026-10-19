@@ -135,3 +135,93 @@
 - Hermes 与 `zh` 工作树仍为 0 项变化，HEAD 分别为 `bbf27ba`、`e68f74f`。
 - AutoCodePlay HEAD 仍为 `7516cfd`，但未提交条目在本次任务期间由 6 增至 10，新增变化包括 `tests/_gui_harness.py`、`tests/test_body_contract.py`、`tests/test_gui_gates.py`、`tests/test_web_routes.py`。
 - 本任务只在 AutoCodePlay 执行只读 Git/stat 检查，没有写入、还原或清理这些并发外部变化。
+
+---
+
+# 第 1.5 阶段执行记录
+
+## Git 基线
+
+| 命令 | 退出码 | 结果 |
+| --- | ---: | --- |
+| `git rev-parse --show-toplevel` | 0 | `/Users/lidequan/PythonProject/Zevorinth` |
+| `git branch --show-current` | 0 | `main` |
+| `git status --short --untracked-files=all` | 0 | 33 个预期项目文件未跟踪 |
+| `git diff --cached --check`（修正末尾空行后） | 0 | 无空白错误 |
+| `git commit -m "feat: establish verified artifact task loop"` | 0 | 根提交 `752cae3`，33 files |
+| `git switch -c phase-1.5-hardening` | 0 | 创建并切换加固分支 |
+
+## 实际测试
+
+完整测试连续运行三次：
+
+| 测试 | 结果 |
+| --- | --- |
+| Phase 1 基线完整测试 | 32/32 通过 |
+| 真实 SIGKILL 恢复 | 2/2 通过 |
+| 并发 C1/C2/C3 | 3/3 通过 |
+| EventStore 租约/锁/回滚 | 6/6 通过 |
+| 异常恢复与幂等 | 4/4 通过 |
+| 完整套件第 1 次 | 46/46 通过，1.085 秒 |
+| 完整套件第 2 次 | 46/46 通过，1.111 秒 |
+| 完整套件第 3 次 | 46/46 通过，1.038 秒 |
+| 完整套件最终回归 | 46/46 通过，0.957 秒 |
+| `python3 -m compileall -q src tests` | 退出码 0 |
+
+## SIGKILL 测试方式
+
+- 子进程在真实文件写入、工具证据提交、`verifying` 检查点后输出 JSON 同步信号，然后进入 `signal.pause()`；
+- 父进程用 `selectors` 等待输出，不使用固定睡眠；
+- 父进程发送 `SIGKILL`；
+- 测试断言子进程返回码等于 `-signal.SIGKILL`；
+- 新运行时使用超过租约期限的测试时钟恢复；
+- 正确文件通过重新验证；修改文件失败且不覆盖。
+
+## 并发测试方式
+
+- `multiprocessing` 使用 `spawn` 启动独立 Python 进程；
+- 测试使用 Event/Barrier 和 Queue 同步，不依赖随机 sleep；
+- Writer 或 Verifier 在明确阶段阻塞，以让竞争执行者真实尝试认领；
+- 测试结束后对仍存活进程执行有界 join/kill 清理。
+
+## 隔离安装
+
+| 命令/检查 | 退出码 | 真实结果 |
+| --- | ---: | --- |
+| 新建 `/tmp/zevorinth-phase1.5.xdT5hm/venv` | 0 | 隔离环境创建成功 |
+| `pip install --no-deps -e .` | 0 | editable wheel `zevorinth-0.2.0` 安装成功 |
+| `zevorinth --version` | 0 | `0.2.0` |
+| `zevorinth --home ... doctor --json` | 0 | `hardening_phase=1.5`，SQLite leases true，distributed false |
+| `zevorinth --home ... run ... --json` | 0 | Task `740d2d9d-5cbd-4156-a4c0-10be244f7711` 成功 |
+| `zevorinth --home ... status <id> --json` | 0 | `succeeded`、`real`、租约已清除 |
+| `zevorinth --home ... events <id> --json` | 0 | 8 个有序事件，含 `task_claimed` |
+| `wc -c <artifact>` | 0 | 24 字节 |
+| `shasum -a 256 <artifact>` | 0 | `c53fd03b983d0fcd002559618e50026f2d94984f4e711dbe1c633e64e95cdd73` |
+
+## 最终 Git 审计
+
+- 当前分支：`phase-1.5-hardening`
+- 基线提交：`752cae3 feat: establish verified artifact task loop`
+- 相对基线的已跟踪差异：16 个修改文件，`1161 insertions(+), 191 deletions(-)`
+- 新增未跟踪文件：6 个（2 个文档、4 个测试/测试辅助）
+- `git diff --check`：退出码 0
+- 未设置远程
+
+未跟踪文件必须单独计入差异，不能把 `git diff --stat` 的结果误读为全部改动：
+
+```text
+docs/phase-1.5-audit.md
+docs/phase-1.5-results.md
+tests/sigkill_worker.py
+tests/test_concurrency.py
+tests/test_hardening.py
+tests/test_sigkill.py
+```
+
+## 旧项目最终状态
+
+- AutoCodePlay：HEAD `7516cfd`，10 项既有/并发未提交变化；
+- Hermes：HEAD `bbf27ba`，0 项变化；
+- zh：HEAD `e68f74f`，0 项变化。
+
+本阶段未修改旧项目。
