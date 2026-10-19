@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from zevorinth.artifact_tool import SimulatedArtifactWriter  # noqa: E402
 from zevorinth.llm_planner import (  # noqa: E402
     CANDIDATE_JSON_SCHEMA,
+    DEEPSEEK_CANDIDATE_JSON_SCHEMA,
     LLMProvider,
     LLMPlanner,
     LLMPlannerConfig,
@@ -24,7 +25,6 @@ from zevorinth.llm_planner import (  # noqa: E402
     ModelCallResult,
     OpenAIResponsesClient,
     StructuredOutputError,
-    _extract_refusal,
 )
 from zevorinth.models import (  # noqa: E402
     ExecutionMode,
@@ -151,19 +151,10 @@ class LLMPlannerTests(unittest.TestCase):
             set(CANDIDATE_JSON_SCHEMA["properties"]),
             set(CANDIDATE_JSON_SCHEMA["required"]),
         )
-
-    def test_responses_refusal_content_is_detected(self) -> None:
-        response = SimpleNamespace(
-            output=[
-                SimpleNamespace(
-                    type="message",
-                    content=[
-                        SimpleNamespace(type="refusal", refusal="cannot comply")
-                    ],
-                )
-            ]
+        self.assertEqual(
+            DEEPSEEK_CANDIDATE_JSON_SCHEMA["required"],
+            ["classification"],
         )
-        self.assertEqual(_extract_refusal(response), "cannot comply")
 
     def test_official_sdk_adapter_uses_bounded_no_tool_request(self) -> None:
         captured: dict[str, Any] = {}
@@ -323,6 +314,10 @@ class LLMPlannerTests(unittest.TestCase):
         self.assertNotIn("tools", request)
         self.assertNotIn("strict", request["text"]["format"])
         self.assertEqual(request["text"]["format"]["type"], "json_schema")
+        self.assertEqual(
+            request["text"]["format"]["schema"]["required"],
+            ["classification"],
+        )
         self.assertEqual(request["max_output_tokens"], 222)
         self.assertEqual(result.candidate["artifact_path"], "deepseek.txt")
 
@@ -384,6 +379,126 @@ class LLMPlannerTests(unittest.TestCase):
             config = LLMPlannerConfig.from_environment()
         self.assertEqual(config.provider, None)
         self.assertEqual(config.validation_error()[0], "unsupported_provider")
+
+    def test_clarification_does_not_require_unrelated_file_fields(self) -> None:
+        task, _, events, _ = self._run(
+            ModelCallResult(
+                candidate={
+                    "classification": "clarification",
+                    "missing_fields": ["artifact_path"],
+                    "clarification_questions": ["What file name should I use?"],
+                },
+                status="completed",
+                text_present=True,
+            )
+        )
+
+        self.assertEqual(task.status, TaskStatus.AWAITING_CLARIFICATION)
+        self.assertEqual(task.missing_fields, ["artifact_path"])
+        self.assertFalse(any(event.event_type == "tool_started" for event in events))
+
+    def test_category_specific_missing_and_unknown_fields_are_diagnosed(self) -> None:
+        cases = [
+            (
+                {"classification": "plan", "operation": "write_text_artifact"},
+                "missing_candidate_fields",
+                "candidate_missing_fields",
+            ),
+            (
+                {
+                    **candidate(),
+                    "hidden_instruction": "sensitive-value",
+                },
+                "unknown_candidate_fields",
+                "candidate_unknown_fields",
+            ),
+        ]
+        for candidate_value, error_code, diagnostic_key in cases:
+            with self.subTest(error_code=error_code):
+                task, _, events, _ = self._run(
+                    ModelCallResult(
+                        candidate=candidate_value,
+                        status="completed",
+                        text_present=True,
+                    )
+                )
+                self.assertEqual(task.status, TaskStatus.PLANNING_FAILED)
+                self.assertEqual(task.error.code, error_code)
+                self.assertIn(diagnostic_key, task.planning_metadata)
+                self.assertNotIn(
+                    "sensitive-value",
+                    json.dumps(task.planning_metadata, ensure_ascii=False),
+                )
+                self.assertFalse(
+                    any(event.event_type == "tool_started" for event in events)
+                )
+
+    def test_empty_invalid_json_and_invalid_status_have_safe_diagnostics(self) -> None:
+        cases = [
+            (
+                ModelCallResult(
+                    candidate=None,
+                    status="completed",
+                    text_present=False,
+                    output_item_types=["message"],
+                    content_part_types=[],
+                ),
+                "missing_structured_output",
+            ),
+            (
+                ModelCallResult(
+                    candidate=None,
+                    status="completed",
+                    text_present=True,
+                    text_length=12,
+                    json_error_type="JSONDecodeError",
+                    output_item_types=["message"],
+                    content_part_types=["output_text"],
+                ),
+                "invalid_structured_output",
+            ),
+            (
+                ModelCallResult(
+                    candidate=candidate(),
+                    status="unexpected",
+                ),
+                "invalid_response_status",
+            ),
+            (
+                ModelCallResult(
+                    candidate=candidate(),
+                    status="completed",
+                    http_status=500,
+                ),
+                "model_response_failed",
+            ),
+        ]
+        for result, error_code in cases:
+            with self.subTest(error_code=error_code):
+                task, _, events, _ = self._run(result)
+                self.assertEqual(task.status, TaskStatus.PLANNING_FAILED)
+                self.assertEqual(task.error.code, error_code)
+                self.assertEqual(task.execution_mode, ExecutionMode.NOT_EXECUTED)
+                self.assertFalse(
+                    any(event.event_type == "tool_started" for event in events)
+                )
+
+    def test_api_error_keeps_only_whitelisted_diagnostics(self) -> None:
+        class StatusError(RuntimeError):
+            status_code = 429
+
+        secret = "provider-secret-in-error"
+        planner, _ = planner_with(StatusError(secret))
+        outcome = planner.plan_request(
+            TaskRequest(
+                goal="Create a file.",
+                operation=None,
+                parameters={},
+            )
+        )
+        serialized = json.dumps(outcome.to_dict(), ensure_ascii=False)
+        self.assertEqual(outcome.metadata["http_status"], 429)
+        self.assertNotIn(secret, serialized)
 
     def test_incompatible_sdk_version_is_rejected_before_client_creation(self) -> None:
         fake_module = ModuleType("openai")
@@ -472,14 +587,14 @@ class LLMPlannerTests(unittest.TestCase):
         )
 
         self.assertEqual(task.status, TaskStatus.PLANNING_FAILED)
-        self.assertEqual(task.error.code, "invalid_candidate_fields")
+        self.assertEqual(task.error.code, "unknown_candidate_fields")
         self.assertEqual(task.execution_mode, ExecutionMode.NOT_EXECUTED)
         self.assertFalse(any(event.event_type == "tool_started" for event in events))
 
     def test_refusal_incomplete_timeout_and_connection_are_safe_failures(self) -> None:
         cases = [
             (
-                ModelCallResult(refusal="no", status="completed"),
+                ModelCallResult(refusal_present=True, status="completed"),
                 "model_refusal",
             ),
             (

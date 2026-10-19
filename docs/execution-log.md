@@ -434,3 +434,52 @@ ZEVORINTH_MODEL=deepseek-flash
 - `zh`：HEAD 仍为 `e68f74f`，当前 1 项变化。
 
 这些变化不属于 Zevorinth，本次没有清理、还原或提交它们。
+
+---
+
+# 第 2.6 阶段执行记录
+
+## 阶段封存
+
+- Phase 2.5 提交：`e4abcb1 eval: record DeepSeek online pilot results`；
+- 精确暂存 17 个预期文件；
+- `.idea/` 与 ignored 在线 JSON 未进入提交；
+- 从该提交创建 `phase-2.6-response-hardening`。
+
+## 代码路径审计
+
+- 旧 Candidate Validator 对所有分类使用同一个字段集合；
+- 缺少与分类无关的字段会被错误分类为 `invalid_candidate_fields`；
+- 旧响应适配器只读取 `response.output_text`，JSON 解析失败时丢失状态和结构诊断；
+- 新 `response_normalization.py` 提取白名单诊断，不保存原始文本；
+- 候选契约改为按 classification 检查必需字段；
+- 未知字段继续拒绝，缺少无关字段不再拒绝；
+- DeepSeek Schema 共同要求 `classification`，本地验证器强制分类业务字段；
+- 未知 response status、非 2xx、response error、空文本、无效 JSON 均 fail-closed。
+
+## 诊断隐私
+
+- 不保存完整用户目标；
+- 不保存完整模型文本、拒答文本或候选字段值；
+- 不保存异常字符串；
+- 未知字段名仅保留安全标识符格式，否则 `<redacted>`；
+- Key/认证头相关测试通过。
+
+## 测试
+
+| 环境 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 91/91 通过，2.526 秒 |
+| 隔离安装环境完整 unittest | 91/91 通过，2.459 秒 |
+| ResourceWarning-as-error | 通过 |
+| 离线 Planner 评测 | 28/28 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## API 与历史结果
+
+- 本阶段真实 API 请求：0；
+- 在线评测：未运行；
+- 新在线结果文件：未创建；
+- 原 Phase 2.5 报告未改写；
+- 原报告 SHA-256：`9379a1efa8484ddb03c8f8c6ed9da44447b6d0087e5c8b8f6fccf86e1f006476`。

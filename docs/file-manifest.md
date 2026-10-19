@@ -54,6 +54,31 @@
 
 ---
 
+# 第 2.6 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/response_normalization.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_response_normalization.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2.6-response-hardening.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2.6-results.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/planning_validation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evaluation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evals/planner_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_planner_eval.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2.5-online-results.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/architecture.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+---
+
 # 第 2 阶段新增与修改
 
 ## 新增源码与评测数据

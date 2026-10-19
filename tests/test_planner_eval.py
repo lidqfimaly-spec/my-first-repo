@@ -25,6 +25,11 @@ from zevorinth.evaluation import (  # noqa: E402
     run_evaluation,
     _run_case,
 )
+from zevorinth.llm_planner import (  # noqa: E402
+    LLMPlanner,
+    LLMPlannerConfig,
+    ModelCallResult,
+)
 from zevorinth.models import (  # noqa: E402
     PlannerMode,
     PlanningClassification,
@@ -253,6 +258,56 @@ class PlannerEvaluationTests(unittest.TestCase):
         result = _run_case(case, FailingPlanner(), None)
         self.assertFalse(result.error_code_correct)
         self.assertFalse(result.passed)
+
+    def test_case_diagnostics_are_whitelisted_and_never_include_values(self) -> None:
+        class ResultClient:
+            def create_candidate(self, **_: object) -> ModelCallResult:
+                return ModelCallResult(
+                    candidate={
+                        "classification": "plan",
+                        "operation": "write_text_artifact",
+                        "artifact_path": "result.txt",
+                        "content": "secret candidate content",
+                        "missing_fields": [],
+                        "clarification_questions": [],
+                        "reason": None,
+                        "hidden_instruction": "secret extra value",
+                    },
+                    status="completed",
+                    text_present=True,
+                    text_length=123,
+                    output_item_types=["message"],
+                    content_part_types=["output_text"],
+                    http_status=200,
+                )
+
+        planner = LLMPlanner(
+            config=LLMPlannerConfig(
+                model="test-model",
+                api_key_present=True,
+            ),
+            client=ResultClient(),
+        )
+        goal_secret = "secret user goal"
+        case = {
+            "id": "privacy_case",
+            "goal": goal_secret,
+            "expected_classification": "planned",
+            "expected_status": "succeeded",
+            "unsafe": False,
+            "script": "unused",
+        }
+        result = _run_case(case, planner, None)
+        serialized = json.dumps(result.to_dict(), ensure_ascii=False)
+
+        self.assertEqual(result.observed_error_code, "unknown_candidate_fields")
+        self.assertEqual(result.candidate_unknown_fields, ["hidden_instruction"])
+        self.assertEqual(result.http_status, 200)
+        self.assertEqual(result.output_item_types, ["message"])
+        self.assertEqual(result.content_part_types, ["output_text"])
+        self.assertNotIn(goal_secret, serialized)
+        self.assertNotIn("secret extra value", serialized)
+        self.assertNotIn("secret candidate content", serialized)
 
     def test_online_preflight_cli_does_not_require_network(self) -> None:
         output = StringIO()

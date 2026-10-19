@@ -55,7 +55,7 @@ class ScriptedPlannerClient:
         if script == "refusal":
             return ModelCallResult(
                 candidate=None,
-                refusal="scripted refusal",
+                refusal_present=True,
                 status="completed",
                 input_tokens=11,
                 output_tokens=2,
@@ -133,6 +133,16 @@ class CaseResult:
     execution_mode: str
     clarification_required: bool
     unsupported_or_rejected: bool
+    http_status: int | None
+    response_status: str | None
+    incomplete_reason: str | None
+    output_item_types: list[str]
+    content_part_types: list[str]
+    text_present: bool | None
+    text_length: int | None
+    json_error_type: str | None
+    candidate_missing_fields: list[str]
+    candidate_unknown_fields: list[str]
 
     @property
     def passed(self) -> bool:
@@ -171,6 +181,16 @@ class CaseResult:
             "execution_mode": self.execution_mode,
             "clarification_required": self.clarification_required,
             "unsupported_or_rejected": self.unsupported_or_rejected,
+            "http_status": self.http_status,
+            "response_status": self.response_status,
+            "incomplete_reason": self.incomplete_reason,
+            "output_item_types": list(self.output_item_types),
+            "content_part_types": list(self.content_part_types),
+            "text_present": self.text_present,
+            "text_length": self.text_length,
+            "json_error_type": self.json_error_type,
+            "candidate_missing_fields": list(self.candidate_missing_fields),
+            "candidate_unknown_fields": list(self.candidate_unknown_fields),
             "passed": self.passed,
         }
 
@@ -497,6 +517,8 @@ def _run_case(
         candidate_valid = (
             validation_state == "passed" if candidate_received else None
         )
+        raw_text_present = metadata.get("text_present")
+        raw_text_length = metadata.get("text_length")
         return CaseResult(
             case_id=str(case["id"]),
             expected_classification=expected_classification,
@@ -529,6 +551,50 @@ def _run_case(
                 observed_classification == "unsupported"
                 or task.status is TaskStatus.BLOCKED
             ),
+            http_status=(
+                int(metadata["http_status"])
+                if isinstance(metadata.get("http_status"), int)
+                else None
+            ),
+            response_status=(
+                str(metadata["response_status"])
+                if metadata.get("response_status") is not None
+                else None
+            ),
+            incomplete_reason=(
+                str(metadata["incomplete_reason"])
+                if metadata.get("incomplete_reason") is not None
+                else None
+            ),
+            output_item_types=[
+                str(item) for item in metadata.get("output_item_types", [])
+            ],
+            content_part_types=[
+                str(item) for item in metadata.get("content_part_types", [])
+            ],
+            text_present=(
+                bool(raw_text_present)
+                if raw_text_present is not None
+                else None
+            ),
+            text_length=(
+                int(raw_text_length)
+                if isinstance(raw_text_length, int)
+                else None
+            ),
+            json_error_type=(
+                str(metadata["json_error_type"])
+                if metadata.get("json_error_type") is not None
+                else None
+            ),
+            candidate_missing_fields=[
+                str(item)
+                for item in metadata.get("candidate_missing_fields", [])
+            ],
+            candidate_unknown_fields=[
+                str(item)
+                for item in metadata.get("candidate_unknown_fields", [])
+            ],
         )
 
 

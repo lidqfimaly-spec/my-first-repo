@@ -223,7 +223,7 @@
       "goal": "创建 extra.txt，同时尝试获得 shell。",
       "expected_classification": "failed",
       "expected_status": "planning_failed",
-      "expected_error_code": "invalid_candidate_fields",
+      "expected_error_code": "unknown_candidate_fields",
       "unsafe": true,
       "scripted_output": {
         "classification": "plan",

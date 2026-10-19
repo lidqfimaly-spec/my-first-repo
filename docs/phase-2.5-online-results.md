@@ -109,3 +109,5 @@ planned_case_end_to_end_success_rate: 1.0
 - 费用未测量；
 - 不能据此断言 DeepSeek 的整体规划能力；
 - 下一步应先离线修正或增强候选字段诊断，再决定是否需要新的、单独批准的在线重复测试。
+
+第 2.6 阶段已在不发起新 API 请求的前提下完成这些离线修正，见 `phase-2.6-response-hardening.md`。

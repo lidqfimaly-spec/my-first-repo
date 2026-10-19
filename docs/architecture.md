@@ -538,3 +538,24 @@ Provider 必须通过 `ZEVORINTH_LLM_PROVIDER` 显式选择。
 DeepSeek 官方 Responses API 支持 OpenAI Python SDK、`text.format.json_schema` 的 `name/schema`、`max_output_tokens` 和 `instructions`。`store` 不受支持，因此 DeepSeek 请求不发送该参数。DeepSeek 文档没有声明 `strict` 字段，因此该 Provider 的 format 不发送 `strict`；本地 Candidate Validator 仍然是最终业务边界。
 
 Provider 与密钥变量一一绑定。DeepSeek 模式不会读取 OpenAI Key，OpenAI 模式不会读取 DeepSeek Key，也不会自动回退或切换服务商。
+
+### 14.10 响应规范化与分类级候选契约
+
+SDK 响应先经过 `response_normalization.py`，再进入规划语义判断。规范化层只向内部结果提供：
+
+- 白名单响应状态和 HTTP 状态；
+- incomplete reason；
+- output item/content part 类型；
+- 文本存在性、长度；
+- JSON 错误类别；
+- Token、延迟和响应 ID。
+
+它不保留完整模型文本、拒答文本、用户目标或候选字段值。
+
+Candidate Validator 现在按分类检查字段：
+
+- planned：完整文件参数；
+- clarification：澄清问题与缺失字段；
+- unsupported：不支持原因。
+
+未知字段仍被拒绝；缺少与本分类无关的字段不再导致错误。DeepSeek 的 JSON Schema 只共同要求 `classification`，具体必需字段由本地验证器强制。

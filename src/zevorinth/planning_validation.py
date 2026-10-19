@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 from .artifact_tool import ArtifactToolError, validate_artifact_name
@@ -28,6 +29,20 @@ CANDIDATE_FIELDS = frozenset(
         "reason",
     }
 )
+_SAFE_FIELD_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+REQUIRED_FIELDS_BY_CLASSIFICATION = {
+    "plan": ("operation", "artifact_path", "content"),
+    "clarification": ("missing_fields", "clarification_questions"),
+    "unsupported": ("reason",),
+}
+_DEFAULTS = {
+    "operation": None,
+    "artifact_path": None,
+    "content": None,
+    "missing_fields": [],
+    "clarification_questions": [],
+    "reason": None,
+}
 
 
 class PlanningCandidateValidator:
@@ -52,11 +67,13 @@ class PlanningCandidateValidator:
                 "planner candidate must be an object",
                 base_metadata,
             )
-        if set(candidate) != CANDIDATE_FIELDS:
+        unknown_fields = sorted(set(candidate) - CANDIDATE_FIELDS)
+        if unknown_fields:
             return self._failed(
-                "invalid_candidate_fields",
-                "planner candidate fields do not match the local contract",
+                "unknown_candidate_fields",
+                "planner candidate contains fields outside the local contract",
                 base_metadata,
+                extra={"candidate_unknown_fields": _safe_field_names(unknown_fields)},
             )
         try:
             encoded = json.dumps(candidate, ensure_ascii=False).encode("utf-8")
@@ -74,10 +91,35 @@ class PlanningCandidateValidator:
             )
 
         classification = candidate.get("classification")
+        if classification not in REQUIRED_FIELDS_BY_CLASSIFICATION:
+            return self._failed(
+                "invalid_candidate_classification",
+                "classification must be plan, clarification, or unsupported",
+                {
+                    **base_metadata,
+                    "candidate_classification": "invalid",
+                },
+            )
+        normalized = {**_DEFAULTS, **dict(candidate)}
+        missing_fields = [
+            field_name
+            for field_name in REQUIRED_FIELDS_BY_CLASSIFICATION[classification]
+            if field_name not in candidate
+        ]
+        if missing_fields:
+            return self._failed(
+                "missing_candidate_fields",
+                "planner candidate is missing category-specific fields",
+                {
+                    **base_metadata,
+                    "candidate_classification": classification,
+                    "candidate_missing_fields": list(missing_fields),
+                },
+            )
         if classification == "clarification":
-            return self._clarification(candidate, base_request, base_metadata)
+            return self._clarification(normalized, base_request, base_metadata)
         if classification == "unsupported":
-            reason = candidate.get("reason")
+            reason = normalized.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 return self._failed(
                     "invalid_unsupported_reason",
@@ -94,13 +136,7 @@ class PlanningCandidateValidator:
                     "candidate_validation": "passed",
                 },
             )
-        if classification != "plan":
-            return self._failed(
-                "invalid_candidate_classification",
-                "classification must be plan, clarification, or unsupported",
-                base_metadata,
-            )
-        return self._plan(candidate, base_request, base_metadata)
+        return self._plan(normalized, base_request, base_metadata)
 
     def _plan(
         self,
@@ -235,6 +271,8 @@ class PlanningCandidateValidator:
         code: str,
         message: str,
         metadata: dict[str, Any],
+        *,
+        extra: Mapping[str, Any] | None = None,
     ) -> PlanningOutcome:
         return PlanningOutcome(
             classification=PlanningClassification.FAILED,
@@ -242,7 +280,16 @@ class PlanningCandidateValidator:
             error_message=message,
             metadata={
                 **metadata,
+                **dict(extra or {}),
                 "candidate_validation": "rejected",
                 "validation_error_code": code,
             },
         )
+
+
+def _safe_field_names(names: list[object]) -> list[str]:
+    safe: list[str] = []
+    for raw in names[:20]:
+        value = str(raw)
+        safe.append(value if _SAFE_FIELD_NAME.fullmatch(value) else "<redacted>")
+    return safe

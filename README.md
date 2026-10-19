@@ -233,5 +233,7 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 2 阶段评测结果](docs/phase-2-results.md)
 - [第 2.5 阶段预检](docs/phase-2.5-preflight.md)
 - [第 2.5 阶段 DeepSeek 在线结果](docs/phase-2.5-online-results.md)
+- [第 2.6 阶段响应加固](docs/phase-2.6-response-hardening.md)
+- [第 2.6 阶段结果](docs/phase-2.6-results.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

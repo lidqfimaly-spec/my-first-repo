@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
@@ -14,6 +15,7 @@ from typing import Any, Protocol
 
 from .models import PlannerMode, PlanningClassification, PlanningOutcome, TaskRequest
 from .planning_validation import PlanningCandidateValidator
+from .response_normalization import ModelCallResult, normalize_response_object
 
 
 MAX_GOAL_BYTES = 16 * 1024
@@ -112,6 +114,8 @@ CANDIDATE_JSON_SCHEMA: dict[str, Any] = {
         "reason",
     ],
 }
+DEEPSEEK_CANDIDATE_JSON_SCHEMA = deepcopy(CANDIDATE_JSON_SCHEMA)
+DEEPSEEK_CANDIDATE_JSON_SCHEMA["required"] = ["classification"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,19 +204,6 @@ class LLMPlannerConfig:
         }
 
 
-@dataclass(slots=True)
-class ModelCallResult:
-    candidate: object | None = None
-    refusal: str | None = None
-    status: str | None = None
-    incomplete_reason: str | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    total_tokens: int | None = None
-    response_id: str | None = None
-    output_bytes: int | None = None
-
-
 class ResponsesClient(Protocol):
     def create_candidate(
         self,
@@ -275,7 +266,11 @@ class OpenAIResponsesClient:
         format_spec: dict[str, object] = {
             "type": "json_schema",
             "name": "zevorinth_planner_candidate",
-            "schema": CANDIDATE_JSON_SCHEMA,
+            "schema": (
+                CANDIDATE_JSON_SCHEMA
+                if self.config.provider is LLMProvider.OPENAI
+                else DEEPSEEK_CANDIDATE_JSON_SCHEMA
+            ),
         }
         if self.config.provider is LLMProvider.OPENAI:
             format_spec["strict"] = True
@@ -292,31 +287,7 @@ class OpenAIResponsesClient:
         response = self._client.responses.create(
             **request,
         )
-        refusal = _extract_refusal(response)
-        output_text = response.output_text or ""
-        candidate: object | None = None
-        if output_text:
-            try:
-                candidate = json.loads(output_text)
-            except json.JSONDecodeError as exc:
-                raise StructuredOutputError(
-                    "structured response was not valid JSON"
-                ) from exc
-        usage = response.usage
-        incomplete = response.incomplete_details
-        return ModelCallResult(
-            candidate=candidate,
-            refusal=refusal,
-            status=response.status,
-            incomplete_reason=(
-                getattr(incomplete, "reason", None) if incomplete else None
-            ),
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
-            total_tokens=getattr(usage, "total_tokens", None),
-            response_id=response.id,
-            output_bytes=len(output_text.encode("utf-8")),
-        )
+        return normalize_response_object(response)
 
 
 class LLMConfigurationError(RuntimeError):
@@ -420,6 +391,7 @@ class LLMPlanner:
                     **metadata,
                     "latency_ms": latency_ms,
                     "error_type": type(exc).__name__,
+                    "http_status": _exception_http_status(exc),
                     "model_call_attempted": True,
                 },
             )
@@ -435,14 +407,15 @@ class LLMPlanner:
             "goal_sha256": hashlib.sha256(goal.encode("utf-8")).hexdigest(),
             "model_call_attempted": True,
         }
-        if result.refusal:
+        call_metadata.update(result.diagnostics())
+        if result.refusal_present:
             return PlanningOutcome(
                 classification=PlanningClassification.FAILED,
                 error_code="model_refusal",
                 error_message="model refused the planning request",
                 metadata=call_metadata,
             )
-        if result.status in {"failed", "cancelled"}:
+        if result.status in {"failed", "cancelled"} or result.response_error_present:
             return PlanningOutcome(
                 classification=PlanningClassification.FAILED,
                 error_code="model_response_failed",
@@ -456,6 +429,27 @@ class LLMPlanner:
                 error_message=(
                     result.incomplete_reason or "model response was incomplete"
                 ),
+                metadata=call_metadata,
+            )
+        if result.status != "completed":
+            return PlanningOutcome(
+                classification=PlanningClassification.FAILED,
+                error_code="invalid_response_status",
+                error_message="model response did not have a completed status",
+                metadata=call_metadata,
+            )
+        if result.http_status is not None and not 200 <= result.http_status < 300:
+            return PlanningOutcome(
+                classification=PlanningClassification.FAILED,
+                error_code="model_response_failed",
+                error_message="model response returned a non-success HTTP status",
+                metadata=call_metadata,
+            )
+        if result.json_error_type:
+            return PlanningOutcome(
+                classification=PlanningClassification.FAILED,
+                error_code="invalid_structured_output",
+                error_message="model output was not a valid structured JSON candidate",
                 metadata=call_metadata,
             )
         if result.candidate is None:
@@ -472,18 +466,6 @@ class LLMPlanner:
         )
 
 
-def _extract_refusal(response: object) -> str | None:
-    for output in getattr(response, "output", []) or []:
-        if getattr(output, "type", None) != "message":
-            continue
-        for content in getattr(output, "content", []) or []:
-            if getattr(content, "type", None) == "refusal":
-                refusal = getattr(content, "refusal", None)
-                if refusal:
-                    return str(refusal)
-    return None
-
-
 def _classify_api_error(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, StructuredOutputError):
         return "invalid_structured_output", str(exc)
@@ -497,6 +479,11 @@ def _classify_api_error(exc: Exception) -> tuple[str, str]:
     if "badrequest" in name or "validation" in name:
         return "model_request_invalid", "model planning request was rejected"
     return "model_api_error", f"model planning failed with {type(exc).__name__}"
+
+
+def _exception_http_status(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None)
+    return status if isinstance(status, int) else None
 
 
 def _parse_float(
