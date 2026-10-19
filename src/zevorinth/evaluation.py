@@ -23,6 +23,9 @@ from .service import TaskService
 
 DEFAULT_DATASET = Path(__file__).with_name("evals") / "planner_cases.json"
 DEFAULT_PILOT = Path(__file__).with_name("evals") / "online_pilot_v1.json"
+DEFAULT_RETEST_PILOT = (
+    Path(__file__).with_name("evals") / "online_retest_v1.json"
+)
 EVALUATION_VERSION = "2.5.0"
 ONLINE_PILOT_MAX_CASES = 5
 
@@ -210,10 +213,15 @@ def load_pilot(path: Path | None = None) -> dict[str, Any]:
     payload = json.loads(pilot_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
         raise ValueError("online pilot has an invalid shape")
-    if payload.get("max_cases") != ONLINE_PILOT_MAX_CASES:
-        raise ValueError("online pilot max_cases must be 5")
-    if len(payload["cases"]) != ONLINE_PILOT_MAX_CASES:
-        raise ValueError("online pilot must contain exactly 5 cases")
+    max_cases = payload.get("max_cases")
+    if (
+        not isinstance(max_cases, int)
+        or max_cases < 1
+        or max_cases > ONLINE_PILOT_MAX_CASES
+    ):
+        raise ValueError("online pilot max_cases must be between 1 and 5")
+    if len(payload["cases"]) != max_cases:
+        raise ValueError("online pilot case count must match max_cases")
     return payload
 
 
@@ -227,7 +235,6 @@ def _select_pilot_cases(
         )
     case_index = {str(case["id"]): case for case in dataset["cases"]}
     selected: list[Mapping[str, Any]] = []
-    categories: set[str] = set()
     for entry in pilot["cases"]:
         case_id = str(entry["id"])
         if case_id in {str(case["id"]) for case in selected}:
@@ -245,19 +252,12 @@ def _select_pilot_cases(
             raise EvaluationConfigurationError(
                 f"online pilot expectation mismatch for case: {case_id}"
             )
+        category = entry.get("category")
+        if not isinstance(category, str) or not category:
+            raise EvaluationConfigurationError(
+                f"online pilot has no category for case: {case_id}"
+            )
         selected.append(case)
-        categories.add(str(entry["category"]))
-    required = {
-        "safe_executable",
-        "clarification",
-        "unsupported",
-        "path_escape",
-        "prompt_injection",
-    }
-    if categories != required:
-        raise EvaluationConfigurationError(
-            "online pilot categories do not cover the required five scenarios"
-        )
     return selected
 
 
@@ -285,29 +285,50 @@ def _select_case_ids(
 def online_preflight(
     *,
     pilot_path: Path | None = None,
+    case_ids: list[str] | None = None,
     dataset_path: Path | None = None,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
     dataset = load_cases(dataset_path)
-    pilot = load_pilot(pilot_path)
-    cases = _select_pilot_cases(dataset, pilot)
+    if case_ids and pilot_path:
+        raise EvaluationConfigurationError(
+            "online preflight cannot use case_ids and a pilot together"
+        )
+    if case_ids:
+        pilot = None
+        cases = _select_case_ids(dataset, case_ids)
+        entries = [
+            {
+                "category": str(case["expected_classification"]),
+                "expected_classification": str(
+                    case["expected_classification"]
+                ),
+            }
+            for case in cases
+        ]
+        selection_mode = "case_ids"
+    else:
+        pilot = load_pilot(pilot_path)
+        cases = _select_pilot_cases(dataset, pilot)
+        entries = list(pilot["cases"])
+        selection_mode = "pilot"
     config = LLMPlannerConfig.from_environment()
     sdk_status = openai_sdk_status()
     selected = []
-    for entry, case in zip(pilot["cases"], cases, strict=True):
+    for entry, case in zip(entries, cases, strict=True):
         selected.append(
             {
                 "case_id": str(case["id"]),
                 "category": str(entry["category"]),
                 "expected_classification": str(case["expected_classification"]),
-                "goal_preview": str(_resolve_goal(case))[:500],
             }
         )
     return {
         "mode": "online-preflight",
         "evaluation_version": EVALUATION_VERSION,
         "dataset_version": str(dataset.get("version")),
-        "pilot_version": str(pilot.get("version")),
+        "selection_mode": selection_mode,
+        "pilot_version": str(pilot.get("version")) if pilot else None,
         "selected_cases": selected,
         "selected_case_ids": [item["case_id"] for item in selected],
         "configuration": {

@@ -1,0 +1,20 @@
+{
+  "version": "phase-2.7-v1",
+  "dataset": "planner_cases.json",
+  "dataset_version": "1",
+  "max_cases": 2,
+  "cases": [
+    {
+      "id": "clarify_ambiguous_goal",
+      "category": "clarification",
+      "expected_classification": "clarification",
+      "purpose": "Verify the Phase 2.6 category-specific candidate contract."
+    },
+    {
+      "id": "unsupported_shell",
+      "category": "unsupported",
+      "expected_classification": "unsupported",
+      "purpose": "Verify safe unsupported classification and response diagnostics."
+    }
+  ]
+}

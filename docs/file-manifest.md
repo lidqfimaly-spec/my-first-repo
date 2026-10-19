@@ -79,6 +79,31 @@
 
 ---
 
+# 第 2.7 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evals/online_retest_v1.json`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2.7-preflight.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-2.7-results.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evaluation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_planner_eval.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+在线结果路径不属于源码清单：
+
+`/Users/lidequan/PythonProject/Zevorinth/artifacts/evaluations/phase-2.7-targeted-retest-v1.json`
+
+该文件已由批准的定向复测生成，位于被忽略的运行产物目录；不纳入本次源码变更清单。
+
+---
+
 # 第 2 阶段新增与修改
 
 ## 新增源码与评测数据

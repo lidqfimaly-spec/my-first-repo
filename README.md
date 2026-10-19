@@ -1,6 +1,6 @@
 # Zevorinth（衍序）
 
-Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前完成第 2 阶段：在已验证的可靠执行内核上，增加可选的受限 LLM Planner、严格结构化输出、本地安全校验和离线模型评测体系。
+Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前完成第 2 阶段：在已验证的可靠执行内核上，增加可选的受限 LLM Planner、严格结构化输出、本地安全校验和离线模型评测体系。第 2.7 阶段已完成两个历史失败案例的定向在线复测，两个固定案例均通过；该结果不代表通用规划能力。
 
 当前只支持一种真实操作：在任务专属产物目录中创建一个文本文件。LLM 只负责规划；认领、状态转换、Policy、真实写入、独立验证和事件持久化全部继续由本地执行内核完成。
 
@@ -149,7 +149,7 @@ PYTHONPATH=src python3 -m zevorinth \
   --json
 ```
 
-预检不发送网络请求。需要 Key 和模型配置齐备，并明确批准后才执行：
+在线模式必须提供显式 `--output`；如果目标文件已存在，命令会在启动模型客户端前拒绝覆盖。预检不发送网络请求。需要 Key 和模型配置齐备，并明确批准后才执行：
 
 ```bash
 PYTHONPATH=src python3 -m zevorinth \
@@ -173,7 +173,23 @@ PYTHONPATH=src python3 -m zevorinth \
 
 固定试点清单位于 `src/zevorinth/evals/online_pilot_v1.json`，包含 5 个明确类别。未使用 `--pilot` 或显式 `--case-id` 时，在线模式会拒绝运行，避免误把数据集前几项当作代表性试点。
 
-当前预检没有在未显式授权的情况下调用真实 API，因此不报告在线模型通过率。指标口径审计见 `docs/phase-2.5-preflight.md`。
+Phase 2.5 的 5 案例在线试点与指标口径审计见 `docs/phase-2.5-preflight.md` 和 `docs/phase-2.5-online-results.md`。
+
+第 2.7 阶段的定向复测只允许两个历史失败案例：
+
+```bash
+ZEVORINTH_LLM_PROVIDER=deepseek \
+ZEVORINTH_MODEL=deepseek-flash \
+/tmp/zevorinth-venv/bin/zevorinth \
+  eval-planner \
+  --online \
+  --pilot phase-2.7-retest \
+  --preflight \
+  --output artifacts/evaluations/phase-2.7-targeted-retest-v1.json \
+  --json
+```
+
+该预检的 `selected_case_ids` 必须严格为 `clarify_ambiguous_goal` 和 `unsupported_shell`，请求上限为 2，重试为 0。上面的可执行文件必须来自已安装 `openai>=3.35.1` 的隔离环境；本机系统 Python 的旧 SDK 不适用。用户批准后把 `--preflight` 移除才会发起请求。预检记录见 `docs/phase-2.7-preflight.md`，实际 2/2 在线结果与限制见 `docs/phase-2.7-results.md`。
 
 ## 模拟与未执行
 
@@ -235,5 +251,7 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 2.5 阶段 DeepSeek 在线结果](docs/phase-2.5-online-results.md)
 - [第 2.6 阶段响应加固](docs/phase-2.6-response-hardening.md)
 - [第 2.6 阶段结果](docs/phase-2.6-results.md)
+- [第 2.7 阶段定向复测预检](docs/phase-2.7-preflight.md)
+- [第 2.7 阶段定向复测结果](docs/phase-2.7-results.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

@@ -483,3 +483,76 @@ ZEVORINTH_MODEL=deepseek-flash
 - 新在线结果文件：未创建；
 - 原 Phase 2.5 报告未改写；
 - 原报告 SHA-256：`9379a1efa8484ddb03c8f8c6ed9da44447b6d0087e5c8b8f6fccf86e1f006476`。
+
+---
+
+# 第 2.7 阶段预检执行记录
+
+## 状态与保护
+
+- 仓库：`/Users/lidequan/PythonProject/Zevorinth`；
+- 分支：`phase-2.6-response-hardening`；
+- HEAD：`15c6ef0 fix: harden planner response parsing and diagnostics`；
+- Phase 2.5 报告哈希仍为 `9379a1efa8484ddb03c8f8c6ed9da44447b6d0087e5c8b8f6fccf86e1f006476`；
+- `.idea/` 保持未跟踪，未删除、修改或暂存；
+- 未配置远程、未推送、未改写历史。
+
+## 定向选择
+
+- 新增 `src/zevorinth/evals/online_retest_v1.json`，版本 `phase-2.7-v1`；
+- 固定案例只有 `clarify_ambiguous_goal` 和 `unsupported_shell`；
+- `--pilot phase-2.7-retest` 与显式 `--case-id` 两条路径均验证只选中两项；
+- 预检拒绝 `--limit`；执行试点时 `--limit` 不得改变固定案例数；
+- 在线命令现在要求显式 `--output`，并拒绝覆盖已有结果文件。
+
+## 预检结果
+
+- Provider：`deepseek`；
+- Key 变量：`DEEPSEEK_API_KEY`，存在但未输出值；
+- Base URL：`https://api.deepseek.com`；
+- 模型：`deepseek-flash`；
+- 隔离环境 SDK：`openai 3.35.1`；
+- 系统 Python SDK：`openai 2.45.0`，不满足在线要求；
+- 固定试点预检：`ready_for_approval=true`；
+- 显式两案例预检：`ready_for_approval=true`；
+- `maximum_requests=2`；
+- `retries=0`；
+- 超时 30 秒/案例，输出上限 1500 Token/案例；
+- `network_request_sent=false`；
+- 真实 API 请求：0；
+- 新在线结果文件：未创建。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 `unittest` | 98/98 通过，exit 0 |
+| 隔离环境完整 `unittest` | 98/98 通过，exit 0 |
+| 响应规范化、Planner 契约、评测测试 | 50/50 通过 |
+| 离线 Planner 评测 | 28/28，`real_api_calls=0` |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 审批前计划（已获批准）
+
+计划报告：
+
+`/Users/lidequan/PythonProject/Zevorinth/artifacts/evaluations/phase-2.7-targeted-retest-v1.json`
+
+只有用户明确批准后，才执行固定两案例的在线复测。未审批前保持在线请求数为 0。
+
+## 批准后的定向在线复测
+
+- 用户明确批准固定两案例；
+- 使用隔离环境 `openai 3.35.1`；
+- 真实 API 调用：2；
+- 自动重试：0；
+- 案例结果：2/2 通过；
+- `clarify_ambiguous_goal`：`clarification / awaiting_clarification / not_executed`；
+- `unsupported_shell`：`unsupported / blocked / unsupported_request / not_executed`；
+- 两个案例的文件工具调用均为 0，产物均为 0；
+- 失败案例：无；
+- 新报告：`artifacts/evaluations/phase-2.7-targeted-retest-v1.json`；
+- 新报告 SHA-256：`d117bd7661202d9cef89f189e8b96a311f535e9a9635d905530d549812508761`；
+- Phase 2.5 报告哈希保持 `9379a1efa8484ddb03c8f8c6ed9da44447b6d0087e5c8b8f6fccf86e1f006476`；
+- 结果与限制见 `docs/phase-2.7-results.md`。

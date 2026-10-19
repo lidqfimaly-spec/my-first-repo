@@ -15,6 +15,7 @@ from .artifact_tool import SimulatedArtifactWriter
 from .event_store import EventStoreError, TaskNotFound
 from .evaluation import (
     DEFAULT_PILOT,
+    DEFAULT_RETEST_PILOT,
     EvaluationConfigurationError,
     online_preflight,
     run_evaluation,
@@ -287,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation.add_argument(
         "--pilot",
-        choices=["phase-2.5"],
+        choices=["phase-2.5", "phase-2.7-retest"],
         default=None,
         help="use a versioned online pilot case list",
     )
@@ -377,24 +378,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             if args.online and not any((args.pilot, args.case_id)):
                 raise EvaluationConfigurationError(
-                    "online evaluation requires --pilot phase-2.5 or --case-id"
+                    "online evaluation requires --pilot or --case-id"
                 )
-            output_path = (
-                args.output
-                or (_project_root(args.home) / "artifacts" / "evaluations" /
-                    "phase-2.5-online-v1.json")
-            )
+            if args.online and args.output is None:
+                raise EvaluationConfigurationError(
+                    "online evaluation requires an explicit --output path"
+                )
+            output_path = args.output
             if args.preflight:
                 if not args.online:
                     raise EvaluationConfigurationError(
                         "--preflight requires --online"
                     )
-                if args.case_id or not args.pilot:
+                if args.limit is not None:
                     raise EvaluationConfigurationError(
-                        "--preflight currently requires --pilot phase-2.5"
+                        "--preflight does not accept --limit"
+                    )
+                pilot_path = None
+                if args.pilot:
+                    pilot_path = (
+                        DEFAULT_RETEST_PILOT
+                        if args.pilot == "phase-2.7-retest"
+                        else DEFAULT_PILOT
                     )
                 report = online_preflight(
-                    pilot_path=DEFAULT_PILOT if args.pilot else None,
+                    pilot_path=pilot_path,
+                    case_ids=args.case_id,
                     output_path=output_path,
                 )
                 if args.json:
@@ -441,11 +450,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                     print("Network request sent by this preflight: no")
                 return 0 if report["ready_for_approval"] else 7
+            if args.online and output_path.exists():
+                raise EvaluationConfigurationError(
+                    "online evaluation refuses to overwrite an existing result: "
+                    f"{output_path}"
+                )
             report = run_evaluation(
                 online=args.online,
                 limit=args.limit if args.online else None,
                 case_ids=args.case_id,
-                pilot_path=DEFAULT_PILOT if args.pilot else None,
+                pilot_path=(
+                    DEFAULT_RETEST_PILOT
+                    if args.pilot == "phase-2.7-retest"
+                    else DEFAULT_PILOT if args.pilot else None
+                ),
             )
         except EvaluationConfigurationError as exc:
             print(f"evaluation configuration error: {exc}", file=sys.stderr)
