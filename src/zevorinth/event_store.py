@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +24,10 @@ class EventStoreError(RuntimeError):
     pass
 
 
+class SchemaVersionError(EventStoreError):
+    """Raised when the on-disk schema cannot be safely migrated."""
+
+
 class StoreBusyError(EventStoreError):
     pass
 
@@ -31,7 +37,16 @@ class ClaimLost(EventStoreError):
 
 
 class EventStore:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
+    LEGACY_SCHEMA_VERSION = 2
+    ACTIVE_TASK_STATUSES = (
+        "queued",
+        "running",
+        "awaiting_clarification",
+        "blocked",
+        "verifying",
+        "interrupted",
+    )
 
     def __init__(self, database_path: Path, *, busy_timeout_ms: int = 10_000) -> None:
         self.database_path = database_path.resolve()
@@ -40,43 +55,586 @@ class EventStore:
     def initialize(self) -> None:
         self.database_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.database_path.parent, 0o700)
+        preflight_version = self._preflight_schema_version()
         with self._connection() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS tasks (
-                    task_id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    execution_mode TEXT NOT NULL,
-                    task_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_id TEXT NOT NULL UNIQUE,
-                    task_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    FOREIGN KEY (task_id) REFERENCES tasks(task_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_events_task_sequence
-                    ON events(task_id, sequence);
-                """
+            version_before_transaction = self._read_schema_version(connection)
+            migration_mode = (
+                preflight_version == self.LEGACY_SCHEMA_VERSION
+                or version_before_transaction == self.LEGACY_SCHEMA_VERSION
             )
-            connection.execute(
-                "INSERT OR REPLACE INTO metadata(key, value) VALUES('schema_version', ?)",
-                (str(self.SCHEMA_VERSION),),
-            )
-            connection.commit()
+            if migration_mode:
+                connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                version = self._read_schema_version(connection)
+                if version is None:
+                    if self._has_user_tables(connection):
+                        raise SchemaVersionError(
+                            "database has user tables but no metadata.schema_version"
+                        )
+                    self._create_schema_v3(connection)
+                elif version == self.SCHEMA_VERSION:
+                    self._validate_schema_v3(connection)
+                elif version == self.LEGACY_SCHEMA_VERSION:
+                    self._migrate_v2_to_v3(connection)
+                    violations = connection.execute(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if violations:
+                        raise SchemaVersionError(
+                            "migrated database has foreign key violations: "
+                            f"{len(violations)}"
+                        )
+                elif version > self.SCHEMA_VERSION:
+                    raise SchemaVersionError(
+                        f"database schema version {version} is newer than "
+                        f"supported version {self.SCHEMA_VERSION}"
+                    )
+                else:
+                    raise SchemaVersionError(
+                        f"database schema version {version} is not supported"
+                    )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+            finally:
+                if migration_mode:
+                    connection.execute("PRAGMA foreign_keys = ON")
         os.chmod(self.database_path, 0o600)
+
+    def _preflight_schema_version(self) -> int | None:
+        """Reject a newer/ambiguous schema before opening a write connection."""
+        if not self.database_path.exists():
+            return None
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=self.busy_timeout_ms / 1000.0,
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            version = self._read_schema_version(connection)
+            if version is None and self._has_user_tables(connection):
+                raise SchemaVersionError(
+                    "database has user tables but no metadata.schema_version"
+                )
+            if version is not None and version > self.SCHEMA_VERSION:
+                raise SchemaVersionError(
+                    f"database schema version {version} is newer than "
+                    f"supported version {self.SCHEMA_VERSION}"
+                )
+            return version
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        return row is not None
+
+    def _read_schema_version(self, connection: sqlite3.Connection) -> int | None:
+        if not self._table_exists(connection, "metadata"):
+            return None
+        try:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise SchemaVersionError(
+                "metadata table has an invalid structure"
+            ) from exc
+        if row is None:
+            raise SchemaVersionError(
+                "metadata table exists but metadata.schema_version is missing"
+            )
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError) as exc:
+            raise SchemaVersionError(
+                "metadata.schema_version is not an integer"
+            ) from exc
+
+    def _has_user_tables(self, connection: sqlite3.Connection) -> bool:
+        rows = connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            """
+        ).fetchall()
+        return any(str(row["name"]) != "metadata" for row in rows)
+
+    @staticmethod
+    def _column_exists(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+    ) -> bool:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(str(row["name"]) == column for row in rows)
+
+    @staticmethod
+    def _metadata_table_sql() -> str:
+        return """
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """
+
+    @staticmethod
+    def _conversations_table_sql() -> str:
+        return """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+                    CHECK (status IN ('active', 'archived')),
+                version INTEGER NOT NULL DEFAULT 1
+                    CHECK (version >= 1),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+        """
+
+    @staticmethod
+    def _tasks_table_sql(table_name: str = "tasks") -> str:
+        return f"""
+            CREATE TABLE {table_name} (
+                task_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                execution_mode TEXT NOT NULL,
+                task_json TEXT NOT NULL,
+                conversation_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (task_id, conversation_id),
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(conversation_id)
+            )
+        """
+
+    @staticmethod
+    def _legacy_tasks_table_sql() -> str:
+        return """
+            CREATE TABLE tasks (
+                task_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                execution_mode TEXT NOT NULL,
+                task_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """
+
+    @staticmethod
+    def _events_table_sql() -> str:
+        return """
+            CREATE TABLE events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                task_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(task_id)
+            )
+        """
+
+    @staticmethod
+    def _events_index_sql() -> str:
+        return """
+            CREATE INDEX idx_events_task_sequence
+            ON events(task_id, sequence)
+        """
+
+    @staticmethod
+    def _conversation_turns_table_sql() -> str:
+        return """
+            CREATE TABLE conversation_turns (
+                turn_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL
+                    CHECK (turn_index >= 0),
+                status TEXT NOT NULL,
+                intent_kind TEXT,
+                task_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(conversation_id),
+                FOREIGN KEY (task_id, conversation_id)
+                    REFERENCES tasks(task_id, conversation_id),
+                UNIQUE (conversation_id, turn_index),
+                UNIQUE (turn_id, conversation_id)
+            )
+        """
+
+    @staticmethod
+    def _messages_table_sql() -> str:
+        return """
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                role TEXT NOT NULL
+                    CHECK (role IN ('user', 'assistant')),
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                byte_count INTEGER NOT NULL
+                    CHECK (byte_count >= 0),
+                client_message_id TEXT,
+                created_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(conversation_id),
+                FOREIGN KEY (turn_id, conversation_id)
+                    REFERENCES conversation_turns(turn_id, conversation_id)
+            )
+        """
+
+    @staticmethod
+    def _conversation_events_table_sql() -> str:
+        return """
+            CREATE TABLE conversation_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT,
+                task_id TEXT,
+                event_type TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(conversation_id),
+                FOREIGN KEY (turn_id, conversation_id)
+                    REFERENCES conversation_turns(turn_id, conversation_id),
+                FOREIGN KEY (task_id, conversation_id)
+                    REFERENCES tasks(task_id, conversation_id)
+            )
+        """
+
+    def _v3_index_sqls(self) -> list[tuple[str, str]]:
+        active_statuses = ", ".join(
+            f"'{status}'" for status in self.ACTIVE_TASK_STATUSES
+        )
+        return [
+            (
+                "uq_messages_client_id",
+                """
+            CREATE UNIQUE INDEX uq_messages_client_id
+            ON messages(conversation_id, client_message_id)
+            WHERE client_message_id IS NOT NULL
+                """,
+            ),
+            (
+                "idx_messages_turn",
+                """
+            CREATE INDEX idx_messages_turn
+            ON messages(turn_id, created_at, message_id)
+                """,
+            ),
+            (
+                "idx_conversation_turns_task",
+                """
+            CREATE INDEX idx_conversation_turns_task
+            ON conversation_turns(task_id)
+                """,
+            ),
+            (
+                "idx_conversation_events_conversation",
+                """
+            CREATE INDEX idx_conversation_events_conversation
+            ON conversation_events(conversation_id, sequence)
+                """,
+            ),
+            (
+                "uq_tasks_task_conversation",
+                """
+            CREATE UNIQUE INDEX uq_tasks_task_conversation
+            ON tasks(task_id, conversation_id)
+                """,
+            ),
+            (
+                "uq_tasks_one_active_per_conversation",
+                f"""
+            CREATE UNIQUE INDEX uq_tasks_one_active_per_conversation
+            ON tasks(conversation_id)
+            WHERE conversation_id IS NOT NULL
+              AND status IN ({active_statuses})
+                """,
+            ),
+            (
+                "idx_tasks_conversation_id",
+                """
+            CREATE INDEX idx_tasks_conversation_id
+            ON tasks(conversation_id)
+            WHERE conversation_id IS NOT NULL
+                """,
+            ),
+        ]
+
+    def _schema_sql_objects(self) -> dict[str, str]:
+        objects = {
+            "metadata": self._metadata_table_sql(),
+            "conversations": self._conversations_table_sql(),
+            "tasks": self._tasks_table_sql("tasks"),
+            "events": self._events_table_sql(),
+            "idx_events_task_sequence": self._events_index_sql(),
+            "conversation_turns": self._conversation_turns_table_sql(),
+            "messages": self._messages_table_sql(),
+            "conversation_events": self._conversation_events_table_sql(),
+        }
+        objects.update(dict(self._v3_index_sqls()))
+        return objects
+
+    @staticmethod
+    def _normalize_schema_sql(sql: str) -> str:
+        # SQLite quotes the table name after ALTER TABLE ... RENAME.
+        sql = re.sub(
+            r'(?is)^(\s*create\s+table\s+)["`\[]([^"`\]]+)["`\]]',
+            r"\1\2",
+            sql,
+            count=1,
+        )
+        normalized: list[str] = []
+        index = 0
+        while index < len(sql):
+            char = sql[index]
+            if char == "'":
+                end = index + 1
+                while end < len(sql):
+                    if sql[end] == "'":
+                        if end + 1 < len(sql) and sql[end + 1] == "'":
+                            end += 2
+                            continue
+                        end += 1
+                        break
+                    end += 1
+                normalized.append(sql[index:end])
+                index = end
+                continue
+            if char in {'"', "`", "["}:
+                closing = "]" if char == "[" else char
+                end = index + 1
+                while end < len(sql):
+                    if sql[end] == closing:
+                        if closing in {"'", '"'} and end + 1 < len(sql) and sql[end + 1] == closing:
+                            end += 2
+                            continue
+                        end += 1
+                        break
+                    end += 1
+                normalized.append(sql[index:end])
+                index = end
+                continue
+            if char.isspace():
+                while index < len(sql) and sql[index].isspace():
+                    index += 1
+                normalized.append(" ")
+                continue
+            normalized.append(char.lower())
+            index += 1
+        return "".join(normalized).strip()
+
+    @staticmethod
+    def _create_metadata_table(connection: sqlite3.Connection) -> None:
+        connection.execute(EventStore._metadata_table_sql())
+
+    @staticmethod
+    def _create_conversations_table(connection: sqlite3.Connection) -> None:
+        connection.execute(EventStore._conversations_table_sql())
+
+    @staticmethod
+    def _create_tasks_table(connection: sqlite3.Connection) -> None:
+        connection.execute(EventStore._tasks_table_sql("tasks"))
+
+    @staticmethod
+    def _create_events_table(connection: sqlite3.Connection) -> None:
+        connection.execute(EventStore._events_table_sql())
+        connection.execute(EventStore._events_index_sql())
+
+    @staticmethod
+    def _create_conversation_children(connection: sqlite3.Connection) -> None:
+        connection.execute(EventStore._conversation_turns_table_sql())
+        connection.execute(EventStore._messages_table_sql())
+        connection.execute(EventStore._conversation_events_table_sql())
+
+    def _create_v3_indexes(self, connection: sqlite3.Connection) -> None:
+        for _, sql in self._v3_index_sqls():
+            connection.execute(sql)
+
+    def _create_schema_v3(self, connection: sqlite3.Connection) -> None:
+        self._create_metadata_table(connection)
+        self._create_conversations_table(connection)
+        self._create_tasks_table(connection)
+        self._create_events_table(connection)
+        self._create_conversation_children(connection)
+        self._create_v3_indexes(connection)
+        self._write_schema_version(connection, self.SCHEMA_VERSION)
+        self._validate_schema_v3(connection)
+
+    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
+        self._require_table(connection, "tasks")
+        self._require_table(connection, "events")
+        self._validate_legacy_tasks_columns(connection)
+        self._create_conversations_table(connection)
+        task_index_sqls = self._index_sqls(connection, "tasks")
+        task_trigger_sqls = self._trigger_sqls(connection, "tasks")
+        self._rebuild_tasks_table(
+            connection,
+            task_index_sqls,
+            task_trigger_sqls,
+        )
+        self._create_conversation_children(connection)
+        self._create_v3_indexes(connection)
+        self._write_schema_version(connection, self.SCHEMA_VERSION)
+        self._validate_schema_v3(connection)
+
+    def _validate_schema_v3(self, connection: sqlite3.Connection) -> None:
+        for name, expected_sql in self._schema_sql_objects().items():
+            row = connection.execute(
+                "SELECT type, sql FROM sqlite_master WHERE name = ?",
+                (name,),
+            ).fetchone()
+            if row is None or row["sql"] is None:
+                raise SchemaVersionError(f"schema object is missing: {name}")
+            actual_sql = self._normalize_schema_sql(str(row["sql"]))
+            expected = self._normalize_schema_sql(expected_sql)
+            if actual_sql != expected:
+                raise SchemaVersionError(
+                    f"schema object has an unexpected definition: {name}"
+                )
+
+    def _validate_legacy_tasks_columns(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        expected = {
+            "task_id",
+            "status",
+            "execution_mode",
+            "task_json",
+            "created_at",
+            "updated_at",
+        }
+        actual = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+        allowed = expected | {"conversation_id"}
+        if not expected.issubset(actual) or actual - allowed:
+            raise SchemaVersionError(
+                "v2 tasks table has an unexpected column set"
+            )
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"
+        ).fetchone()
+        if row is None or row["sql"] is None:
+            raise SchemaVersionError("v2 tasks table definition is missing")
+        if self._normalize_schema_sql(str(row["sql"])) != self._normalize_schema_sql(
+            self._legacy_tasks_table_sql()
+        ):
+            raise SchemaVersionError(
+                "v2 tasks table has an unsupported schema; refusing to rebuild"
+            )
+
+    @staticmethod
+    def _index_sqls(
+        connection: sqlite3.Connection,
+        table: str,
+    ) -> list[str]:
+        rows = connection.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+            ORDER BY name
+            """,
+            (table,),
+        ).fetchall()
+        return [str(row["sql"]) for row in rows]
+
+    @staticmethod
+    def _trigger_sqls(
+        connection: sqlite3.Connection,
+        table: str,
+    ) -> list[str]:
+        rows = connection.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'trigger' AND tbl_name = ? AND sql IS NOT NULL
+            ORDER BY name
+            """,
+            (table,),
+        ).fetchall()
+        return [str(row["sql"]) for row in rows]
+
+    def _rebuild_tasks_table(
+        self,
+        connection: sqlite3.Connection,
+        index_sqls: list[str],
+        trigger_sqls: list[str],
+    ) -> None:
+        if self._table_exists(connection, "tasks_v3"):
+            raise SchemaVersionError("temporary table tasks_v3 already exists")
+        connection.execute(self._tasks_table_sql("tasks_v3"))
+        if self._column_exists(connection, "tasks", "conversation_id"):
+            selected_conversation = "conversation_id"
+        else:
+            selected_conversation = "NULL"
+        connection.execute(
+            f"""
+            INSERT INTO tasks_v3(
+                task_id, status, execution_mode, task_json,
+                conversation_id, created_at, updated_at
+            )
+            SELECT
+                task_id, status, execution_mode, task_json,
+                {selected_conversation}, created_at, updated_at
+            FROM tasks
+            """
+        )
+        connection.execute("DROP TABLE tasks")
+        connection.execute("ALTER TABLE tasks_v3 RENAME TO tasks")
+        for sql in index_sqls:
+            connection.execute(sql)
+        for sql in trigger_sqls:
+            connection.execute(sql)
+
+    @staticmethod
+    def _require_table(connection: sqlite3.Connection, table: str) -> None:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        if row is None:
+            raise SchemaVersionError(f"required table is missing: {table}")
+
+    @staticmethod
+    def _require_index(connection: sqlite3.Connection, index: str) -> None:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (index,),
+        ).fetchone()
+        if row is None:
+            raise SchemaVersionError(f"required index is missing: {index}")
+
+    @staticmethod
+    def _write_schema_version(
+        connection: sqlite3.Connection,
+        version: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO metadata(key, value) VALUES('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(version),),
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection: sqlite3.Connection | None = None
@@ -88,13 +646,29 @@ class EventStore:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-            connection.execute("PRAGMA journal_mode = WAL")
+            self._enable_wal(connection)
             connection.execute("PRAGMA synchronous = FULL")
             return connection
         except Exception:
             if connection is not None:
                 connection.close()
             raise
+
+    def _enable_wal(self, connection: sqlite3.Connection) -> None:
+        """Set WAL without turning a concurrent initialization into a false busy."""
+        deadline = time.monotonic() + self.busy_timeout_ms / 1000.0
+        while True:
+            try:
+                connection.execute("PRAGMA journal_mode = WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if (
+                    ("locked" not in message and "busy" not in message)
+                    or time.monotonic() >= deadline
+                ):
+                    raise
+                time.sleep(0.01)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -473,14 +1047,18 @@ class EventStore:
     def _insert_task(self, connection: sqlite3.Connection, task: Task) -> None:
         connection.execute(
             """
-            INSERT INTO tasks(task_id, status, execution_mode, task_json, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks(
+                task_id, status, execution_mode, task_json,
+                conversation_id, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task.task_id,
                 task.status.value,
                 task.execution_mode.value,
                 json.dumps(task.to_dict(), ensure_ascii=False, sort_keys=True),
+                task.conversation_id,
                 task.created_at,
                 task.updated_at,
             ),
@@ -490,13 +1068,15 @@ class EventStore:
         cursor = connection.execute(
             """
             UPDATE tasks
-            SET status = ?, execution_mode = ?, task_json = ?, updated_at = ?
+            SET status = ?, execution_mode = ?, task_json = ?,
+                conversation_id = ?, updated_at = ?
             WHERE task_id = ?
             """,
             (
                 task.status.value,
                 task.execution_mode.value,
                 json.dumps(task.to_dict(), ensure_ascii=False, sort_keys=True),
+                task.conversation_id,
                 task.updated_at,
                 task.task_id,
             ),

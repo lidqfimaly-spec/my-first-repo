@@ -338,6 +338,7 @@ class Task:
     planner_mode: PlannerMode = PlannerMode.DETERMINISTIC
     planning_metadata: JsonObject = field(default_factory=dict)
     clarification_questions: list[str] = field(default_factory=list)
+    conversation_id: str | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -358,6 +359,7 @@ class Task:
             "execution_owner": self.execution_owner,
             "lease_token": self.lease_token,
             "lease_expires_at": self.lease_expires_at,
+            "conversation_id": self.conversation_id,
             "claim_generation": self.claim_generation,
             "planner_mode": self.planner_mode.value,
             "planning_metadata": self.planning_metadata,
@@ -389,6 +391,11 @@ class Task:
             execution_owner=data.get("execution_owner"),
             lease_token=data.get("lease_token"),
             lease_expires_at=data.get("lease_expires_at"),
+            conversation_id=(
+                str(data["conversation_id"])
+                if data.get("conversation_id") is not None
+                else None
+            ),
             claim_generation=int(data.get("claim_generation", 0)),
             planner_mode=PlannerMode(data.get("planner_mode", "deterministic")),
             planning_metadata=dict(data.get("planning_metadata", {})),
