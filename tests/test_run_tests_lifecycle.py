@@ -6,9 +6,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -133,22 +133,44 @@ class ContainerTerminationTests(unittest.TestCase):
             self.skipTest("alpine:3.20 is not present locally")
 
     def test_running_container_is_stopped_and_confirmed_gone(self) -> None:
-        name = f"zv-test-{int(time.time() * 1000)}"
-        started = subprocess.run(
-            ["docker", "run", "-d", "--name", name, "alpine:3.20", "sleep", "60"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(started.returncode, 0, started.stderr)
-        service = TaskService(Path(tempfile.mkdtemp()))
-        self.assertTrue(service._terminate_container(name))
-        listed = subprocess.run(
-            ["docker", "ps", "--filter", f"name={name}", "--format", "{{.ID}}"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(listed.stdout.strip(), "", "container still running")
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        name = f"zv-test-{uuid4().hex[:12]}"
+        try:
+            started = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    name,
+                    "alpine:3.20",
+                    "sleep",
+                    "60",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(started.returncode, 0, started.stderr)
+            service = TaskService(Path(tempfile.mkdtemp()))
+            self.assertTrue(service._terminate_container(name))
+            listed = subprocess.run(
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    f"name={name}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                listed.stdout.strip(), "", "container still running"
+            )
+        finally:
+            subprocess.run(
+                ["docker", "rm", "-f", name], capture_output=True
+            )
 
     def test_unknown_container_is_not_reported_as_terminated(self) -> None:
         service = TaskService(Path(tempfile.mkdtemp()))

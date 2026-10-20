@@ -855,6 +855,48 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.47 阶段执行记录
+
+## 实现
+
+- 新增 `execution_plan_finalized` 事件与最终执行计划快照；
+- 快照包含 evidence_id、config_digest、command_digest、任务身份和 provisioning 文件元数据；
+- 持久化/准备失败在容器启动前失败关闭；
+- 执行器与验证器检查最终计划、证据和工具结果的一致性；
+- provisioning 文件记录 ownership/retention/cleanup，暂不删除；
+- 修复并行测试容器名称碰撞（UUID）。
+
+## 离线闭环
+
+伪候选 + 真实 provisioning + 真实容器：
+
+- 任务 `succeeded`；
+- 计划/证据比对一致；
+- 容器 `zv-dd3246c69669-85fdd1bd` 退出码 0；
+- `TestResultVerifier` 返回 `tests_passed`；
+- 任务内 workspace diff 全零；
+- 真实模型 API 请求：0。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 可信参数/执行契约专项 | 21/21 |
+| 系统 Python 全量 | 599/599 |
+| `.venv` 全量 | 599/599 |
+| Mutation runner | 64 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 未调用真实模型；
+- `type` 语义仍未确定；
+- provisioning 文件清理仍延迟到受控协议；
+- 详见 `docs/phase-3.47-execution-plan-traceability-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现

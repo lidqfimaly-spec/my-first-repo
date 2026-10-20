@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -26,13 +27,17 @@ from zevorinth.local_test_runner import (  # noqa: E402
     validate_parameters,
 )
 from zevorinth.models import (  # noqa: E402
+    EventType,
     ExecutionMode,
     TaskRequest,
     TaskStatus,
 )
 from zevorinth.planning_validation import PlanningCandidateValidator  # noqa: E402
 from zevorinth.planner import build_test_plan  # noqa: E402
-from zevorinth.service import TaskService  # noqa: E402
+from zevorinth.service import (  # noqa: E402
+    TaskService,
+    _test_execution_plan_mismatch,
+)
 
 
 def _base(**overrides):
@@ -342,6 +347,10 @@ class ExecutionWiringTests(unittest.TestCase):
 
         def fake_provision(root_arg, **kwargs):
             provision_calls.append({"root": str(root_arg), **kwargs})
+            workspace = Path(root_arg) / "workspaces" / kwargs["workspace_name"]
+            (workspace / "probe-written.txt").write_text(
+                "ok\n", encoding="utf-8"
+            )
             return {"status": "verified", "evidence_id": kwargs["evidence_id"]}
 
         def fake_container(self, task, parameters, cancel_check=None):
@@ -386,6 +395,44 @@ class ExecutionWiringTests(unittest.TestCase):
         )
         self.assertIs(container_calls[0]["auto_provision_isolation"], True)
         self.assertEqual(host_calls, [])
+        snapshot = task.execution_plan_snapshot
+        self.assertEqual(snapshot["kind"], "run_tests")
+        self.assertEqual(snapshot["task_id"], task.task_id)
+        self.assertEqual(
+            snapshot["evidence_id"], f"auto-{task.task_id}"
+        )
+        self.assertEqual(
+            snapshot["config_digest"],
+            task.tool_result.test_evidence.config_digest,
+        )
+        self.assertEqual(
+            snapshot["command_digest"],
+            task.tool_result.test_evidence.command_digest,
+        )
+        artifacts = {
+            item["path"]: item
+            for item in snapshot["provisioning_artifacts"]
+        }
+        self.assertIn("probe-written.txt", artifacts)
+        self.assertEqual(
+            artifacts["probe-written.txt"]["ownership"],
+            "provisioning",
+        )
+        self.assertEqual(
+            artifacts["probe-written.txt"]["retention"],
+            "workspace_baseline",
+        )
+        self.assertEqual(
+            artifacts["probe-written.txt"]["cleanup"],
+            "deferred_to_controlled_cleanup",
+        )
+        event_types = [
+            event.event_type for event in service.events(task.task_id)
+        ]
+        self.assertLess(
+            event_types.index(EventType.EXECUTION_PLAN_FINALIZED.value),
+            event_types.index(EventType.TOOL_STARTED.value),
+        )
 
     def test_provisioning_failure_stops_before_container(self) -> None:
         root, workspace = _workspace(self)
@@ -426,6 +473,56 @@ class ExecutionWiringTests(unittest.TestCase):
         self.assertEqual(task.tool_result.tool_name, "run_tests")
         self.assertEqual(container_calls, [])
         self.assertEqual(task.verification, None)
+
+    def test_execution_plan_persistence_failure_blocks_container(self) -> None:
+        root, workspace = _workspace(self)
+        (workspace / "inside.txt").write_text("inside\n", encoding="utf-8")
+        service = TaskService(root, planner=_planner())
+        container_calls: list[dict] = []
+
+        def fake_provision(root_arg, **kwargs):
+            workspace = Path(root_arg) / "workspaces" / kwargs["workspace_name"]
+            (workspace / "probe-written.txt").write_text(
+                "ok\n", encoding="utf-8"
+            )
+            return {"status": "verified", "evidence_id": kwargs["evidence_id"]}
+
+        def fake_container(self, task, parameters, cancel_check=None):
+            container_calls.append(dict(parameters))
+            return _successful_raw()
+
+        original_record = service.store.record_event_and_update
+
+        def failing_record(task_id, event_type, *args, **kwargs):
+            value = getattr(event_type, "value", event_type)
+            if value == EventType.EXECUTION_PLAN_FINALIZED.value:
+                raise RuntimeError("store unavailable")
+            return original_record(task_id, event_type, *args, **kwargs)
+
+        service.store.record_event_and_update = failing_record
+        with patch(
+            "zevorinth.evidence_provisioning.provision_evidence",
+            side_effect=fake_provision,
+        ), patch.object(
+            TaskService, "_run_container_test", fake_container
+        ):
+            task = service.submit(
+                TaskRequest(
+                    goal="run test_ok",
+                    operation=None,
+                    parameters={
+                        "workspace": "demo",
+                        "auto_provision_isolation": True,
+                    },
+                )
+            )
+
+        self.assertEqual(task.status, TaskStatus.FAILED)
+        self.assertEqual(
+            task.error.code, "execution_plan_persistence_failed"
+        )
+        self.assertEqual(task.tool_result.tool_name, "run_tests")
+        self.assertEqual(container_calls, [])
 
     def test_run_tests_failure_records_run_tests_tool_name(self) -> None:
         root, _ = _workspace(self)
@@ -504,6 +601,55 @@ class ExecutionWiringTests(unittest.TestCase):
             service.clock(),
         )
         self.assertEqual(failed.tool_result.tool_name, "unknown_tool")
+
+    def test_final_plan_mismatch_helper_detects_each_identity(self) -> None:
+        task = SimpleNamespace(
+            task_id="task-1",
+            attempt_id="attempt-1",
+            claim_generation=2,
+            plan_version=1,
+            execution_plan_version=1,
+            execution_plan_snapshot={
+                "kind": "run_tests",
+                "task_id": "task-1",
+                "attempt_id": "attempt-1",
+                "claim_generation": 2,
+                "plan_version": 1,
+                "tool_name": "run_tests",
+                "runner": "unittest",
+                "target": "test_ok",
+                "workspace": "demo",
+                "evidence_id": "auto-1",
+                "config_digest": "a" * 64,
+                "command_digest": "b" * 64,
+            },
+        )
+        evidence = SimpleNamespace(
+            runner="unittest",
+            target="test_ok",
+            workspace="demo",
+            attempt_id="attempt-1",
+            claim_generation=2,
+            evidence_id="auto-1",
+            config_digest="a" * 64,
+            command_digest="b" * 64,
+        )
+        self.assertIsNone(
+            _test_execution_plan_mismatch(task, evidence)
+        )
+        for field in (
+            "evidence_id",
+            "config_digest",
+            "command_digest",
+            "target",
+        ):
+            changed = SimpleNamespace(**vars(evidence))
+            setattr(changed, field, "different")
+            self.assertEqual(
+                _test_execution_plan_mismatch(task, changed),
+                "execution_plan_snapshot_mismatch",
+                field,
+            )
 
 
 if __name__ == "__main__":

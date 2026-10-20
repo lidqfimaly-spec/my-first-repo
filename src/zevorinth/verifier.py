@@ -190,6 +190,9 @@ class TestResultVerifier:
             and evidence.runner == expected_parameters.get("runner")
             and evidence.target == expected_parameters.get("target")
             and evidence.workspace == expected_parameters.get("workspace")
+            and evidence.evidence_id == expected_parameters.get("evidence_id")
+            and evidence.config_digest == expected_parameters.get("config_digest")
+            and evidence.command_digest == expected_parameters.get("command_digest")
         )
         if not structural:
             return result(False, "test_evidence_mismatch", False)

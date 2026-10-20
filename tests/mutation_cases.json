@@ -604,8 +604,18 @@
       "id": "run_tests_host_fallback_enabled",
       "property": "container backend never silently falls back to host",
       "path": "src/zevorinth/service.py",
-      "old": "        if parameters.get(\"execution_backend\", \"host\") == \"container\":\n",
-      "new": "        if False:\n",
+      "patches": [
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "        if (\n            parameters.get(\"execution_backend\", \"host\") == \"container\"\n            and not parameters.get(\"evidence_id\")\n        ):\n",
+          "new": "        if False:\n"
+        },
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "        try:\n            if parameters.get(\"execution_backend\", \"host\") == \"container\":\n                raw = self._run_container_test(task, parameters, cancel_check)\n",
+          "new": "        try:\n            if False:\n                raw = self._run_container_test(task, parameters, cancel_check)\n"
+        }
+      ],
       "tests": [
         "tests.test_run_tests_container.ContainerBackendGateTests.test_container_backend_without_evidence_is_blocked"
       ],
@@ -643,8 +653,8 @@
       "patches": [
         {
           "path": "src/zevorinth/service.py",
-          "old": "            if not path.is_file() or path.is_symlink():\n",
-          "new": "            if not path.is_file():\n"
+      "old": "        for path in sorted(root.rglob(\"*\")):\n            if not path.is_file() or path.is_symlink():\n                continue\n",
+      "new": "        for path in sorted(root.rglob(\"*\")):\n            if not path.is_file():\n                continue\n"
         },
         {
           "path": "src/zevorinth/service.py",
@@ -716,6 +726,28 @@
       "new": "                exc.message,\n                started_at,\n                tool_name=self.writer.tool_name,\n            )\n        except Exception as exc:\n",
       "tests": [
         "tests.test_trusted_test_parameters.ExecutionWiringTests.test_run_tests_failure_records_run_tests_tool_name"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "final_plan_evidence_id_ignored",
+      "property": "final execution plan and evidence must agree",
+      "path": "src/zevorinth/service.py",
+      "old": "        \"workspace\": evidence.workspace,\n        \"evidence_id\": evidence.evidence_id,\n        \"config_digest\": evidence.config_digest,\n",
+      "new": "        \"workspace\": evidence.workspace,\n        \"evidence_id\": None,\n        \"config_digest\": evidence.config_digest,\n",
+      "tests": [
+        "tests.test_trusted_test_parameters.ExecutionWiringTests.test_final_plan_mismatch_helper_detects_each_identity"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "final_execution_plan_not_persisted",
+      "property": "final execution plan is persisted before the container starts",
+      "path": "src/zevorinth/service.py",
+      "old": "                    \"execution_plan_snapshot\": final_execution_plan,\n",
+      "new": "                    \"execution_plan_snapshot\": None,\n",
+      "tests": [
+        "tests.test_trusted_test_parameters.ExecutionWiringTests.test_auto_provision_reaches_container_and_verifier"
       ],
       "expected": "killed"
     }

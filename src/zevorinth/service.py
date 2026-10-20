@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
 
 from .artifact_tool import (
@@ -90,6 +90,35 @@ def _collection_status(
     """``failed`` when any required artifact is missing from the collection."""
     present = {item["relative_path"] for item in artifacts}
     return "failed" if any(str(item) not in present for item in required) else "complete"
+
+
+def _test_execution_plan_mismatch(
+    task: Task,
+    evidence: TestExecutionEvidence,
+) -> str | None:
+    """Compare the persisted final plan with the test result evidence."""
+    snapshot = task.execution_plan_snapshot
+    if task.execution_plan_version != task.plan_version:
+        return "execution_plan_snapshot_mismatch"
+    if not isinstance(snapshot, Mapping) or snapshot.get("kind") != "run_tests":
+        return "execution_plan_snapshot_missing"
+    expected = {
+        "task_id": task.task_id,
+        "attempt_id": evidence.attempt_id,
+        "claim_generation": evidence.claim_generation,
+        "plan_version": task.plan_version,
+        "tool_name": RUN_TESTS_TOOL,
+        "runner": evidence.runner,
+        "target": evidence.target,
+        "workspace": evidence.workspace,
+        "evidence_id": evidence.evidence_id,
+        "config_digest": evidence.config_digest,
+        "command_digest": evidence.command_digest,
+    }
+    for field, value in expected.items():
+        if snapshot.get(field) != value:
+            return "execution_plan_snapshot_mismatch"
+    return None
 
 
 class TaskService:
@@ -1482,6 +1511,9 @@ class TaskService:
                 "runner": evidence.runner,
                 "target": evidence.target,
                 "workspace": evidence.workspace,
+                "evidence_id": evidence.evidence_id,
+                "config_digest": evidence.config_digest,
+                "command_digest": evidence.command_digest,
                 "allowed_side_effects": list(
                     task.request.parameters.get("allowed_side_effects") or []
                 ),
@@ -1740,6 +1772,105 @@ class TaskService:
             self.fault_hook("after_write_before_verification", verifying)
         return self._verify_and_finish(verifying, lease_token)
 
+    def _derive_test_execution_identity(
+        self,
+        parameters: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Derive the exact container command and digests for one test run."""
+        import json as _json
+
+        from .isolation import build_container_command
+
+        image = str(parameters.get("image") or "python:3.13-alpine")
+        target = str(parameters["target"])
+        workspace = resolve_workspace(
+            self.project_root, str(parameters["workspace"])
+        )
+        argv = ["python", "-B", "-m", "unittest", "-q", target]
+        disk_limit = parameters.get("disk_limit_bytes")
+        container_command = build_container_command(
+            image=image,
+            workspace=workspace,
+            argv=argv,
+            disk_limit_bytes=int(disk_limit) if disk_limit else None,
+        )
+        return {
+            "image": image,
+            "target": target,
+            "workspace": workspace,
+            "argv": argv,
+            "container_command": container_command,
+            "config_digest": hashlib.sha256(
+                " ".join(container_command).encode("utf-8")
+            ).hexdigest(),
+            "command_digest": hashlib.sha256(
+                _json.dumps(argv, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def _build_final_execution_plan(
+        self,
+        task: Task,
+        parameters: Mapping[str, Any],
+        identity: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        artifacts: list[dict[str, Any]] = []
+        workspace = resolve_workspace(
+            self.project_root, str(parameters["workspace"])
+        )
+        if parameters.get("evidence_id"):
+            artifact_specs = (
+                (
+                    "inside.txt",
+                    "read_probe_sentinel",
+                    "workspace_input_or_provisioning",
+                ),
+                (
+                    "probe-written.txt",
+                    "write_probe_output",
+                    "provisioning",
+                ),
+            )
+            for name, role, ownership in artifact_specs:
+                path = workspace / name
+                if not path.is_file() or path.is_symlink():
+                    continue
+                artifacts.append(
+                    {
+                        "path": name,
+                        "role": role,
+                        "ownership": ownership,
+                        "retention": "workspace_baseline",
+                        "cleanup": "deferred_to_controlled_cleanup",
+                        "bytes": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                )
+        return {
+            "kind": "run_tests",
+            "task_id": task.task_id,
+            "attempt_id": task.attempt_id,
+            "claim_generation": task.claim_generation,
+            "plan_version": task.plan_version,
+            "tool_name": RUN_TESTS_TOOL,
+            "runner": parameters.get("runner"),
+            "target": parameters.get("target"),
+            "workspace": parameters.get("workspace"),
+            "execution_backend": parameters.get("execution_backend"),
+            "evidence_id": parameters.get("evidence_id"),
+            "image": (
+                identity.get("image") if identity is not None else None
+            ),
+            "config_digest": (
+                identity.get("config_digest") if identity is not None else None
+            ),
+            "command_digest": (
+                identity.get("command_digest") if identity is not None else None
+            ),
+            "provisioning_artifacts": artifacts,
+            "prepared_at": self.clock(),
+        }
+
     def _run_container_test(
         self,
         task: Task,
@@ -1752,42 +1883,52 @@ class TaskService:
         run; caller-supplied digests are never trusted.
         """
         import hashlib as _hashlib
-        import json as _json
         import subprocess as _subprocess
 
         from .evidence_store import EvidenceStore, EvidenceStoreError
-        from .isolation import (
-            _live_image_digest,
-            _live_runtime_identity,
-            build_container_command,
-        )
+        from .isolation import _live_image_digest, _live_runtime_identity
         from .local_test_runner import TestExecutionError
 
-        image = str(parameters.get("image") or "python:3.13-alpine")
-        target = str(parameters["target"])
-        workspace = resolve_workspace(
-            self.project_root, str(parameters["workspace"])
-        )
-        # ``-B`` keeps ``__pycache__`` out of the bind-mounted workspace so the
-        # side-effect audit does not see bytecode as an unexpected change.
-        argv = ["python", "-B", "-m", "unittest", "-q", target]
-        disk_limit = parameters.get("disk_limit_bytes")
-        container_command = build_container_command(
-            image=image,
-            workspace=workspace,
-            argv=argv,
-            disk_limit_bytes=int(disk_limit) if disk_limit else None,
-        )
-        config_digest = _hashlib.sha256(
-            " ".join(container_command).encode("utf-8")
-        ).hexdigest()
-        command_digest = _hashlib.sha256(
-            _json.dumps(argv, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        identity = self._derive_test_execution_identity(parameters)
+        image = identity["image"]
+        target = identity["target"]
+        workspace = identity["workspace"]
+        argv = identity["argv"]
+        container_command = identity["container_command"]
+        config_digest = identity["config_digest"]
+        command_digest = identity["command_digest"]
         evidence_id = parameters.get("evidence_id")
         if not evidence_id:
             raise TestExecutionError(
                 "isolation_unverified", "evidence_id_missing"
+            )
+        snapshot = task.execution_plan_snapshot
+        if not isinstance(snapshot, Mapping) or snapshot.get("kind") != "run_tests":
+            raise TestExecutionError(
+                "execution_plan_snapshot_missing",
+                "final execution plan is missing",
+            )
+        expected = {
+            "task_id": task.task_id,
+            "attempt_id": task.attempt_id,
+            "claim_generation": task.claim_generation,
+            "tool_name": RUN_TESTS_TOOL,
+            "runner": parameters.get("runner"),
+            "target": target,
+            "workspace": parameters.get("workspace"),
+            "execution_backend": "container",
+            "evidence_id": evidence_id,
+            "image": image,
+            "config_digest": config_digest,
+            "command_digest": command_digest,
+        }
+        if task.execution_plan_version != task.plan_version or any(
+            snapshot.get(field) != value
+            for field, value in expected.items()
+        ):
+            raise TestExecutionError(
+                "execution_plan_snapshot_mismatch",
+                "final execution plan does not match the execution request",
             )
         store = EvidenceStore(self.project_root)
         try:
@@ -2155,8 +2296,17 @@ class TaskService:
                 updates={"phase": "resumed_test_verification", "error": None},
                 lease_token=lease_token,
             )
+            verification_parameters = {
+                **parameters,
+                "runner": persisted.runner,
+                "target": persisted.target,
+                "workspace": persisted.workspace,
+                "evidence_id": persisted.evidence_id,
+                "config_digest": persisted.config_digest,
+                "command_digest": persisted.command_digest,
+            }
             return self._verify_test_and_finish(
-                verifying, lease_token, parameters
+                verifying, lease_token, verification_parameters
             )
 
         def cancel_check() -> bool:
@@ -2201,6 +2351,71 @@ class TaskService:
             parameters["evidence_id"] = evidence_id
             plan_step.parameters["evidence_id"] = evidence_id
 
+        if (
+            parameters.get("execution_backend", "host") == "container"
+            and not parameters.get("evidence_id")
+        ):
+            return self._finish_tool_failure(
+                task,
+                lease_token,
+                "isolation_unverified",
+                "evidence_id_missing",
+                started_at,
+                tool_name=RUN_TESTS_TOOL,
+            )
+
+        try:
+            identity: dict[str, Any] | None = None
+            if parameters.get("execution_backend", "host") == "container":
+                identity = self._derive_test_execution_identity(parameters)
+                parameters["image"] = identity["image"]
+                parameters["config_digest"] = identity["config_digest"]
+                parameters["command_digest"] = identity["command_digest"]
+                plan_step.parameters["image"] = identity["image"]
+                plan_step.parameters["config_digest"] = identity["config_digest"]
+                plan_step.parameters["command_digest"] = identity["command_digest"]
+
+            final_execution_plan = self._build_final_execution_plan(
+                task, parameters, identity
+            )
+        except Exception as exc:
+            return self._finish_tool_failure(
+                task,
+                lease_token,
+                "execution_plan_preparation_failed",
+                (
+                    "final execution plan could not be prepared: "
+                    f"{type(exc).__name__}"
+                ),
+                started_at,
+                tool_name=RUN_TESTS_TOOL,
+            )
+        try:
+            task, _ = self.store.record_event_and_update(
+                task.task_id,
+                EventType.EXECUTION_PLAN_FINALIZED,
+                self.clock(),
+                payload={"final_execution_plan": final_execution_plan},
+                updates={
+                    "execution_plan_version": task.plan_version,
+                    "execution_plan_snapshot": final_execution_plan,
+                    "phase": "execution_plan_finalized",
+                },
+                lease_token=lease_token,
+            )
+        except Exception as exc:
+            return self._finish_tool_failure(
+                task,
+                lease_token,
+                "execution_plan_persistence_failed",
+                (
+                    "final execution plan could not be persisted: "
+                    f"{type(exc).__name__}"
+                ),
+                started_at,
+                tool_name=RUN_TESTS_TOOL,
+            )
+
         before = scan_workspace(
             workspace_path,
             workspace_id=str(parameters["workspace"]),
@@ -2242,9 +2457,6 @@ class TaskService:
                 "execution_mode": ExecutionMode.REAL,
                 "phase": "test_started",
                 "execution_plan_version": task.plan_version,
-                "execution_plan_snapshot": (
-                    task.plan.to_dict() if task.plan is not None else None
-                ),
             },
             lease_token=lease_token,
         )
@@ -2308,6 +2520,26 @@ class TaskService:
             output_limit_bytes=int(raw["output_limit_bytes"]),
             timeout_seconds=float(raw["timeout_seconds"]),
             before_snapshot=before.to_dict(),
+            evidence_id=(
+                str(parameters["evidence_id"])
+                if parameters.get("evidence_id")
+                else None
+            ),
+            container_name=(
+                str(raw["container_name"])
+                if raw.get("container_name")
+                else None
+            ),
+            config_digest=(
+                str(parameters["config_digest"])
+                if parameters.get("config_digest")
+                else None
+            ),
+            command_digest=(
+                str(parameters["command_digest"])
+                if parameters.get("command_digest")
+                else None
+            ),
         )
         after = scan_workspace(
             workspace_path,
@@ -2378,12 +2610,30 @@ class TaskService:
             if task.tool_result is not None
             else None
         )
-        verification = self.test_verifier.verify(
-            task=task,
-            evidence=evidence,
-            expected_parameters=parameters,
-            checked_at=self.clock(),
+        mismatch = (
+            _test_execution_plan_mismatch(task, evidence)
+            if evidence is not None
+            else None
         )
+        if mismatch:
+            verification = VerificationResult(
+                verifier_name=self.test_verifier.name,
+                passed=False,
+                exists=True,
+                path_safe=True,
+                content_matches=False,
+                evidence_matches=False,
+                reason=mismatch,
+                artifact=None,
+                checked_at=self.clock(),
+            )
+        else:
+            verification = self.test_verifier.verify(
+                task=task,
+                evidence=evidence,
+                expected_parameters=parameters,
+                checked_at=self.clock(),
+            )
         task, _ = self.store.record_event_and_update(
             task.task_id,
             EventType.VERIFICATION_COMPLETED,
@@ -2436,7 +2686,13 @@ class TaskService:
             return succeeded
         code = (
             verification.reason
-            if verification.reason in {"test_timeout", "tests_failed"}
+            if verification.reason
+            in {
+                "test_timeout",
+                "tests_failed",
+                "execution_plan_snapshot_mismatch",
+                "execution_plan_snapshot_missing",
+            }
             else "test_execution_failed"
         )
         return self._fail(

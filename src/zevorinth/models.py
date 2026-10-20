@@ -104,6 +104,7 @@ class EventType(str, Enum):
     LEASE_RELEASED = "lease_released"
     POLICY_REJECTED = "policy_rejected"
     TOOL_STARTED = "tool_started"
+    EXECUTION_PLAN_FINALIZED = "execution_plan_finalized"
     TOOL_SUCCEEDED = "tool_succeeded"
     TOOL_FAILED = "tool_failed"
     SIMULATION_COMPLETED = "simulation_completed"
@@ -402,6 +403,10 @@ class TestExecutionEvidence:
     before_snapshot: JsonObject | None = None
     after_snapshot: JsonObject | None = None
     workspace_diff: JsonObject | None = None
+    evidence_id: str | None = None
+    container_name: str | None = None
+    config_digest: str | None = None
+    command_digest: str | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -429,6 +434,10 @@ class TestExecutionEvidence:
             "before_snapshot": self.before_snapshot,
             "after_snapshot": self.after_snapshot,
             "workspace_diff": self.workspace_diff,
+            "evidence_id": self.evidence_id,
+            "container_name": self.container_name,
+            "config_digest": self.config_digest,
+            "command_digest": self.command_digest,
         }
 
     @classmethod
@@ -469,6 +478,26 @@ class TestExecutionEvidence:
             workspace_diff=(
                 dict(data["workspace_diff"])
                 if data.get("workspace_diff")
+                else None
+            ),
+            evidence_id=(
+                str(data["evidence_id"])
+                if data.get("evidence_id") is not None
+                else None
+            ),
+            container_name=(
+                str(data["container_name"])
+                if data.get("container_name") is not None
+                else None
+            ),
+            config_digest=(
+                str(data["config_digest"])
+                if data.get("config_digest") is not None
+                else None
+            ),
+            command_digest=(
+                str(data["command_digest"])
+                if data.get("command_digest") is not None
                 else None
             ),
         )

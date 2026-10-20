@@ -352,5 +352,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.44 阶段端到端验证审计（BLOCKED）](docs/phase-3.44-end-to-end-verification-audit.md)
 - [第 3.45 阶段可信参数契约与离线执行闭环](docs/phase-3.45-trusted-parameter-contract-audit.md)
 - [第 3.46 阶段真实模型端到端验证](docs/phase-3.46-real-model-end-to-end-audit.md)
+- [第 3.47 阶段执行计划可追溯性与恢复加固](docs/phase-3.47-execution-plan-traceability-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)
