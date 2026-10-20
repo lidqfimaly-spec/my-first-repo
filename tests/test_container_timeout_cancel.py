@@ -197,6 +197,8 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         )
         self.assertIn("task_failed", events)
         self.assertNotIn("task_succeeded", events)
+        report = service.audit_lifecycle(result.task_id)
+        self.assertTrue(report["ok"], report["issues"])
         self.assertEqual(_container_names(result.task_id), [])
 
     def test_cancel_during_container_run_stops_it(self) -> None:
@@ -214,6 +216,8 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
             evidence.config_digest,
         )
         self.assertIn("task_cancelled", events)
+        report = service.audit_lifecycle(result.task_id)
+        self.assertTrue(report["ok"], report["issues"])
         self.assertEqual(_container_names(result.task_id), [])
 
     def test_disk_quota_blocks_oversized_writes(self) -> None:
@@ -293,6 +297,8 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         ]
         self.assertNotIn("task_succeeded", event_types)
         self.assertIn("task_failed", event_types)
+        report = service.audit_lifecycle(result.task_id)
+        self.assertTrue(report["ok"], report["issues"])
 
     def test_evidence_invalidated_after_real_test_blocks_success(self) -> None:
         root = Path(tempfile.mkdtemp())

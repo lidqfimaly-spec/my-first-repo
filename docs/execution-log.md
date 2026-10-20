@@ -1217,6 +1217,41 @@ evidence。
 
 ---
 
+# 第 3.60 阶段执行记录
+
+## 运行时故障
+
+- 真实容器测试完成、验证前 SIGKILL：新进程只读恢复，tool_started/tool_succeeded 各 1；
+- tool_succeeded 事件写入失败：不产生成功状态，恢复为 test_execution_unknown；
+- 超时、取消、启动失败任务通过 audit_lifecycle；
+- event/状态事务原子性通过；
+- evidence 读取异常审计为 unverified；
+- 未知/阻塞执行保持 safe_to_retry=false。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 运行时恢复矩阵 | 8/8 |
+| 系统 Python 全量 | 637/637 |
+| `.venv` 全量 | 637/637 |
+| Mutation runner | 73 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 进程恢复基于本机 SQLite/Docker；
+- 自动恢复与清理队列未实现；
+- 详见 `docs/phase-3.60-runtime-fault-recovery-consistency.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 # 第 3.59 阶段执行记录
 
 ## 实现

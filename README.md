@@ -365,5 +365,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.57 阶段持久任务生命周期与进程级恢复审计](docs/phase-3.57-durable-task-lifecycle-process-recovery-audit.md)
 - [第 3.58 阶段生命周期审计覆盖与恢复决策完整性](docs/phase-3.58-lifecycle-audit-coverage-recovery-integrity.md)
 - [第 3.59 阶段持久化故障与恢复决策验证](docs/phase-3.59-persistence-fault-recovery-decisions.md)
+- [第 3.60 阶段运行时故障与恢复一致性](docs/phase-3.60-runtime-fault-recovery-consistency.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

@@ -523,6 +523,30 @@
 
 ---
 
+# 第 3.60 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_task_lifecycle_container_process.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/task_lifecycle_container_worker.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_task_persistence_faults.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.60-runtime-fault-recovery-consistency.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_container_timeout_cancel.py`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.60/runtime-recovery-matrix.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.60/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.60/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增
