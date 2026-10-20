@@ -891,6 +891,17 @@
         "tests.test_recovery_preview.RecoveryPreviewTests.test_success_preview_is_read_only_and_non_executable"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "approval_store_execution_authorization_allowed",
+      "property": "approval records cannot authorize execution",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "        if approval.execution_authorized:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_recovery_approval_store.RecoveryApprovalStoreTests.test_approval_cannot_authorize_execution"
+      ],
+      "expected": "killed"
     }
   ]
 }

@@ -1217,6 +1217,41 @@ evidence。
 
 ---
 
+# 第 3.64 阶段执行记录
+
+## 实现
+
+- 新增 recovery_approvals 持久化 store，原子写入、重启可读；
+- 审批记录含 approval/preview/task/state digest、approver、scope 和 record digest；
+- 实现 approved/rejected/revoked/stale 行为；pending/consumed 暂不纳入协议；
+- 重复提交幂等，不同记录冲突，篡改记录拒绝；
+- 状态变化后旧审批 stale，双进程重验均拒绝；
+- 审批不能授权执行，authorize_recovery_action 仅判定 capability。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 审批存储矩阵 | 8/8 |
+| 系统 Python 全量 | 660/660 |
+| `.venv` 全量 | 660/660 |
+| Mutation runner | 77 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 本机文件审批存储，身份认证/多用户权限未实现；
+- 实际恢复执行和 consumed 协议未实现；
+- 详见 `docs/phase-3.64-persistent-approval-authorization.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 # 第 3.63 阶段执行记录
 
 ## 实现

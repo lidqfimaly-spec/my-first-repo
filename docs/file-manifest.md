@@ -618,6 +618,30 @@
 
 ---
 
+# 第 3.64 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/approval_revalidation_worker.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_recovery_approval_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.64-persistent-approval-authorization.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/recovery_preview.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.64/approval-store-matrix.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.64/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.64/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增
