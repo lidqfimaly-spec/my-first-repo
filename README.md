@@ -328,5 +328,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.22 阶段隔离边界验证与失败关闭执行](docs/phase-3.22-isolation-boundary-audit.md)
 - [第 3.23 阶段读取隔离与进程生命周期验证](docs/phase-3.23-read-confinement-process-lifecycle-audit.md)
 - [第 3.24 阶段隔离后端决策与边界验收](docs/phase-3.24-isolation-backend-decision-audit.md)
+- [第 3.25 阶段容器隔离后端验证](docs/phase-3.25-container-isolation-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

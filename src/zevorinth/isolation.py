@@ -394,3 +394,226 @@ def verify_boundaries(
         "probe_state": probe.get("state"),
         "kernel_denials": probe.get("kernel_denials", []),
     }
+
+
+# ---------------------------------------------------------------------------
+# Container backend
+# ---------------------------------------------------------------------------
+
+CONTAINER_IMAGE_CANDIDATES = (
+    "python:3.13-slim",
+    "python:3.12-slim",
+    "alpine:latest",
+    "busybox:latest",
+)
+
+FORBIDDEN_CONTAINER_FLAGS = (
+    "--privileged",
+    "--network=host",
+    "--network",  # only ``none`` is emitted; any other value is refused
+    "--pid=host",
+    "--ipc=host",
+    "--userns=host",
+)
+
+
+def container_runtime_state() -> dict[str, Any]:
+    """Inspect the local runtime without starting a daemon."""
+    import shutil
+
+    binary = shutil.which("docker")
+    if binary is None:
+        return {
+            "state": "unavailable",
+            "binary": None,
+            "server_version": None,
+            "reason": "docker CLI is not installed",
+        }
+    try:
+        completed = subprocess.run(
+            [binary, "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "state": "initialization_failed",
+            "binary": binary,
+            "server_version": None,
+            "reason": type(exc).__name__,
+        }
+    version = completed.stdout.strip()
+    if completed.returncode != 0 or not version:
+        return {
+            "state": "unavailable",
+            "binary": binary,
+            "server_version": None,
+            "reason": "daemon is not reachable (not started by this phase)",
+        }
+    return {
+        "state": "available_unverified",
+        "binary": binary,
+        "server_version": version,
+        "reason": "daemon reachable; boundaries not yet verified",
+    }
+
+
+def build_container_command(
+    *,
+    image: str,
+    workspace: Path,
+    argv: list[str],
+    memory: str = "256m",
+    pids_limit: int = 64,
+    cpus: str = "0.5",
+) -> list[str]:
+    """Hardened ``docker run`` argv: no network, no host mounts, no caps."""
+    if not image or ":" not in image and "@" not in image:
+        raise IsolationError(
+            "invalid_image", "image must be pinned by tag or digest"
+        )
+    resolved = str(workspace.resolve())
+    if not resolved:
+        raise IsolationError("invalid_workspace", "workspace is required")
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "65534:65534",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        str(pids_limit),
+        "--memory",
+        memory,
+        "--cpus",
+        cpus,
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=16m",
+        "--mount",
+        f"type=bind,src={resolved},dst=/workspace",
+        "--workdir",
+        "/workspace",
+        image,
+        *argv,
+    ]
+
+
+def assert_container_command_safe(command: list[str]) -> None:
+    """Refuse commands that would weaken the container boundary."""
+    joined = " ".join(command)
+    for flag in ("--privileged", "--network=host", "--pid=host", "--ipc=host"):
+        if flag in command or flag in joined:
+            raise IsolationError(
+                "unsafe_container_flag", f"{flag} is not allowed"
+            )
+    if "docker.sock" in joined:
+        raise IsolationError(
+            "unsafe_container_mount", "the Docker socket must not be mounted"
+        )
+    if "/var/run" in joined or "/Users" in joined or "/etc" in joined.split("--mount")[0]:
+        # Only the explicit workspace bind is allowed as a mount source.
+        mounts = [
+            command[index + 1]
+            for index, item in enumerate(command)
+            if item == "--mount"
+        ]
+        for mount in mounts:
+            if "dst=/workspace" not in mount:
+                raise IsolationError(
+                    "unsafe_container_mount",
+                    f"unexpected mount: {mount}",
+                )
+    if command[command.index("--network") + 1] != "none":
+        raise IsolationError(
+            "unsafe_container_network", "container network must be none"
+        )
+    if "--read-only" not in command:
+        raise IsolationError(
+            "unsafe_container_rootfs", "root filesystem must be read-only"
+        )
+    if "no-new-privileges" not in joined:
+        raise IsolationError(
+            "unsafe_container_privileges", "no-new-privileges is required"
+        )
+    for flag in ("-e", "--env", "--env-file"):
+        if flag in command:
+            raise IsolationError(
+                "unsafe_container_env", "host environment must not be forwarded"
+            )
+
+
+def verify_container_boundaries(
+    *,
+    workspace: Path,
+    image: str | None = None,
+) -> dict[str, Any]:
+    """Run the container probe matrix, or report why it could not run."""
+    runtime = container_runtime_state()
+    if runtime["state"] != "available_unverified":
+        return {
+            "backend": "container",
+            "state": "blocked",
+            "runtime": runtime,
+            "checks": {name: "not_executed" for name in BOUNDARY_CHECKS},
+            "reason": runtime["reason"],
+        }
+    # A reachable daemon is still not evidence; probes must actually run.
+    return {
+        "backend": "container",
+        "state": "unverified",
+        "runtime": runtime,
+        "checks": {name: "not_executed" for name in BOUNDARY_CHECKS},
+        "reason": (
+            "daemon reachable but the probe matrix requires a pinned local "
+            "image and an authorized run; not executed in this phase"
+        ),
+        "image": image,
+    }
+
+
+def run_protected_container(
+    *,
+    workspace: Path,
+    argv: list[str],
+    image: str,
+    boundary_result: dict[str, Any],
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    """Start a containerised process only after boundary verification."""
+    if boundary_result.get("state") != "verified":
+        return {
+            "isolation_backend": "container",
+            "isolation_state": boundary_result.get("state", "blocked"),
+            "profile_applied": False,
+            "process_started": False,
+            "exit_code": None,
+            "blocked_reason": boundary_result.get(
+                "reason", "container boundaries are not verified"
+            ),
+            "argv": list(argv),
+        }
+    command = build_container_command(
+        image=image, workspace=workspace, argv=argv
+    )
+    assert_container_command_safe(command)
+    completed = subprocess.run(
+        command, capture_output=True, text=True, timeout=timeout
+    )
+    return {
+        "isolation_backend": "container",
+        "isolation_state": "verified",
+        "profile_applied": True,
+        "process_started": True,
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout[-2000:],
+        "stderr": completed.stderr[-2000:],
+        "argv": command,
+    }

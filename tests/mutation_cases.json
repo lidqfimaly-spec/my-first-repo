@@ -478,6 +478,28 @@
         "tests.test_backend_boundaries.BackendDetectionTests.test_detection_reports_evidence_state_per_backend"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "container_privileged_allowed",
+      "property": "privileged containers are refused",
+      "path": "src/zevorinth/isolation.py",
+      "old": "    for flag in (\"--privileged\", \"--network=host\", \"--pid=host\", \"--ipc=host\"):\n",
+      "new": "    for flag in ():\n",
+      "tests": [
+        "tests.test_container_backend.ContainerCommandTests.test_unsafe_variants_are_refused"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "container_network_not_none",
+      "property": "container network must be none",
+      "path": "src/zevorinth/isolation.py",
+      "old": "    if command[command.index(\"--network\") + 1] != \"none\":\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_container_backend.ContainerCommandTests.test_unsafe_variants_are_refused"
+      ],
+      "expected": "killed"
     }
   ]
 }

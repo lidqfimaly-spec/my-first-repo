@@ -598,6 +598,35 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.25 阶段执行记录
+
+## 实现
+
+- 新增容器后端：`container_runtime_state`（只读探测，不启动 daemon）、`build_container_command`、`assert_container_command_safe`、`verify_container_boundaries`、`run_protected_container`；
+- 受保护容器配置：`--network none`、只读根、非 root、`--cap-drop ALL`、`no-new-privileges`、仅挂载工作区、资源上限、禁止 `-e` 与 docker.sock；
+- 容器边界状态保持 `blocked`（daemon 未运行），`run_protected_container` 不启动进程。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 460/460，exit 0 |
+| 容器后端专项 | 9/9 |
+| Mutation runner | 43 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| 容器边界探针 | NOT_EXECUTED（daemon 未启动） |
+
+## 边界
+
+- 容器边界无运行时证据；
+- 未拉取镜像、未启动 daemon；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.25-container-isolation-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.24 阶段执行记录
 
 ## 实现
