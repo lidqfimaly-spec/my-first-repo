@@ -1,9 +1,9 @@
-"""macOS Seatbelt (sandbox-exec) isolation prototype.
+"""Fail-closed isolation executor and macOS Seatbelt probe.
 
-This runs a probe inside a kernel-enforced profile: reads are restricted to
-the workspace plus system libraries, writes to the workspace only, and the
-network is denied.  The probe reports kernel errnos, so an ``EPERM`` here is
-a kernel denial rather than an application-level policy decision.
+The probe records what the **kernel** allowed or denied for a real child
+process.  Only when every required boundary is denied does the backend count
+as verified; otherwise protected execution is refused rather than run
+unisolated.
 """
 
 from __future__ import annotations
@@ -12,23 +12,21 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
-
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-SYSTEM_READ_PATHS = (
-    "/usr/lib",
-    "/usr/share",
-    "/System",
-    "/Library/Apple",
-    "/private/var/db/dyld",
-    "/opt/homebrew",
-    "/usr/local",
-    "/dev/null",
-    "/dev/urandom",
-    "/dev/dtracehelper",
+
+#: Operations explicitly allowed to run without OS isolation.  This is a
+#: policy declaration, never an exception-based fallback.
+UNISOLATED_ALLOWED_OPERATIONS = frozenset({"run_tests"})
+
+#: Boundaries a profile must actually enforce before it counts as verified.
+REQUIRED_BOUNDARIES = (
+    "write_outside_denied",
+    "network_denied",
+    "read_outside_denied",
+    "write_inside_allowed",
 )
 
 
@@ -43,37 +41,21 @@ def isolation_available() -> bool:
     return os.path.isfile(SANDBOX_EXEC) and os.access(SANDBOX_EXEC, os.X_OK)
 
 
-def build_profile(
-    workspace: Path,
-    *,
-    allow_network: bool = False,
-) -> str:
-    executable = Path(sys.executable).resolve()
-    read_paths = [
-        str(workspace.resolve()),
-        sys.prefix,
-        sys.base_prefix,
-        str(executable),
-        str(executable.parent),
-    ]
-    read_paths.extend(SYSTEM_READ_PATHS)
-    read_rules = " ".join(
-        f'(subpath "{path}")' for path in dict.fromkeys(read_paths)
-    )
-    write_rules = f'(subpath "{workspace.resolve()}") (literal "/dev/null")'
-    network = "" if allow_network else "(deny network*)"
+def build_profile(workspace: Path) -> str:
+    """Deny writes outside the workspace and deny the network.
+
+    Reads are intentionally global: narrowing them to the workspace plus
+    runtime paths aborts the interpreter on this platform, so read
+    confinement is reported as *not enforced* instead of being faked.
+    """
+    resolved = str(workspace.resolve())
     return (
         "(version 1)\n"
         "(deny default)\n"
         "(allow process*)\n"
-        "(allow sysctl-read)\n"
-        "(allow mach-lookup)\n"
-        "(allow process-exec)\n"
-        "(allow file-read-metadata)\n"
-        "(allow file-map-executable)\n"
-        f"(allow file-read* {read_rules})\n"
-        f"(allow file-write* {write_rules})\n"
-        f"{network}\n"
+        "(allow file-read*)\n"
+        f'(allow file-write* (subpath "{resolved}"))\n'
+        "(deny network*)\n"
     )
 
 
@@ -86,10 +68,10 @@ def attempt(name, fn):
     try:
         fn()
         result[name] = "allowed"
-    except PermissionError as exc:
-        result[name] = f"denied:{type(exc).__name__}"
+    except PermissionError:
+        result[name] = "denied"
     except OSError as exc:
-        result[name] = f"oserror:{exc.errno}"
+        result[name] = "oserror:%s" % exc.errno
 
 attempt("read_inside", lambda: open(os.path.join(workspace, "inside.txt")).read())
 attempt("read_outside", lambda: open(outside).read())
@@ -98,12 +80,11 @@ def write_inside():
         handle.write("ok")
 attempt("write_inside", write_inside)
 def write_outside():
-    with open(os.path.join(outside + ".new"), "w") as handle:
+    with open(outside + ".new", "w") as handle:
         handle.write("no")
 attempt("write_outside", write_outside)
 def connect():
-    sock = socket.socket()
-    sock.settimeout(1.0)
+    sock = socket.socket(); sock.settimeout(1.0)
     try:
         sock.connect(("127.0.0.1", 9))
     finally:
@@ -113,59 +94,150 @@ print(json.dumps(result, sort_keys=True))
 """
 
 
+def classify(results: dict[str, str]) -> tuple[str, list[str]]:
+    """Map probe observations to VERIFIED / PARTIAL / FAILED / BLOCKED."""
+    if not results:
+        return "blocked", []
+    observed = {
+        "write_outside_denied": results.get("write_outside") == "denied",
+        "network_denied": results.get("network") == "denied",
+        "read_outside_denied": results.get("read_outside") == "denied",
+        "write_inside_allowed": results.get("write_inside") == "allowed",
+    }
+    missing = [name for name in REQUIRED_BOUNDARIES if not observed[name]]
+    if not missing:
+        return "verified", []
+    if observed["write_inside_allowed"] is False:
+        return "failed", missing
+    return "partial", missing
+
+
 def run_probe(
     workspace: Path,
     decoy: Path,
     *,
     timeout: float = 20.0,
-    allow_network: bool = False,
 ) -> dict[str, Any]:
-    """Run the probe under Seatbelt and return kernel-observed results."""
+    """Run the probe under Seatbelt and classify what the kernel enforced."""
     if not isolation_available():
-        raise IsolationError(
-            "isolation_unavailable", "sandbox-exec is not available"
-        )
+        return {
+            "state": "blocked",
+            "reason": "sandbox-exec is not available",
+            "results": {},
+            "kernel_denials": [],
+            "process_started": False,
+            "profile_applied": False,
+            "unverified_boundaries": list(REQUIRED_BOUNDARIES),
+        }
     workspace = workspace.resolve()
+    decoy = decoy.resolve()
     (workspace / "inside.txt").write_text("inside\n", encoding="utf-8")
-    profile = build_profile(workspace, allow_network=allow_network)
-    process = subprocess.run(
-        [
-            SANDBOX_EXEC,
-            "-p",
-            profile,
-            sys.executable,
-            "-c",
-            PROBE,
-            str(workspace),
-            str(decoy),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=str(workspace),
-        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
-    )
-    payload: dict[str, Any] = {}
+    try:
+        process = subprocess.run(
+            [
+                SANDBOX_EXEC,
+                "-p",
+                build_profile(workspace),
+                sys.executable,
+                "-c",
+                PROBE,
+                str(workspace),
+                str(decoy),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(workspace),
+            env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "state": "blocked",
+            "reason": "probe timed out",
+            "results": {},
+            "kernel_denials": [],
+            "process_started": True,
+            "profile_applied": False,
+            "unverified_boundaries": list(REQUIRED_BOUNDARIES),
+        }
+    payload: dict[str, str] = {}
     if process.stdout.strip():
         try:
             payload = json.loads(process.stdout.strip().splitlines()[-1])
         except json.JSONDecodeError:
             payload = {}
-    denials = sorted(
-        name
-        for name, value in payload.items()
-        if isinstance(value, str) and value.startswith("denied:")
-    )
-    applied = process.returncode == 0 and bool(payload)
+    state, missing = classify(payload)
+    if process.returncode != 0 and not payload:
+        state, missing = "blocked", list(REQUIRED_BOUNDARIES)
     return {
-        "exit_code": process.returncode,
+        "state": state,
+        "reason": (
+            "all required boundaries denied"
+            if state == "verified"
+            else f"unenforced boundaries: {missing}"
+        ),
         "results": payload,
-        "stderr": process.stderr[-500:],
-        "profile_applied": applied,
-        # An unstarted or aborted probe proves nothing about the boundary.
-        "state": "verified" if applied else "unverified",
-        "failure_kind": None if applied else "probe_did_not_complete",
-        "kernel_denials": denials,
+        "kernel_denials": sorted(
+            name for name, value in payload.items() if value == "denied"
+        ),
+        "process_started": bool(payload) or process.returncode == 0,
+        "profile_applied": bool(payload),
+        "unverified_boundaries": missing,
+        "exit_code": process.returncode,
+        "stderr": process.stderr[-400:],
+    }
+
+
+def require_verified(probe: dict[str, Any]) -> None:
+    """Fail closed unless every required boundary is kernel-enforced."""
+    if probe.get("state") != "verified":
+        raise IsolationError(
+            "isolation_not_verified",
+            str(probe.get("reason", "backend is not verified")),
+        )
+
+
+def run_protected(
+    argv: list[str],
+    *,
+    workspace: Path,
+    probe: dict[str, Any],
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Start a protected process only under a verified backend.
+
+    The call never falls back to an unisolated run: when the backend is not
+    verified the record is ``blocked`` and no process is spawned.
+    """
+    if probe.get("state") != "verified":
+        return {
+            "isolation_backend": "seatbelt",
+            "isolation_state": probe.get("state", "blocked"),
+            "profile_applied": False,
+            "process_started": False,
+            "exit_code": None,
+            "blocked_reason": probe.get(
+                "reason", "isolation backend is not verified"
+            ),
+            "argv": list(argv),
+        }
+    process = subprocess.run(
+        [SANDBOX_EXEC, "-p", build_profile(workspace), *argv],
+        cwd=str(workspace),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    return {
+        "isolation_backend": "seatbelt",
+        "isolation_state": "verified",
+        "profile_applied": True,
+        "process_started": True,
+        "exit_code": process.returncode,
+        "stdout": process.stdout[-2000:],
+        "stderr": process.stderr[-2000:],
+        "argv": list(argv),
     }
 
 

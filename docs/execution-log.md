@@ -598,6 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.22 阶段执行记录
+
+## 实现
+
+- `isolation.py` 重写为失败关闭执行器：只有四个边界全部满足才 `verified`；
+- 真实 Seatbelt 探针验证了写（工作区外）与网络的内核拒绝；读隔离未生效 → `partial`；
+- `run_protected()` 在后端非 `verified` 时拒绝启动，不回退无隔离执行；
+- 显式非隔离类别 `UNISOLATED_ALLOWED_OPERATIONS = {"run_tests"}`；
+- 修复变异 runner：无效补丁现在会使门禁失败。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 440/440，exit 0 |
+| 隔离专项 | 8/8 |
+| Mutation runner | 38 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| OS 隔离 | PARTIAL（读未受限），受保护执行 BLOCKED |
+
+## 边界
+
+- 读隔离未生效；受保护执行一律 BLOCKED；
+- 孤儿进程/超时终止未验证；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.22-isolation-boundary-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.21 阶段执行记录
 
 ## 实现

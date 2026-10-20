@@ -423,6 +423,28 @@
         "tests.test_durable_intent_and_isolation.DurableIntentGateTests.test_intent_write_failure_blocks_quarantine"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "isolation_fail_open",
+      "property": "protected execution never runs without a verified backend",
+      "path": "src/zevorinth/isolation.py",
+      "old": "    if probe.get(\"state\") != \"verified\":\n        return {\n",
+      "new": "    if False:\n        return {\n",
+      "tests": [
+        "tests.test_durable_intent_and_isolation.IsolationBoundaryTests.test_protected_execution_never_falls_back"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "isolation_read_confinement_faked",
+      "property": "unenforced read confinement is not reported as verified",
+      "path": "src/zevorinth/isolation.py",
+      "old": "        \"read_outside_denied\": results.get(\"read_outside\") == \"denied\",\n",
+      "new": "        \"read_outside_denied\": True,\n",
+      "tests": [
+        "tests.test_durable_intent_and_isolation.IsolationBoundaryTests.test_probe_distinguishes_kernel_denial_from_unenforced"
+      ],
+      "expected": "killed"
     }
   ]
 }

@@ -14,6 +14,7 @@ from zevorinth.isolation import (  # noqa: E402
     inventory_quarantine,
     isolation_available,
     run_probe,
+    run_protected,
 )
 from zevorinth.models import TaskRequest  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
@@ -87,7 +88,7 @@ class DurableIntentGateTests(unittest.TestCase):
 
 
 class IsolationBoundaryTests(unittest.TestCase):
-    def test_probe_never_claims_isolation_when_it_did_not_run(self) -> None:
+    def test_probe_distinguishes_kernel_denial_from_unenforced(self) -> None:
         if not isolation_available():
             self.skipTest("sandbox-exec is not available on this platform")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -97,12 +98,56 @@ class IsolationBoundaryTests(unittest.TestCase):
             decoy = root / "decoy.txt"
             decoy.write_text("secret", encoding="utf-8")
             result = run_probe(workspace, decoy)
-        self.assertIn(result["state"], {"verified", "unverified"})
-        if result["state"] == "unverified":
-            self.assertFalse(result["profile_applied"])
-            self.assertEqual(result["kernel_denials"], [])
-        else:
-            self.assertIn("read_outside", result["kernel_denials"])
+        self.assertIn(result["state"], {"verified", "partial", "blocked", "failed"})
+        if result["results"]:
+            # The working profile denies writes outside and the network.
+            self.assertEqual(result["results"]["write_outside"], "denied")
+            self.assertEqual(result["results"]["network"], "denied")
+            self.assertEqual(result["results"]["write_inside"], "allowed")
+            if result["results"]["read_outside"] == "allowed":
+                # Read confinement is not enforced, so it must not be verified.
+                self.assertEqual(result["state"], "partial")
+                self.assertIn(
+                    "read_outside_denied", result["unverified_boundaries"]
+                )
+        if result["state"] != "verified":
+            self.assertFalse(run_protected(
+                ["/bin/echo", "hi"],
+                workspace=workspace,
+                probe=result,
+            )["process_started"])
+
+    def test_protected_execution_never_falls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            marker = workspace / "must-not-exist.txt"
+            record = run_protected(
+                ["/bin/sh", "-c", f"touch {marker}"],
+                workspace=workspace,
+                probe={"state": "partial", "reason": "read not confined"},
+            )
+            self.assertEqual(record["isolation_state"], "partial")
+            self.assertFalse(record["process_started"])
+            self.assertFalse(record["profile_applied"])
+            self.assertIsNone(record["exit_code"])
+            self.assertFalse(marker.exists())
+
+    def test_protected_execution_rejects_blocked_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            record = run_protected(
+                ["/bin/echo", "hi"],
+                workspace=Path(temp_dir),
+                probe={"state": "blocked", "reason": "sandbox-exec missing"},
+            )
+        self.assertFalse(record["process_started"])
+        self.assertEqual(record["isolation_state"], "blocked")
+
+    def test_unisolated_class_is_explicit(self) -> None:
+        from zevorinth.isolation import UNISOLATED_ALLOWED_OPERATIONS
+
+        self.assertEqual(
+            UNISOLATED_ALLOWED_OPERATIONS, frozenset({"run_tests"})
+        )
 
     def test_inventory_is_read_only_and_empty_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

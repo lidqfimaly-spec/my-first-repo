@@ -201,6 +201,7 @@ def _evaluate_mutation(
             if occurrences != 1:
                 return {
                     "id": case["id"],
+                    "expected": case.get("expected", "killed"),
                     "result": "invalid",
                     "reason": (
                         f"patch target count is {occurrences} "
@@ -232,6 +233,7 @@ def _evaluate_mutation(
         if compile_result["exit_code"] != 0:
             return {
                 "id": case["id"],
+                "expected": case.get("expected", "killed"),
                 "result": "invalid",
                 "reason": "mutated file does not compile",
                 "compile": compile_result,

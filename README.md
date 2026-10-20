@@ -325,5 +325,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.19 阶段强化清理与文件系统竞态审计](docs/phase-3.19-hardened-cleanup-audit.md)
 - [第 3.20 阶段清理隔离、恢复与证据对账](docs/phase-3.20-cleanup-quarantine-recovery-audit.md)
 - [第 3.21 阶段操作系统隔离与持久化操作安全](docs/phase-3.21-os-isolation-durable-safety-audit.md)
+- [第 3.22 阶段隔离边界验证与失败关闭执行](docs/phase-3.22-isolation-boundary-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)
