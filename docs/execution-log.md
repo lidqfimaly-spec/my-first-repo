@@ -1024,6 +1024,45 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.52 阶段执行记录
+
+## 离线清理加固
+
+- 并发清理同目标：一个 completed、一个 already_cleaned，最多一次删除；
+- 校验前内容改变 → hash_mismatch；
+- 符号链接/普通文件替换 → target_replaced/unsafe_path；
+- quarantine 后崩溃 → reconciled_pending；
+- unlink 后崩溃 → reconciled_unverified；
+- 完成事件持久化失败 → unverified / completion_event_not_persisted；
+- 清理不改变任务状态；历史任务无最终计划继续拒绝。
+
+## 真实异常路径
+
+1 次真实模型请求，0 重试；真实 `run_tests` 在真实容器中超时：
+
+- 容器 `zv-1a5982846a84-85f03281` 超时，终止确认 true；
+- 任务失败 `test_timeout`，无 `task_succeeded`；
+- evidence 独立复核 `verified`，计划/证据一致；
+- 无宿主机回退。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 清理/恢复专项 | 14/14 |
+| 清理 + 真实异常矩阵 | 15/15 |
+| 系统 Python 全量 | 616/616 |
+| `.venv` 全量 | 616/616 |
+| Mutation runner | 71 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 结论
+
+**PASS**。详见
+`docs/phase-3.52-cleanup-recovery-concurrency-audit.md`；未推送。
+
+---
+
 
 
 ## 实现

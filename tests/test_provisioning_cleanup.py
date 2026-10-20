@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -92,6 +94,7 @@ class ProvisioningCleanupTests(unittest.TestCase):
 
     def test_completed_cleanup_is_idempotent(self) -> None:
         service, task, _, target = self._task()
+        status_before = task.status
         first = service.cleanup_provisioning_artifact(
             task.task_id,
             "probe-written.txt",
@@ -113,6 +116,167 @@ class ProvisioningCleanupTests(unittest.TestCase):
         )
         self.assertEqual(second["code"], "already_cleaned")
         self.assertFalse(second["removed"])
+        self.assertEqual(
+            service.store.require_task(task.task_id).status,
+            status_before,
+        )
+
+    def test_concurrent_requests_delete_at_most_once(self) -> None:
+        service, task, _, target = self._task()
+        barrier = threading.Barrier(2)
+        results: list[dict] = []
+
+        def worker() -> None:
+            barrier.wait(timeout=5)
+            results.append(
+                service.cleanup_provisioning_artifact(
+                    task.task_id,
+                    "probe-written.txt",
+                    enabled=True,
+                    authorized=True,
+                )
+            )
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        statuses = sorted(item["status"] for item in results)
+        self.assertEqual(statuses.count("completed"), 1)
+        self.assertEqual(statuses.count("rejected"), 1)
+        self.assertIn(
+            "already_cleaned",
+            [item.get("code") for item in results],
+        )
+        self.assertFalse(target.exists())
+        self.assertEqual(
+            [
+                event.event_type
+                for event in service.events(task.task_id)
+            ].count("cleanup_completed"),
+            1,
+        )
+
+    def test_content_change_before_verification_is_rejected(self) -> None:
+        service, task, _, target = self._task()
+
+        def checkpoint(stage: str) -> None:
+            if stage == "opened":
+                target.write_text("changed\n", encoding="utf-8")
+
+        record = service.cleanup_provisioning_artifact(
+            task.task_id,
+            "probe-written.txt",
+            enabled=True,
+            authorized=True,
+            checkpoint=checkpoint,
+        )
+        self.assertEqual(record["code"], "hash_mismatch")
+        self.assertTrue(target.exists())
+
+    def test_symlink_or_regular_replacement_is_rejected(self) -> None:
+        for replacement in ("symlink", "regular"):
+            with self.subTest(replacement=replacement):
+                service, task, _, target = self._task()
+                outside = target.parent / "outside.txt"
+                outside.write_text("outside\n", encoding="utf-8")
+
+                def checkpoint(stage: str) -> None:
+                    if stage != "before_quarantine":
+                        return
+                    target.unlink()
+                    if replacement == "symlink":
+                        os.symlink(outside, target)
+                    else:
+                        replacement_file = target.parent / "replacement.txt"
+                        replacement_file.write_text(
+                            "ok\n", encoding="utf-8"
+                        )
+                        os.replace(replacement_file, target)
+
+                record = service.cleanup_provisioning_artifact(
+                    task.task_id,
+                    "probe-written.txt",
+                    enabled=True,
+                    authorized=True,
+                    checkpoint=checkpoint,
+                )
+                self.assertIn(
+                    record["code"], {"target_replaced", "unsafe_path"}
+                )
+                self.assertTrue(target.exists() or target.is_symlink())
+
+    def test_interruption_after_quarantine_is_reconcilable(self) -> None:
+        service, task, _, target = self._task()
+
+        def checkpoint(stage: str) -> None:
+            if stage == "after_quarantine":
+                raise RuntimeError("crash after quarantine")
+
+        with self.assertRaises(RuntimeError):
+            service.cleanup_provisioning_artifact(
+                task.task_id,
+                "probe-written.txt",
+                enabled=True,
+                authorized=True,
+                checkpoint=checkpoint,
+            )
+        intent = next(
+            event
+            for event in service.events(task.task_id)
+            if event.event_type == "cleanup_intent"
+        )
+        resumed = service.reconcile_provisioning_cleanup(
+            task.task_id, intent.payload["operation_id"]
+        )
+        self.assertEqual(resumed["state"], "reconciled_pending")
+        self.assertFalse(target.exists())
+
+    def test_interruption_after_unlink_is_unverified(self) -> None:
+        service, task, _, target = self._task()
+
+        def checkpoint(stage: str) -> None:
+            if stage == "after_unlink":
+                raise RuntimeError("crash after unlink")
+
+        with self.assertRaises(RuntimeError):
+            service.cleanup_provisioning_artifact(
+                task.task_id,
+                "probe-written.txt",
+                enabled=True,
+                authorized=True,
+                checkpoint=checkpoint,
+            )
+        intent = next(
+            event
+            for event in service.events(task.task_id)
+            if event.event_type == "cleanup_intent"
+        )
+        resumed = service.reconcile_provisioning_cleanup(
+            task.task_id, intent.payload["operation_id"]
+        )
+        self.assertEqual(resumed["state"], "reconciled_unverified")
+        self.assertFalse(target.exists())
+
+    def test_completion_event_failure_is_not_reported_completed(self) -> None:
+        service, task, _, target = self._task()
+
+        def fail_event(_task, record: dict) -> None:
+            record["evidence_persisted"] = False
+
+        with patch.object(service, "_record_cleanup_event", side_effect=fail_event):
+            record = service.cleanup_provisioning_artifact(
+                task.task_id,
+                "probe-written.txt",
+                enabled=True,
+                authorized=True,
+            )
+        self.assertEqual(record["status"], "unverified")
+        self.assertEqual(record["code"], "completion_event_not_persisted")
+        self.assertTrue(record["removed"])
+        self.assertFalse(target.exists())
 
     def test_modified_or_missing_target_is_rejected(self) -> None:
         service, task, _, target = self._task()
@@ -151,6 +315,7 @@ class ProvisioningCleanupTests(unittest.TestCase):
 
     def test_intent_write_failure_blocks_quarantine(self) -> None:
         service, task, _, target = self._task()
+        status_before = task.status
         with patch.object(
             service, "_record_cleanup_intent", return_value=False
         ), patch.object(service, "_intent_exists", return_value=False):
@@ -163,9 +328,14 @@ class ProvisioningCleanupTests(unittest.TestCase):
         self.assertEqual(record["status"], "unverified")
         self.assertEqual(record["code"], "intent_not_persisted")
         self.assertTrue(target.exists())
+        self.assertEqual(
+            service.store.require_task(task.task_id).status,
+            status_before,
+        )
 
     def test_isolation_failure_is_recorded_without_success(self) -> None:
         service, task, _, target = self._task()
+        status_before = task.status
         failed = {
             "status": "failed",
             "code": "quarantine_failed",
@@ -184,6 +354,10 @@ class ProvisioningCleanupTests(unittest.TestCase):
         self.assertEqual(record["status"], "failed")
         self.assertFalse(record["removed"])
         self.assertTrue(target.exists())
+        self.assertEqual(
+            service.store.require_task(task.task_id).status,
+            status_before,
+        )
         events = service.events(task.task_id)
         self.assertIn("cleanup_rejected", [e.event_type for e in events])
 

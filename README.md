@@ -357,5 +357,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.49 阶段执行失败与恢复可靠性审计](docs/phase-3.49-failure-recovery-audit.md)
 - [第 3.50 阶段恢复边界与资源生命周期审计](docs/phase-3.50-recovery-resource-lifecycle-audit.md)
 - [第 3.51 阶段真实模型执行后的受控清理验证](docs/phase-3.51-real-model-cleanup-verification.md)
+- [第 3.52 阶段清理恢复、并发与真实异常路径审计](docs/phase-3.52-cleanup-recovery-concurrency-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

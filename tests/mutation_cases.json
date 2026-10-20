@@ -805,6 +805,28 @@
         "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_intent_write_failure_blocks_quarantine"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "provisioning_cleanup_concurrency_not_deduplicated",
+      "property": "concurrent cleanup of the same provisioning file is idempotent",
+      "path": "src/zevorinth/service.py",
+      "old": "        if result.get(\"status\") != \"completed\":\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_concurrent_requests_delete_at_most_once"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "provisioning_cleanup_completion_event_ignored",
+      "property": "missing completion evidence cannot be reported as completed",
+      "path": "src/zevorinth/service.py",
+      "old": "        if (\n            result.get(\"status\") == \"completed\"\n            and result.get(\"evidence_persisted\") is False\n        ):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_completion_event_failure_is_not_reported_completed"
+      ],
+      "expected": "killed"
     }
   ]
 }

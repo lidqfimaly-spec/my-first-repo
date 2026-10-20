@@ -544,7 +544,35 @@ class TaskService:
                 operation_id=operation_id,
             )
         )
+        if result.get("status") != "completed":
+            try:
+                latest_events = self.store.list_events(task_id)
+            except Exception:
+                latest_events = []
+            if any(
+                event.event_type == "cleanup_completed"
+                and event.payload.get("relative_path") == normalized
+                for event in latest_events
+            ):
+                result.update(
+                    status="rejected",
+                    code="already_cleaned",
+                    reason="another request completed this cleanup",
+                    removed=False,
+                )
         self._record_cleanup_event(task, result)
+        if (
+            result.get("status") == "completed"
+            and result.get("evidence_persisted") is False
+        ):
+            result.update(
+                status="unverified",
+                code="completion_event_not_persisted",
+                reason=(
+                    "file was removed but completion event was not persisted"
+                ),
+                removed=True,
+            )
         return result
 
     def reconcile_provisioning_cleanup(

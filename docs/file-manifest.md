@@ -306,6 +306,38 @@
 
 ---
 
+# 第 3.52 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.52-cleanup-recovery-concurrency-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_provisioning_cleanup.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 真实异常路径
+
+- 真实模型 API 请求：1（授权上限 1）；
+- 计划工具：`run_tests`；
+- 容器：`zv-1a5982846a84-85f03281`；
+- 容器超时，终止确认 true；
+- 任务：`failed / test_timeout`；
+- 无 `task_succeeded`，无宿主机回退。
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.52/real-timeout-pilot.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.52/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.52/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增
