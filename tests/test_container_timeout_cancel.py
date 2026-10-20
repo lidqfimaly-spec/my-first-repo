@@ -186,6 +186,15 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         )
         self.assertEqual(result.status, TaskStatus.FAILED)
         self.assertEqual(result.error.code, "test_timeout")
+        evidence = result.tool_result.test_evidence
+        self.assertEqual(
+            result.execution_plan_snapshot["evidence_id"],
+            evidence.evidence_id,
+        )
+        self.assertEqual(
+            result.execution_plan_snapshot["config_digest"],
+            evidence.config_digest,
+        )
         self.assertIn("task_failed", events)
         self.assertNotIn("task_succeeded", events)
         self.assertEqual(_container_names(result.task_id), [])
@@ -195,6 +204,15 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
             "test_slow", SLOW, timeout=60, cancel_after=1.0
         )
         self.assertEqual(result.status, TaskStatus.CANCELLED)
+        evidence = result.tool_result.test_evidence
+        self.assertEqual(
+            result.execution_plan_snapshot["evidence_id"],
+            evidence.evidence_id,
+        )
+        self.assertEqual(
+            result.execution_plan_snapshot["config_digest"],
+            evidence.config_digest,
+        )
         self.assertIn("task_cancelled", events)
         self.assertEqual(_container_names(result.task_id), [])
 
@@ -228,6 +246,94 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         self.assertEqual(result.status, TaskStatus.FAILED)
         self.assertNotEqual(
             getattr(result.error, "code", None), "success"
+        )
+
+    def test_container_start_failure_is_explicit(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_ok.py").write_text(
+            "import unittest\nclass T(unittest.TestCase):\n"
+            "    def test_ok(self):\n        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        service = TaskService(root)
+        queued = service.enqueue(_request("test_ok"))
+        evidence = _probe_evidence(
+            root, workspace, queued.task_id, IMAGE
+        )
+        _bind_evidence(evidence, workspace, "test_ok", queued.task_id)
+        EvidenceStore(root).save_evidence(evidence)
+        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
+        service.store.record_event_and_update(
+            queued.task_id,
+            "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+        def fail_popen(*args, **kwargs):
+            del args, kwargs
+            raise OSError("docker unavailable")
+
+        service.container_popen = fail_popen
+        result = service.execute_task(queued.task_id)
+
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(result.error.code, "container_start_failed")
+        self.assertEqual(result.tool_result.tool_name, "run_tests")
+        self.assertEqual(
+            result.execution_plan_snapshot["evidence_id"],
+            evidence["evidence_id"],
+        )
+        self.assertEqual(_container_names(result.task_id), [])
+        self.assertNotIn(
+            "task_succeeded",
+            [event.event_type for event in service.events(result.task_id)],
+        )
+
+    def test_evidence_invalidated_after_real_test_blocks_success(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_ok.py").write_text(
+            "import unittest\nclass T(unittest.TestCase):\n"
+            "    def test_ok(self):\n        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        service = TaskService(root)
+        queued = service.enqueue(_request("test_ok"))
+        evidence = _probe_evidence(
+            root, workspace, queued.task_id, IMAGE
+        )
+        _bind_evidence(evidence, workspace, "test_ok", queued.task_id)
+        store = EvidenceStore(root)
+        store.save_evidence(evidence)
+        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
+        service.store.record_event_and_update(
+            queued.task_id,
+            "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+
+        def invalidate_after_execution(stage, task):
+            del task
+            if stage == "after_test_before_verification":
+                store.invalidate_evidence(
+                    evidence["evidence_id"], "test revocation"
+                )
+
+        service.fault_hook = invalidate_after_execution
+        result = service.execute_task(queued.task_id)
+
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(result.error.code, "evidence_invalidated")
+        self.assertTrue(result.tool_result.success)
+        self.assertFalse(result.verification.passed)
+        self.assertEqual(_container_names(result.task_id), [])
+        self.assertNotIn(
+            "task_succeeded",
+            [event.event_type for event in service.events(result.task_id)],
         )
 
     def test_fsize_limit_stops_oversized_file(self) -> None:

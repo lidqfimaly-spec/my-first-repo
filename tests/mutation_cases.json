@@ -750,6 +750,28 @@
         "tests.test_trusted_test_parameters.ExecutionWiringTests.test_auto_provision_reaches_container_and_verifier"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "evidence_revalidation_ignored",
+      "property": "expired or invalidated evidence cannot pass after exit 0",
+      "path": "src/zevorinth/service.py",
+      "old": "        elif revalidation_reason:\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests.test_trusted_test_parameters.ExecutionWiringTests.test_expired_or_invalidated_evidence_blocks_success"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "container_start_failure_misclassified",
+      "property": "container start failures have an explicit failure code",
+      "path": "src/zevorinth/service.py",
+      "old": "        except OSError as exc:\n",
+      "new": "        except ZeroDivisionError as exc:\n",
+      "tests": [
+        "tests.test_container_timeout_cancel.ContainerTimeoutCancelTests.test_container_start_failure_is_explicit"
+      ],
+      "expected": "killed"
     }
   ]
 }

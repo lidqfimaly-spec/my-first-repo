@@ -919,6 +919,47 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.49 阶段执行记录
+
+## 修复
+
+- 容器启动失败明确返回 `container_start_failed`；
+- 测试退出码 0 后重新读取并验证 evidence，过期/撤销/复核失败均拒绝成功；
+- 新增 `after_test_before_verification` 故障注入点；
+- 容器 Popen 可注入，便于确定性测试启动失败；
+- 真实容器下验证 evidence 撤销后任务仍失败。
+
+## 故障矩阵
+
+15/15 通过：
+
+- 真实容器 4 项：超时、取消、终止未知、真实 evidence 撤销；
+- 模拟场景 5 项；
+- 单元/host 6 项；
+- 意外成功 0。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 故障矩阵专项 | 15/15 |
+| 相关故障/恢复专项 | 100/100 |
+| 系统 Python 全量 | 602/602 |
+| `.venv` 全量 | 602/602 |
+| Mutation runner | 66 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 真实模型 API 请求：0；
+- evidence 过期场景为模拟容器后验门禁；
+- provisioning 文件清理仍未执行；
+- 历史任务继续 fail-closed；
+- 详见 `docs/phase-3.49-failure-recovery-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现

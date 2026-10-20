@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import subprocess
 from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -121,6 +122,41 @@ def _test_execution_plan_mismatch(
     return None
 
 
+def _test_evidence_revalidation_reason(
+    project_root: Path,
+    task: Task,
+    evidence: TestExecutionEvidence,
+) -> str | None:
+    """Re-read persisted isolation evidence before accepting test success."""
+    if not evidence.evidence_id:
+        return None
+    from .evidence_store import EvidenceStore, EvidenceStoreError
+    from .isolation import _live_image_digest, _live_runtime_identity
+
+    snapshot = task.execution_plan_snapshot or {}
+    image = str(snapshot.get("image") or "python:3.13-alpine")
+    try:
+        verdict = EvidenceStore(project_root).verify_stored_evidence(
+            evidence.evidence_id,
+            expected_runtime=_live_runtime_identity(),
+            expected_image_digest=_live_image_digest(image),
+            expected_config_digest=evidence.config_digest or "",
+            expected_request_id=task.task_id,
+            expected_command_digest=evidence.command_digest or "",
+        )
+    except EvidenceStoreError:
+        return "evidence_revalidation_failed"
+    state = verdict.get("state")
+    reasons = set(verdict.get("reasons") or [])
+    if state == "verified":
+        return None
+    if "evidence_invalidated" in reasons or state == "invalidated":
+        return "evidence_invalidated"
+    if "evidence_expired" in reasons or state == "expired":
+        return "evidence_expired"
+    return "evidence_revalidation_failed"
+
+
 class TaskService:
     """Single-host coordinator using SQLite transactions for task ownership."""
 
@@ -192,6 +228,7 @@ class TaskService:
         self.verifier = ArtifactVerifier(self.artifacts_root)
         self.test_verifier = TestResultVerifier()
         self.test_runner = run_unittest
+        self.container_popen = subprocess.Popen
         self.container_terminator = None
         self.store = EventStore(
             self.database_path,
@@ -1962,12 +1999,17 @@ class TaskService:
             container_name,
             *container_command[2:],
         ]
-        process = _subprocess.Popen(
-            container_command,
-            stdout=_subprocess.PIPE,
-            stderr=_subprocess.PIPE,
-            text=True,
-        )
+        try:
+            process = self.container_popen(
+                container_command,
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            raise TestExecutionError(
+                "container_start_failed", type(exc).__name__
+            ) from exc
         import threading as _threading
 
         timed_out = False
@@ -2596,6 +2638,8 @@ class TaskService:
             updates={"phase": "verification_started"},
             lease_token=lease_token,
         )
+        if self.fault_hook is not None:
+            self.fault_hook("after_test_before_verification", verifying)
         return self._verify_test_and_finish(verifying, lease_token, parameters)
 
     def _verify_test_and_finish(
@@ -2615,6 +2659,13 @@ class TaskService:
             if evidence is not None
             else None
         )
+        revalidation_reason = (
+            _test_evidence_revalidation_reason(
+                self.project_root, task, evidence
+            )
+            if evidence is not None
+            else None
+        )
         if mismatch:
             verification = VerificationResult(
                 verifier_name=self.test_verifier.name,
@@ -2624,6 +2675,18 @@ class TaskService:
                 content_matches=False,
                 evidence_matches=False,
                 reason=mismatch,
+                artifact=None,
+                checked_at=self.clock(),
+            )
+        elif revalidation_reason:
+            verification = VerificationResult(
+                verifier_name=self.test_verifier.name,
+                passed=False,
+                exists=True,
+                path_safe=True,
+                content_matches=False,
+                evidence_matches=False,
+                reason=revalidation_reason,
                 artifact=None,
                 checked_at=self.clock(),
             )
@@ -2692,6 +2755,9 @@ class TaskService:
                 "tests_failed",
                 "execution_plan_snapshot_mismatch",
                 "execution_plan_snapshot_missing",
+                "evidence_expired",
+                "evidence_invalidated",
+                "evidence_revalidation_failed",
             }
             else "test_execution_failed"
         )

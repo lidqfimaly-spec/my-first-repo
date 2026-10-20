@@ -367,6 +367,9 @@ class ExecutionWiringTests(unittest.TestCase):
             side_effect=fake_provision,
         ), patch.object(
             TaskService, "_run_container_test", fake_container
+        ), patch(
+            "zevorinth.evidence_store.EvidenceStore.verify_stored_evidence",
+            return_value={"state": "verified", "reasons": []},
         ):
             task = service.submit(
                 TaskRequest(
@@ -523,6 +526,68 @@ class ExecutionWiringTests(unittest.TestCase):
         )
         self.assertEqual(task.tool_result.tool_name, "run_tests")
         self.assertEqual(container_calls, [])
+
+    def test_expired_or_invalidated_evidence_blocks_success(self) -> None:
+        for state, code in (
+            ("expired", "evidence_expired"),
+            ("invalidated", "evidence_invalidated"),
+        ):
+            with self.subTest(state=state):
+                root, workspace = _workspace(self)
+                (workspace / "inside.txt").write_text(
+                    "inside\n", encoding="utf-8"
+                )
+                service = TaskService(root, planner=_planner())
+
+                def fake_provision(root_arg, **kwargs):
+                    workspace = (
+                        Path(root_arg)
+                        / "workspaces"
+                        / kwargs["workspace_name"]
+                    )
+                    (workspace / "probe-written.txt").write_text(
+                        "ok\n", encoding="utf-8"
+                    )
+                    return {
+                        "status": "verified",
+                        "evidence_id": kwargs["evidence_id"],
+                    }
+
+                def fake_container(
+                    self, task, parameters, cancel_check=None
+                ):
+                    return _successful_raw()
+
+                with patch(
+                    "zevorinth.evidence_provisioning.provision_evidence",
+                    side_effect=fake_provision,
+                ), patch.object(
+                    TaskService, "_run_container_test", fake_container
+                ), patch(
+                    "zevorinth.evidence_store.EvidenceStore.verify_stored_evidence",
+                    return_value={"state": state, "reasons": [code]},
+                ):
+                    task = service.submit(
+                        TaskRequest(
+                            goal="run test_ok",
+                            operation=None,
+                            parameters={
+                                "workspace": "demo",
+                                "auto_provision_isolation": True,
+                            },
+                        )
+                    )
+
+                self.assertEqual(task.status, TaskStatus.FAILED)
+                self.assertEqual(task.error.code, code)
+                self.assertFalse(task.verification.passed)
+                self.assertTrue(task.tool_result.success)
+                event_types = [
+                    event.event_type
+                    for event in service.events(task.task_id)
+                ]
+                self.assertIn("tool_succeeded", event_types)
+                self.assertNotIn("task_succeeded", event_types)
 
     def test_run_tests_failure_records_run_tests_tool_name(self) -> None:
         root, _ = _workspace(self)
