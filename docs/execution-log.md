@@ -598,7 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.37 阶段执行记录
+# 第 3.38 阶段执行记录
+
+## 结论
+
+`run_tests` 已注册于 policy/planner/service/CLI，但**不在 LLM 候选 schema 与校验器中**（分类 B）。模型无法选择该工具。
+
+## 证据
+
+- `CANDIDATE_JSON_SCHEMA.operation.enum == ["write_text_artifact"]`；
+- 校验器对 `run_tests` 返回 `unsupported_operation`；
+- 模型自带 `evidence_id`/`task_id` 被 `unknown_candidate_fields` 拒绝；
+- 确定性 Planner 仍支持 run_tests（缺口仅 LLM 侧）。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 544/544，exit 0 |
+| 能力审计专项 | 7/7 |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 真实模型 API 请求：0；
+- 未修改 Planner 协议；
+- 详见 `docs/phase-3.38-llm-planner-run-tests-capability-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 
