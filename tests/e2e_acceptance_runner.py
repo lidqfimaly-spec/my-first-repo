@@ -95,6 +95,7 @@ def _request(content: str | None = "acceptance") -> TaskRequest:
 def _scenario(
     scenario_id: str,
     description: str,
+    category: str,
     expected: TaskStatus,
     actual: TaskStatus,
     *,
@@ -107,6 +108,7 @@ def _scenario(
     return {
         "id": scenario_id,
         "description": description,
+        "category": category,
         "input": details,
         "expected_status": expected.value,
         "actual_status": actual.value,
@@ -186,6 +188,7 @@ def run_acceptance() -> dict[str, Any]:
             _scenario(
                 "E2E-1",
                 "goal to independently verified file",
+                "success",
                 TaskStatus.SUCCEEDED,
                 result.task.status,
                 artifact=path,
@@ -214,6 +217,7 @@ def run_acceptance() -> dict[str, Any]:
             _scenario(
                 "E2E-2",
                 "append a constraint and confirm revision",
+                "revision",
                 TaskStatus.QUEUED,
                 revised.status,
                 artifact=None,
@@ -240,6 +244,7 @@ def run_acceptance() -> dict[str, Any]:
             _scenario(
                 "E2E-3",
                 "cooperative cancellation at claim checkpoint",
+                "cancellation",
                 TaskStatus.CANCELLED,
                 cancelled.status,
                 artifact=None,
@@ -264,11 +269,18 @@ def run_acceptance() -> dict[str, Any]:
             writer=no_write,
             clock=lambda: recovery_time,
         ).resume(task_id)
+        repeated = TaskService(
+            root,
+            writer=no_write,
+            clock=lambda: recovery_time,
+        ).resume(task_id)
+        self_calls = no_write.calls
         artifact = root / "artifacts" / task_id / "sigkill-proof.txt"
         scenarios.append(
             _scenario(
                 "E2E-4",
                 "SIGKILL after tool, restart and readback",
+                "recovery",
                 TaskStatus.SUCCEEDED,
                 recovered.status,
                 artifact=artifact,
@@ -278,7 +290,10 @@ def run_acceptance() -> dict[str, Any]:
                 ),
                 exit_code=0,
                 failure_class=None,
-                details={"writer_calls": no_write.calls},
+                details={
+                    "writer_calls": self_calls,
+                    "duplicate_after_recovery_status": repeated.status.value,
+                },
             )
         )
 
@@ -321,6 +336,7 @@ def run_acceptance() -> dict[str, Any]:
             _scenario(
                 "E2E-5",
                 "file exists but evidence is missing",
+                "recovery_evidence_gap",
                 TaskStatus.BLOCKED,
                 blocked.status,
                 artifact=artifact,
@@ -339,6 +355,7 @@ def run_acceptance() -> dict[str, Any]:
             _scenario(
                 "E2E-6",
                 "independent verifier veto",
+                "verification_veto",
                 TaskStatus.FAILED,
                 task.status,
                 artifact=None,
@@ -387,6 +404,7 @@ def run_acceptance() -> dict[str, Any]:
             _scenario(
                 "E2E-7",
                 "duplicate and stale requests avoid repeated side effects",
+                "idempotency",
                 TaskStatus.SUCCEEDED,
                 completed.status,
                 artifact=artifact,
@@ -404,9 +422,164 @@ def run_acceptance() -> dict[str, Any]:
             )
         )
 
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock = [NOW]
+        service = TaskService(
+            Path(temp_dir),
+            clock=lambda: clock[0],
+            max_execution_seconds=1,
+        )
+        task = service.enqueue(_request())
+        claim = service._claim(
+            task.task_id,
+            allowed=TaskService.RUNNABLE_STATUSES,
+        )
+        assert claim.acquired
+        service.store.transition(
+            task.task_id,
+            TaskStatus.RUNNING,
+            EventType.TASK_PLANNED,
+            NOW,
+            lease_token=str(claim.task.lease_token),
+        )
+        service.request_cancel(
+            task.task_id,
+            requested_by="acceptance-user",
+            reason="race with budget",
+        )
+        clock[0] = "2026-10-20T00:00:02.000+00:00"
+        budget_failed = service.execute_task(task.task_id)
+        scenarios.append(
+            _scenario(
+                "E2E-8",
+                "execution budget expiration wins before cancel processing",
+                "budget_cancel_race",
+                TaskStatus.FAILED,
+                budget_failed.status,
+                artifact=None,
+                evidence_complete=False,
+                exit_code=1,
+                failure_class="budget",
+                details={
+                    "error": (
+                        budget_failed.error.code
+                        if budget_failed.error is not None
+                        else None
+                    )
+                },
+            )
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        writer = CountingWriter(root / "artifacts")
+        service = TaskService(root, writer=writer, clock=lambda: NOW)
+        executed = service.execute_task(service.enqueue(_request()).task_id)
+        revision_conflict = 0
+        try:
+            service.revise_plan(
+                executed.task_id,
+                {"parameters": {"content": "after execution"}},
+                source_id="late-execution-revision",
+                expected_plan_version=0,
+                confirmed=True,
+            )
+        except PlanRevisionConflict:
+            revision_conflict = 1
+        scenarios.append(
+            _scenario(
+                "E2E-9",
+                "execution evidence blocks concurrent plan revision",
+                "revision_execution_race",
+                TaskStatus.SUCCEEDED,
+                executed.status,
+                artifact=root / "artifacts" / executed.task_id / "acceptance.txt",
+                evidence_complete=True,
+                exit_code=0,
+                failure_class=None,
+                details={
+                    "revision_conflicts": revision_conflict,
+                    "writer_calls": writer.calls,
+                },
+            )
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        checkpoint = _run_sigkill_worker(root)
+        task_id = checkpoint["task_id"]
+        artifact = root / "artifacts" / task_id / "sigkill-proof.txt"
+        artifact.write_text("corrupted after evidence checkpoint")
+        recovery_time = (
+            datetime.fromisoformat(checkpoint["lease_expires_at"])
+            + timedelta(seconds=1)
+        ).isoformat(timespec="milliseconds")
+        no_write = NoWriteWriter()
+        corrupted = TaskService(
+            root,
+            writer=no_write,
+            clock=lambda: recovery_time,
+        ).resume(task_id)
+        scenarios.append(
+            _scenario(
+                "E2E-10",
+                "evidence corruption is rejected on recovery",
+                "evidence_corruption",
+                TaskStatus.FAILED,
+                corrupted.status,
+                artifact=artifact,
+                evidence_complete=False,
+                exit_code=1,
+                failure_class="verification",
+                details={
+                    "writer_calls": no_write.calls,
+                    "reason": (
+                        corrupted.verification.reason
+                        if corrupted.verification is not None
+                        else None
+                    ),
+                },
+            )
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        class RaisingVerifier:
+            name = "raising-acceptance-verifier"
+
+            def verify(self, **_kwargs: Any):
+                raise RuntimeError("verifier unavailable")
+
+        service = TaskService(Path(temp_dir), clock=lambda: NOW)
+        service.verifier = RaisingVerifier()
+        failed = service.submit(_request())
+        scenarios.append(
+            _scenario(
+                "E2E-11",
+                "verifier exception fails closed",
+                "verifier_exception",
+                TaskStatus.FAILED,
+                failed.status,
+                artifact=None,
+                evidence_complete=False,
+                exit_code=1,
+                failure_class="verification",
+                details={
+                    "error": failed.error.code if failed.error else None,
+                    "reason": (
+                        failed.verification.reason
+                        if failed.verification is not None
+                        else None
+                    ),
+                },
+            )
+        )
+
     passed = sum(1 for item in scenarios if item["passed"])
     executable = [item for item in scenarios if item["id"] in {"E2E-1", "E2E-4", "E2E-7"}]
     recovery = [item for item in scenarios if item["id"] in {"E2E-4", "E2E-5"}]
+    idempotency_scenario = next(
+        item for item in scenarios if item["id"] == "E2E-7"
+    )
     return {
         "generated_at": datetime.now().astimezone().isoformat(
             timespec="seconds"
@@ -426,13 +599,51 @@ def run_acceptance() -> dict[str, Any]:
             ),
             "duplicate_side_effects": max(
                 0,
-                scenarios[-1]["input"]["writer_calls"] - 1,
+                idempotency_scenario["input"]["writer_calls"] - 1,
             ),
             "cancellation_handled": scenarios[2]["passed"],
             "evidence_complete_rate": (
                 sum(1 for item in scenarios if item["evidence_complete"])
                 / len(scenarios)
             ),
+            "correctly_blocked": sum(
+                1
+                for item in scenarios
+                if item["passed"]
+                and item["expected_status"]
+                in {TaskStatus.BLOCKED.value, TaskStatus.FAILED.value}
+            ),
+            "category_results": {
+                category: {
+                    "passed": sum(
+                        1
+                        for item in scenarios
+                        if item["category"] == category and item["passed"]
+                    ),
+                    "total": sum(
+                        1
+                        for item in scenarios
+                        if item["category"] == category
+                    ),
+                }
+                for category in sorted(
+                    {item["category"] for item in scenarios}
+                )
+            },
+            "failure_class_counts": {
+                failure_class: sum(
+                    1
+                    for item in scenarios
+                    if item["failure_class"] == failure_class
+                )
+                for failure_class in sorted(
+                    {
+                        item["failure_class"]
+                        for item in scenarios
+                        if item["failure_class"] is not None
+                    }
+                )
+            },
         },
     }
 

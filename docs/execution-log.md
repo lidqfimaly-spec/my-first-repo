@@ -598,6 +598,39 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.7 阶段执行记录
+
+## 审计与发布准备
+
+- 冻结 Lease、预算、计划快照、发布、取消、验证和恢复不变量；
+- 修复 `doctor` 仍报告 schema v3 的问题，统一使用运行时 schema 常量；
+- 增加 CLI、全新 home、v4 初始化、错误退出码和 package-data 检查；
+- 扩展 E2E runner 到 11 场景和分类指标；
+- 审计离线 Provider fake-client 错误矩阵；
+- 记录完全空 venv 缺少离线 setuptools 的安装限制；
+- 明确真实模型试点需要独立授权。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 219/219 通过，exit 0 |
+| 隔离环境完整 unittest | 219/219 通过，exit 0 |
+| release readiness | 3/3，连续 20 轮 0 失败 |
+| E2E acceptance | 11/11，连续 10 轮 0 失败 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 完全空 venv 无法离线安装，因为缺少 setuptools；未联网补齐；
+- 真实模型 API 请求：0；
+- 在线试点仍需用户明确授权；
+- 详见 `docs/phase-3.7-release-readiness.md`；
+- 未推送。
+
+---
+
 # 第 3.5 阶段执行记录
 
 ## 实现

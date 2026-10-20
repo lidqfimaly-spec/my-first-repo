@@ -155,6 +155,25 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.7 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.7-release-readiness.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_release_readiness.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/e2e_acceptance_runner.py`
+
+Schema version 保持 4；运行产物和 `.idea/` 不纳入源码清单。
+
+---
+
 # 第 3.5 阶段新增与修改
 
 ## 新增

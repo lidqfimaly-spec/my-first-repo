@@ -17,6 +17,7 @@ from .event_store import (
     ActiveTaskConflict,
     ConversationNotFound,
     ConversationTurnNotFound,
+    EventStore,
     EventStoreError,
     MessageConflict,
     PlanRevisionConflict,
@@ -62,7 +63,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
     llm_config = LLMPlannerConfig.from_environment()
     sdk_status = openai_sdk_status()
     return {
-        "schema_version": 3,
+        "schema_version": EventStore.SCHEMA_VERSION,
         "project": "Zevorinth",
         "version": __version__,
         "phase": 2,
