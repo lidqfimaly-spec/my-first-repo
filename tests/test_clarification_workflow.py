@@ -323,6 +323,57 @@ class ClarificationWorkflowTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(answer_count, 1)
 
+    def test_recovery_marks_pending_answer_applied_after_task_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = ConversationService(Path(temp_dir))
+            service.create_conversation(
+                conversation_id="conversation-1",
+                now=NOW,
+            )
+            created = service.process_message(
+                "conversation-1",
+                "创建一个文件",
+                client_message_id="m1",
+                now=NOW,
+            )
+            question = next(
+                item
+                for item in created.clarifications
+                if item.field_name == "operation"
+            )
+            message = service.history("conversation-1")[0]
+            answer = service.store.record_clarification_answer(
+                question_id=question.question_id,
+                message_id=message.message_id,
+                normalized_value="write_text_artifact",
+                now=NOW,
+            )
+            assert created.task is not None
+            service.task_service.resume(
+                created.task.task_id,
+                {"operation": "write_text_artifact"},
+            )
+            service.task_service.resume(
+                created.task.task_id,
+                {"parameters": {"artifact_path": "recovered.txt"}},
+            )
+            completed = service.task_service.resume(
+                created.task.task_id,
+                {"parameters": {"content": "recovered"}},
+            )
+            self.assertEqual(completed.status, TaskStatus.SUCCEEDED)
+
+            recovered = service.recover_task(created.task.task_id, now=NOW)
+            self.assertEqual(recovered.status, TaskStatus.SUCCEEDED)
+            answers = service.store.list_clarification_answers(
+                question.question_id
+            )
+            self.assertEqual(len(answers), 1)
+            self.assertEqual(
+                answers[0].validation_status.value,
+                "applied",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

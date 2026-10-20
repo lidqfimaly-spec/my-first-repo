@@ -378,6 +378,9 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--artifact-path", default=None)
     process.add_argument("--task-content", default=None)
     process.add_argument("--json", action="store_true")
+    recover = conversation_sub.add_parser("recover")
+    recover.add_argument("task_id")
+    recover.add_argument("--json", action="store_true")
 
     evaluation = subparsers.add_parser(
         "eval-planner",
@@ -540,6 +543,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                             f"[{question.field_name}] {question.question_text}"
                         )
                 return _conversation_exit_code(result.outcome)
+            if args.conversation_command == "recover":
+                task = service.recover_task(args.task_id)
+                _print_task(task, args.json)
+                return _exit_code(task)
             messages = service.history(
                 args.conversation_id,
                 limit=args.limit,
@@ -548,6 +555,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         except ConversationNotFound:
             print(f"conversation not found: {args.conversation_id}", file=sys.stderr)
+            return 2
+        except TaskNotFound:
+            print(f"task not found: {args.task_id}", file=sys.stderr)
             return 2
         except MessageConflict as exc:
             print(f"message conflict: {exc}", file=sys.stderr)

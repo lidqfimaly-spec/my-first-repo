@@ -217,6 +217,10 @@ PYTHONPATH=src python3 -m zevorinth \
   --content "创建一个文件" \
   --client-message-id request-2 \
   --json
+
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  conversation recover TASK_ID --json
 ```
 
 需要把任务绑定到已有 turn 时，可使用：

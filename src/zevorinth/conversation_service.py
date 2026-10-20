@@ -113,7 +113,14 @@ class ConversationService:
             now=now,
         )
         existing_task = self.store.get_task_for_turn(turn.turn_id)
-        if turn.status is not TurnStatus.RECEIVED or existing_task is not None:
+        if existing_task is not None:
+            return self._existing_task_result(
+                turn=turn,
+                message=message,
+                task=existing_task,
+                now=now,
+            )
+        if turn.status is not TurnStatus.RECEIVED:
             intent_kind = (
                 IntentKind(turn.intent_kind)
                 if turn.intent_kind
@@ -131,14 +138,7 @@ class ConversationService:
                     ),
                 ),
                 task=existing_task,
-                clarifications=(
-                    self.store.list_clarification_requests(
-                        existing_task.task_id,
-                        open_only=True,
-                    )
-                    if existing_task
-                    else []
-                ),
+                clarifications=[],
             )
 
         active_task = self.store.find_active_task_for_conversation(
@@ -151,7 +151,10 @@ class ConversationService:
         )
         turn = self.store.update_conversation_turn(
             turn.turn_id,
-            status=TurnStatus.CLASSIFIED,
+            # Keep the turn retryable until the branch has committed its
+            # durable outcome. CLASSIFIED would lose a message if the process
+            # dies before a task is created.
+            status=TurnStatus.RECEIVED,
             intent_kind=classification.kind.value,
             now=now,
         )
@@ -472,6 +475,120 @@ class ConversationService:
             task,
         )
 
+    def _existing_task_result(
+        self,
+        *,
+        turn: ConversationTurn,
+        message: Message,
+        task: Task,
+        now: str | None,
+    ) -> ConversationProcessResult:
+        intent_kind = (
+            IntentKind(turn.intent_kind)
+            if turn.intent_kind
+            else IntentKind.AMBIGUOUS
+        )
+        classification = IntentClassification(
+            kind=intent_kind,
+            reason="turn already linked to a task",
+            target_task_id=task.task_id,
+        )
+        pending = self.store.list_pending_clarification_answers(task.task_id)
+        if task.status is TaskStatus.SUCCEEDED:
+            for answer in pending:
+                self.store.mark_clarification_answer(
+                    answer.answer_id,
+                    ClarificationAnswerStatus.APPLIED,
+                    now=now,
+                )
+            turn = self.store.update_conversation_turn(
+                turn.turn_id,
+                status=TurnStatus.COMPLETED,
+                intent_kind=classification.kind.value,
+                now=now,
+            )
+            return self._result(
+                "already_processed",
+                turn,
+                message,
+                classification,
+                task,
+            )
+        if task.status in {
+            TaskStatus.FAILED,
+            TaskStatus.PLANNING_FAILED,
+            TaskStatus.BLOCKED,
+            TaskStatus.CANCELLED,
+            TaskStatus.SIMULATED,
+        }:
+            for answer in pending:
+                self.store.mark_clarification_answer(
+                    answer.answer_id,
+                    ClarificationAnswerStatus.REJECTED,
+                    now=now,
+                )
+            turn = self.store.update_conversation_turn(
+                turn.turn_id,
+                status=TurnStatus.NEEDS_ATTENTION,
+                intent_kind=classification.kind.value,
+                now=now,
+            )
+            return self._result(
+                "already_processed",
+                turn,
+                message,
+                classification,
+                task,
+            )
+        if task.status is TaskStatus.AWAITING_CLARIFICATION:
+            if pending:
+                turn = self.store.update_conversation_turn(
+                    turn.turn_id,
+                    status=TurnStatus.AWAITING_CLARIFICATION,
+                    intent_kind=classification.kind.value,
+                    now=now,
+                )
+                return self._result(
+                    "answer_pending",
+                    turn,
+                    message,
+                    classification,
+                    task,
+                )
+            questions = self.store.list_clarification_requests(
+                task.task_id,
+                open_only=True,
+            )
+            if not questions:
+                questions = self._create_questions(task, turn.turn_id, now=now)
+            turn = self.store.update_conversation_turn(
+                turn.turn_id,
+                status=TurnStatus.AWAITING_CLARIFICATION,
+                intent_kind=classification.kind.value,
+                now=now,
+            )
+            return ConversationProcessResult(
+                outcome="awaiting_clarification",
+                turn=turn,
+                message=message,
+                intent=classification,
+                task=task,
+                clarifications=questions,
+            )
+        turn = self.store.update_conversation_turn(
+            turn.turn_id,
+            status=TurnStatus.NEEDS_ATTENTION,
+            intent_kind=classification.kind.value,
+            now=now,
+        )
+        return self._result(
+            "requires_recovery",
+            turn,
+            message,
+            classification,
+            task,
+        )
+
     def _create_questions(
         self,
         task: Task,
@@ -522,3 +639,67 @@ class ConversationService:
             ),
             error=error,
         )
+
+    def recover_task(self, task_id: str, *, now: str | None = None) -> Task:
+        """Reconcile pending clarification answers without blind execution."""
+        task = self.task_service.require_task(task_id)
+        pending = self.store.list_pending_clarification_answers(task_id)
+        if not pending:
+            return task
+        if task.status is TaskStatus.SUCCEEDED:
+            for answer in pending:
+                self.store.mark_clarification_answer(
+                    answer.answer_id,
+                    ClarificationAnswerStatus.APPLIED,
+                    now=now,
+                )
+            return task
+        if task.status in {
+            TaskStatus.FAILED,
+            TaskStatus.PLANNING_FAILED,
+            TaskStatus.BLOCKED,
+            TaskStatus.CANCELLED,
+            TaskStatus.SIMULATED,
+        }:
+            for answer in pending:
+                self.store.mark_clarification_answer(
+                    answer.answer_id,
+                    ClarificationAnswerStatus.REJECTED,
+                    now=now,
+                )
+            return task
+        if task.status not in {
+            TaskStatus.AWAITING_CLARIFICATION,
+            TaskStatus.BLOCKED,
+        }:
+            # Running/verifying/interrupted tasks may already have side effects.
+            # Their pending answers require explicit review, not replay.
+            return task
+        for answer in pending:
+            question = self.store.get_clarification_request(answer.question_id)
+            if question is None:
+                continue
+            patch = self._patch_for_question(
+                question.field_name,
+                str(answer.normalized_value),
+            )
+            task = self.task_service.resume(task.task_id, patch)
+            if task.status is TaskStatus.SUCCEEDED:
+                self.store.mark_clarification_answer(
+                    answer.answer_id,
+                    ClarificationAnswerStatus.APPLIED,
+                    now=now,
+                )
+            elif task.status in {
+                TaskStatus.FAILED,
+                TaskStatus.PLANNING_FAILED,
+                TaskStatus.BLOCKED,
+            }:
+                self.store.mark_clarification_answer(
+                    answer.answer_id,
+                    ClarificationAnswerStatus.REJECTED,
+                    now=now,
+                )
+            if task.status is not TaskStatus.AWAITING_CLARIFICATION:
+                break
+        return task

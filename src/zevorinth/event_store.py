@@ -1659,6 +1659,27 @@ class EventStore:
             ).fetchall()
         return [self._clarification_answer_from_row(row) for row in rows]
 
+    def list_pending_clarification_answers(
+        self,
+        task_id: str,
+    ) -> list[ClarificationAnswer]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.answer_id, a.question_id, a.message_id,
+                       a.conversation_id, a.normalized_value_json,
+                       a.validation_status, a.created_at, a.applied_at
+                FROM clarification_answers AS a
+                JOIN clarification_requests AS r
+                  ON r.question_id = a.question_id
+                WHERE r.task_id = ?
+                  AND a.validation_status = 'pending_apply'
+                ORDER BY a.created_at, a.answer_id
+                """,
+                (task_id,),
+            ).fetchall()
+        return [self._clarification_answer_from_row(row) for row in rows]
+
     @staticmethod
     def _clarification_request_from_row(
         row: Mapping[str, Any],

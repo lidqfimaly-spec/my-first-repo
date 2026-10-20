@@ -151,6 +151,7 @@
 - `EventStore.create_clarification_requests()`、查询、记录答案、标记 applied/rejected；
 - `ConversationService.process_message()`；
 - CLI `conversation process`；
+- `ConversationService.recover_task()` 和 CLI `conversation recover`；
 - 新任务 → 生成问题 → question ID 回答 → TaskService.resume → 独立 Verifier 成功；
 - 同一消息/问题重复答案和跨会话答案的拒绝；
 - 并发答案只有一个有效结果；

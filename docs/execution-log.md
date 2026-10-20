@@ -614,11 +614,11 @@ ZEVORINTH_MODEL=deepseek-flash
 | 检查 | 结果 |
 | --- | --- |
 | Intent classifier 测试 | 8/8 通过 |
-| Clarification workflow 测试 | 6/6 通过 |
+| Clarification workflow 测试 | 7/7 通过 |
 | Conversation CLI 测试 | 5/5 通过 |
 | Conversation schema 测试 | 18/18 通过 |
-| 系统 Python 完整 unittest | 151/151 通过，exit 0 |
-| 隔离环境完整 unittest | 151/151 通过，exit 0 |
+| 系统 Python 完整 unittest | 152/152 通过，exit 0 |
+| 隔离环境完整 unittest | 152/152 通过，exit 0 |
 | `compileall` | exit 0 |
 | `git diff --check` | exit 0 |
 
