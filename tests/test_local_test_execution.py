@@ -170,6 +170,8 @@ class LocalTestExecutionTests(unittest.TestCase):
                     "demo",
                     "--target",
                     "test_demo",
+                    "--backend",
+                    "host",
                     "--json",
                 ],
                 cwd=PROJECT_ROOT,

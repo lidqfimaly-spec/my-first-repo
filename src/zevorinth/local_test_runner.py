@@ -118,9 +118,9 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
             policies[field] = [_normalize_prefix(str(item)) for item in raw]
         except SnapshotError as exc:
             raise TestExecutionError(exc.code, exc.message) from exc
-    # ``host`` remains the legacy non-isolated mode and must be requested
-    # explicitly; ``container`` requires verified evidence.
-    backend = parameters.get("execution_backend", "host")
+    # ``container`` is the default and requires verified evidence; ``host``
+    # is the legacy non-isolated mode and must be requested explicitly.
+    backend = parameters.get("execution_backend", "container")
     if backend not in {"container", "host"}:
         raise TestExecutionError(
             "invalid_execution_backend",

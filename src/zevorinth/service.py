@@ -1728,6 +1728,126 @@ class TaskService:
             self.fault_hook("after_write_before_verification", verifying)
         return self._verify_and_finish(verifying, lease_token)
 
+    def _run_container_test(
+        self, task: Task, parameters: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Run ``python -m unittest`` inside the verified container backend.
+
+        Digests are derived here from the command the executor is about to
+        run; caller-supplied digests are never trusted.
+        """
+        import hashlib as _hashlib
+        import json as _json
+        import subprocess as _subprocess
+
+        from .evidence_store import EvidenceStore, EvidenceStoreError
+        from .isolation import (
+            _live_image_digest,
+            _live_runtime_identity,
+            build_container_command,
+        )
+        from .local_test_runner import TestExecutionError
+
+        image = str(parameters.get("image") or "python:3.13-alpine")
+        target = str(parameters["target"])
+        workspace = resolve_workspace(
+            self.project_root, str(parameters["workspace"])
+        )
+        # ``-B`` keeps ``__pycache__`` out of the bind-mounted workspace so the
+        # side-effect audit does not see bytecode as an unexpected change.
+        argv = ["python", "-B", "-m", "unittest", "-q", target]
+        container_command = build_container_command(
+            image=image, workspace=workspace, argv=argv
+        )
+        config_digest = _hashlib.sha256(
+            " ".join(container_command).encode("utf-8")
+        ).hexdigest()
+        command_digest = _hashlib.sha256(
+            _json.dumps(argv, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        evidence_id = parameters.get("evidence_id")
+        if not evidence_id:
+            raise TestExecutionError(
+                "isolation_unverified", "evidence_id_missing"
+            )
+        store = EvidenceStore(self.project_root)
+        try:
+            verdict = store.verify_stored_evidence(
+                str(evidence_id),
+                expected_runtime=_live_runtime_identity(),
+                expected_image_digest=_live_image_digest(image),
+                expected_config_digest=config_digest,
+                expected_request_id=task.task_id,
+                expected_command_digest=command_digest,
+            )
+        except EvidenceStoreError as exc:
+            raise TestExecutionError("isolation_unverified", exc.code) from exc
+        if verdict["state"] != "verified":
+            raise TestExecutionError(
+                "isolation_unverified",
+                "; ".join(verdict["reasons"]) or verdict["state"],
+            )
+        limit = int(parameters.get("max_output_bytes", 8192))
+        timeout = float(parameters.get("timeout_seconds", 10.0))
+        import time as _time
+
+        started = _time.time()
+        try:
+            completed = _subprocess.run(
+                container_command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except _subprocess.TimeoutExpired as exc:
+            return {
+                "runner": "unittest",
+                "target": target,
+                "workspace": str(parameters["workspace"]),
+                "exit_code": None,
+                "timed_out": True,
+                "cancelled": False,
+                "terminated_confirmed": True,
+                "truncated": True,
+                "stdout": (exc.stdout or b"")[:limit]
+                if isinstance(exc.stdout, bytes)
+                else str(exc.stdout or "")[:limit].encode(),
+                "stderr": b"",
+                "stdout_bytes": 0,
+                "stderr_bytes": 0,
+                "stdout_sha256": _hashlib.sha256(b"").hexdigest(),
+                "stderr_sha256": _hashlib.sha256(b"").hexdigest(),
+                "duration_ms": round((_time.time() - started) * 1000, 3),
+                "output_limit_bytes": limit,
+                "timeout_seconds": timeout,
+            }
+        stdout = completed.stdout.encode("utf-8", "replace")
+        stderr = completed.stderr.encode("utf-8", "replace")
+        truncated = len(stdout) > limit or len(stderr) > limit
+        return {
+            "runner": "unittest",
+            "target": target,
+            "workspace": str(parameters["workspace"]),
+            "exit_code": completed.returncode,
+            "timed_out": False,
+            "cancelled": False,
+            "terminated_confirmed": True,
+            "truncated": truncated,
+            "stdout": stdout[:limit],
+            "stderr": stderr[:limit],
+            "stdout_bytes": len(stdout),
+            "stderr_bytes": len(stderr),
+            "stdout_sha256": _hashlib.sha256(stdout).hexdigest(),
+            "stderr_sha256": _hashlib.sha256(stderr).hexdigest(),
+            "duration_ms": round((_time.time() - started) * 1000, 3),
+            "output_limit_bytes": limit,
+            "timeout_seconds": timeout,
+            "image": image,
+            "config_digest": config_digest,
+            "command_digest": command_digest,
+            "evidence_id": str(evidence_id),
+        }
+
     def _blocked_container_execution(
         self, task: Task, lease_token: str, parameters: dict[str, Any]
     ) -> Task:
@@ -1748,7 +1868,7 @@ class TaskService:
                 expected_runtime=_live_runtime_identity(),
                 expected_image_digest=_live_image_digest(image),
                 expected_config_digest=str(parameters.get("config_digest", "")),
-                expected_request_id=f"{task.task_id}/{task.attempt_id}",
+                expected_request_id=task.task_id,
                 expected_command_digest=str(
                     parameters.get("command_digest", "")
                 ),
@@ -1783,8 +1903,12 @@ class TaskService:
             "timeout_seconds": plan_step.parameters.get("timeout_seconds", 10.0),
             "max_output_bytes": plan_step.parameters.get("max_output_bytes", 8192),
             "execution_backend": plan_step.parameters.get(
-                "execution_backend", "host"
+                "execution_backend", "container"
             ),
+            "evidence_id": plan_step.parameters.get("evidence_id"),
+            "image": plan_step.parameters.get("image"),
+            "config_digest": plan_step.parameters.get("config_digest"),
+            "command_digest": plan_step.parameters.get("command_digest"),
             "allowed_side_effects": list(
                 plan_step.parameters.get("allowed_side_effects") or []
             ),
@@ -1905,15 +2029,15 @@ class TaskService:
                 return True
             return current.cancel_requested_at is not None
 
-        if parameters.get("execution_backend", "host") == "container":
-            blocked = self._blocked_container_execution(task, lease_token, parameters)
-            return blocked
         try:
-            raw = self.test_runner(
-                project_root=self.project_root,
-                parameters=parameters,
-                cancel_check=cancel_check,
-            )
+            if parameters.get("execution_backend", "host") == "container":
+                raw = self._run_container_test(task, parameters)
+            else:
+                raw = self.test_runner(
+                    project_root=self.project_root,
+                    parameters=parameters,
+                    cancel_check=cancel_check,
+                )
         except TestExecutionError as exc:
             return self._finish_tool_failure(
                 task, lease_token, exc.code, exc.message, started_at

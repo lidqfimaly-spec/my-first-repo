@@ -115,7 +115,7 @@ def build_test_plan(
                         validation.get("protected_paths") or []
                     ),
                     "execution_backend": validation.get(
-                        "execution_backend", "host"
+                        "execution_backend", "container"
                     ),
                     "evidence_id": validation.get("evidence_id"),
                     "image": validation.get("image"),

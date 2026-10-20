@@ -51,8 +51,10 @@ class ContainerBackendGateTests(unittest.TestCase):
             # A blocked run is reported as isolation failure, never as a
             # test failure (which would prove the test actually ran).
             self.assertEqual(task.status, TaskStatus.FAILED)
-            self.assertEqual(task.error.code, "test_isolation_unverified")
-            self.assertIsNone(task.tool_result, "no tool result was recorded")
+            self.assertEqual(task.error.code, "isolation_unverified")
+            # The failure record exists, but no test evidence was produced:
+            # the test itself never ran.
+            self.assertIsNone(task.tool_result.test_evidence)
             events = [e.event_type for e in service.events(task.task_id)]
             self.assertNotIn("task_succeeded", events)
 

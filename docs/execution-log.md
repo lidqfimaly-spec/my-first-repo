@@ -598,7 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.29 阶段执行记录
+# 第 3.30 阶段执行记录
+
+## 实现
+
+- `run_tests` 默认后端切换为 `container`；host 仅限显式请求；
+- 容器内执行 `python -B -m unittest -q <target>`，执行器自派生 config/command 摘要；
+- 证据从 EvidenceStore 读取并实时重验，非 verified 一律 FAILED `isolation_unverified`；
+- 修复 `__pycache__` 触发副作用审计误报的问题（`-B`）；
+- CLI 增加 `--backend` / `--evidence-id` / `--image`。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 515/515，exit 0 |
+| 真实容器 run_tests 集成测试 | 1/1（真实 docker） |
+| Mutation runner | 54 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 容器超时/取消的真实终止未验证；
+- 测试产物回收未实现；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.30-run-tests-container-execution-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

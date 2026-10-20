@@ -498,6 +498,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     test_run.add_argument("--timeout", type=float, default=10.0)
     test_run.add_argument("--max-output", type=int, default=8192)
+    test_run.add_argument(
+        "--backend", choices=["container", "host"], default=None
+    )
+    test_run.add_argument("--evidence-id", default=None)
+    test_run.add_argument("--image", default=None)
     test_run.add_argument("--json", action="store_true")
 
     cleanup_cmd = subparsers.add_parser(
@@ -926,6 +931,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "workspace": args.workspace,
                         "timeout_seconds": args.timeout,
                         "max_output_bytes": args.max_output,
+                        **(
+                            {"execution_backend": args.backend}
+                            if args.backend
+                            else {}
+                        ),
+                        **(
+                            {"evidence_id": args.evidence_id}
+                            if args.evidence_id
+                            else {}
+                        ),
+                        **({"image": args.image} if args.image else {}),
                     },
                 )
             )

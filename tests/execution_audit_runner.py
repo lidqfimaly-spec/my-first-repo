@@ -233,6 +233,8 @@ def run_audit() -> dict[str, Any]:
                 "demo",
                 "--target",
                 "test_demo",
+                "--backend",
+                "host",
                 "--json",
             ],
             cwd=PROJECT_ROOT,
