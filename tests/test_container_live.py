@@ -93,8 +93,11 @@ class LiveContainerBoundaryTests(unittest.TestCase):
             runtime = _live_runtime_identity()
             digest = _live_image_digest(IMAGE)
             config = hashlib.sha256(" ".join(command).encode()).hexdigest()
+            request_id = "live-request-1"
             evidence = build_evidence(
                 environment_id="live-test",
+                request_id=request_id,
+                command_digest=config,
                 runtime_identity=runtime,
                 image_digest=digest,
                 container_config_digest=config,
@@ -125,6 +128,7 @@ class LiveContainerBoundaryTests(unittest.TestCase):
                 image=IMAGE,
                 boundary_result={"state": verdict["state"]},
                 evidence=evidence,
+                request_id=request_id,
             )
             self.assertTrue(gate["process_started"])
             self.assertEqual(gate["exit_code"], 0)
@@ -137,6 +141,7 @@ class LiveContainerBoundaryTests(unittest.TestCase):
                 image=IMAGE,
                 boundary_result={"state": "verified"},
                 evidence=tampered,
+                request_id=request_id,
             )
             self.assertFalse(blocked["process_started"])
             self.assertEqual(blocked["isolation_state"], "failed")

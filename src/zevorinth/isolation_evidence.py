@@ -9,11 +9,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any, Mapping
 
 
 VERIFIER_VERSION = "1.0.0"
-EVIDENCE_SCHEMA_VERSION = "1.0"
+EVIDENCE_SCHEMA_VERSION = "1.1"
+
+#: Default validity window.  Fifteen minutes is long enough to run one
+#: verification batch and short enough that a stale on-disk record is not a
+#: standing authorization.
+EVIDENCE_TTL_SECONDS = 900.0
+#: Tolerated clock skew between issuance and verification.
+CLOCK_SKEW_SECONDS = 5.0
 
 PROBE_BOUNDARIES = (
     "read_inside",
@@ -30,9 +38,14 @@ PROBE_STATUSES = frozenset(
 REQUIRED_EVIDENCE_FIELDS = (
     "schema_version",
     "verifier_version",
+    "evidence_id",
+    "issued_at",
+    "expires_at",
+    "request_id",
     "environment_id",
     "runtime_identity",
     "image_digest",
+    "command_digest",
     "container_config_digest",
     "probes",
     "digest",
@@ -68,13 +81,34 @@ def build_evidence(
     image_digest: str,
     container_config_digest: str,
     probes: list[Mapping[str, Any]],
+    evidence_id: str | None = None,
+    request_id: str = "",
+    command_digest: str = "",
+    issued_at: float | None = None,
+    ttl_seconds: float | None = None,
+    now: float | None = None,
 ) -> dict[str, Any]:
+    if issued_at is None:
+        issued = float(time.time() if now is None else now)
+    else:
+        issued = float(issued_at)
+    ttl = EVIDENCE_TTL_SECONDS if ttl_seconds is None else float(ttl_seconds)
+    if ttl <= 0:
+        raise EvidenceError("invalid_ttl", "ttl must be positive")
     record = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "verifier_version": VERIFIER_VERSION,
+        "evidence_id": evidence_id
+        or hashlib.sha256(
+            f"{environment_id}|{runtime_identity}|{image_digest}|{issued}".encode()
+        ).hexdigest()[:32],
+        "issued_at": issued,
+        "expires_at": issued + ttl,
+        "request_id": str(request_id),
         "environment_id": environment_id,
         "runtime_identity": runtime_identity,
         "image_digest": image_digest,
+        "command_digest": str(command_digest),
         "container_config_digest": container_config_digest,
         "probes": [
             {
@@ -96,6 +130,12 @@ def build_evidence(
     return record
 
 
+def _timestamp(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def verify_evidence(
     evidence: Mapping[str, Any] | None,
     *,
@@ -103,6 +143,9 @@ def verify_evidence(
     expected_image_digest: str,
     expected_config_digest: str,
     expected_verifier_version: str = VERIFIER_VERSION,
+    expected_request_id: str | None = None,
+    expected_command_digest: str | None = None,
+    now: float | None = None,
 ) -> dict[str, Any]:
     """Recompute the verdict from the record; never trust a self-report."""
     if not evidence:
@@ -131,6 +174,49 @@ def verify_evidence(
         return {
             "state": "failed",
             "reasons": ["evidence_digest_mismatch"],
+            "verifier_version": VERIFIER_VERSION,
+        }
+    issued = _timestamp(evidence.get("issued_at"))
+    expires = _timestamp(evidence.get("expires_at"))
+    current = float(time.time() if now is None else now)
+    if issued is None or expires is None:
+        return {
+            "state": "blocked",
+            "reasons": ["evidence_time_malformed"],
+            "verifier_version": VERIFIER_VERSION,
+        }
+    if expires <= issued:
+        return {
+            "state": "blocked",
+            "reasons": ["evidence_time_invalid"],
+            "verifier_version": VERIFIER_VERSION,
+        }
+    if issued > current + CLOCK_SKEW_SECONDS:
+        return {
+            "state": "blocked",
+            "reasons": ["evidence_issued_in_the_future"],
+            "verifier_version": VERIFIER_VERSION,
+        }
+    if current > expires:
+        return {
+            "state": "expired",
+            "reasons": ["evidence_expired"],
+            "verifier_version": VERIFIER_VERSION,
+        }
+    if expected_request_id is not None and str(
+        evidence.get("request_id", "")
+    ) != str(expected_request_id):
+        return {
+            "state": "blocked",
+            "reasons": ["evidence_request_mismatch"],
+            "verifier_version": VERIFIER_VERSION,
+        }
+    if expected_command_digest is not None and str(
+        evidence.get("command_digest", "")
+    ) != str(expected_command_digest):
+        return {
+            "state": "blocked",
+            "reasons": ["command_digest_mismatch"],
             "verifier_version": VERIFIER_VERSION,
         }
     for name, expected in (

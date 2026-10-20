@@ -155,7 +155,28 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
-# 第 3.26 阶段新增与修改
+# 第 3.27 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.27-isolation-evidence-lifecycle-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_evidence_lifecycle.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/isolation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/isolation_evidence.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_container_live.py`
+
+运行产物不纳入源码提交；Schema 版本保持 v4。
+
+---
+
+
 
 ## 新增
 

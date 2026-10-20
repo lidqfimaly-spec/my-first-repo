@@ -618,6 +618,7 @@ def run_protected_container(
     boundary_result: dict[str, Any],
     timeout: float = 60.0,
     evidence: dict[str, Any] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """Start a containerised process only after boundary verification.
 
@@ -640,6 +641,10 @@ def run_protected_container(
             expected_runtime=_live_runtime_identity(),
             expected_image_digest=_live_image_digest(image),
             expected_config_digest=expected_config,
+            expected_request_id=request_id,
+            expected_command_digest=hashlib.sha256(
+                " ".join(live_command).encode("utf-8")
+            ).hexdigest(),
         )
         if verdict["state"] != "verified":
             return {

@@ -598,7 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.26 阶段执行记录
+# 第 3.27 阶段执行记录
+
+## 实现
+
+- 证据新增 `evidence_id`、`issued_at`/`expires_at`（TTL 900s）、`request_id`、`command_digest`；
+- `verify_evidence` 增加 TTL、未来签发、时间格式、请求绑定与命令摘要检查；
+- `run_protected_container` 每次执行前用实时 runtime/镜像/命令摘要重算期望值；
+- 新增 3 条变异覆盖过期、命令摘要、请求复用。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 492/492，exit 0 |
+| 证据生命周期专项 | 18/18 |
+| 真实容器集成测试 | 1/1 |
+| Mutation runner | 49 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 证据尚未强制落盘；
+- 镜像替换竞态未消除；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.27-isolation-evidence-lifecycle-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

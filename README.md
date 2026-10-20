@@ -330,5 +330,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.24 阶段隔离后端决策与边界验收](docs/phase-3.24-isolation-backend-decision-audit.md)
 - [第 3.25 阶段容器隔离后端验证](docs/phase-3.25-container-isolation-audit.md)
 - [第 3.26 阶段容器隔离验证与证据闭环](docs/phase-3.26-container-isolation-verification-audit.md)
+- [第 3.27 阶段隔离证据生命周期与执行前重验](docs/phase-3.27-isolation-evidence-lifecycle-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

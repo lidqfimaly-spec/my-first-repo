@@ -533,6 +533,39 @@
         "tests.test_isolation_evidence.EvidenceVerifierTests.test_image_or_config_mismatch_is_blocked"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "expired_evidence_accepted",
+      "property": "expired evidence is rejected",
+      "path": "src/zevorinth/isolation_evidence.py",
+      "old": "    if current > expires:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_evidence_lifecycle.EvidenceLifecycleTests.test_evidence_just_past_expiry_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "command_digest_change_ignored",
+      "property": "command digest must match the live command",
+      "path": "src/zevorinth/isolation_evidence.py",
+      "old": "    if expected_command_digest is not None and str(\n        evidence.get(\"command_digest\", \"\")\n    ) != str(expected_command_digest):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_evidence_lifecycle.EvidenceLifecycleTests.test_command_digest_change_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_replay_allowed",
+      "property": "evidence is bound to one execution request",
+      "path": "src/zevorinth/isolation_evidence.py",
+      "old": "    if expected_request_id is not None and str(\n        evidence.get(\"request_id\", \"\")\n    ) != str(expected_request_id):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_evidence_lifecycle.EvidenceLifecycleTests.test_replay_from_another_request_is_rejected"
+      ],
+      "expected": "killed"
     }
   ]
 }
