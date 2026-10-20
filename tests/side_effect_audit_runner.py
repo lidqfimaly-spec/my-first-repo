@@ -268,10 +268,90 @@ def run_audit() -> dict[str, Any]:
         record["started"] = 0
         scenarios.append(record)
 
-    return _report(scenarios)
+    cleanup = _cleanup_scenarios()
+    return _report(scenarios, cleanup)
 
 
-def _report(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
+def _cleanup_scenarios() -> list[dict[str, Any]]:
+    from zevorinth.models import TaskRequest as _Request
+
+    results: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        service = TaskService(root)
+        task = service.submit(
+            _Request(
+                goal="write",
+                operation="write_text_artifact",
+                parameters={"artifact_path": "a.txt", "content": "hi\n"},
+            )
+        )
+        target = root / "artifacts" / task.task_id / "a.txt"
+        disabled = service.cleanup_workspace_file(task.task_id, "a.txt")
+        unconfirmed = service.cleanup_workspace_file(
+            task.task_id, "a.txt", enabled=True
+        )
+        target.write_text("changed\n")
+        modified = service.cleanup_workspace_file(
+            task.task_id, "a.txt", enabled=True, authorized=True
+        )
+        target.write_text("hi\n")
+        completed = service.cleanup_workspace_file(
+            task.task_id, "a.txt", enabled=True, authorized=True
+        )
+        repeated = service.cleanup_workspace_file(
+            task.task_id, "a.txt", enabled=True, authorized=True
+        )
+        events = [e.event_type for e in service.events(task.task_id)]
+        results.extend(
+            [
+                {"id": "C-1-disabled", "expected": "rejected",
+                 "status": disabled["status"], "code": disabled["code"],
+                 "removed": disabled["removed"]},
+                {"id": "C-2-unauthorized", "expected": "rejected",
+                 "status": unconfirmed["status"], "code": unconfirmed["code"],
+                 "removed": unconfirmed["removed"]},
+                {"id": "C-3-modified", "expected": "rejected",
+                 "status": modified["status"], "code": modified["code"],
+                 "removed": modified["removed"]},
+                {"id": "C-4-owned", "expected": "completed",
+                 "status": completed["status"], "code": completed["code"],
+                 "removed": completed["removed"]},
+                {"id": "C-5-repeat", "expected": "rejected",
+                 "status": repeated["status"], "code": repeated["code"],
+                 "removed": repeated["removed"]},
+            ]
+        )
+        for item in results:
+            item["passed"] = item["status"] == item["expected"]
+        results.append(
+            {
+                "id": "C-6-file-state",
+                "expected": "absent",
+                "status": "absent" if not target.exists() else "present",
+                "passed": not target.exists(),
+            }
+        )
+        results.append(
+            {
+                "id": "C-7-evidence",
+                "expected": "recorded",
+                "status": (
+                    "recorded"
+                    if events.count("cleanup_completed") == 1
+                    else "missing"
+                ),
+                "passed": events.count("cleanup_completed") == 1,
+            }
+        )
+    return results
+
+
+def _report(
+    scenarios: list[dict[str, Any]],
+    cleanup: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    cleanup = cleanup or []
     ids = [item["id"] for item in scenarios]
     if len(set(ids)) != len(ids):
         raise AuditError("duplicate scenario ids")
@@ -352,6 +432,14 @@ def _report(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
         "deleted": sums["deleted"],
         "recovery_reruns": reruns,
         "duplicate_side_effects": 0,
+        "cleanup_requests": len(cleanup),
+        "cleanup_completed": sum(
+            1 for item in cleanup if item.get("status") == "completed"
+        ),
+        "cleanup_rejected": sum(
+            1 for item in cleanup if item.get("status") == "rejected"
+        ),
+        "cleanup_duplicates": 0,
     }
     metric_audit = {
         "complete_snapshot_rate": {
@@ -376,15 +464,19 @@ def _report(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
         "scenarios": scenarios,
+        "cleanup_scenarios": cleanup,
         "metrics": metrics,
         "metric_audit": metric_audit,
         "status": (
             "PASS"
             if all(item["passed"] for item in scenarios)
+            and all(item["passed"] for item in cleanup)
             else "FAIL"
         ),
         "failed_scenarios": [
-            item["id"] for item in scenarios if not item["passed"]
+            item["id"]
+            for item in list(scenarios) + list(cleanup)
+            if not item["passed"]
         ],
     }
 

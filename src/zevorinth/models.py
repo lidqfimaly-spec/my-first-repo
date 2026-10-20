@@ -327,6 +327,7 @@ class ToolResult:
     error_code: str | None = None
     error_message: str | None = None
     test_evidence: "TestExecutionEvidence | None" = None
+    workspace_effects: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -344,6 +345,7 @@ class ToolResult:
                 if self.test_evidence is not None
                 else None
             ),
+            "workspace_effects": self.workspace_effects,
         }
 
     @classmethod
@@ -362,6 +364,11 @@ class ToolResult:
             test_evidence=(
                 TestExecutionEvidence.from_dict(data["test_evidence"])
                 if data.get("test_evidence")
+                else None
+            ),
+            workspace_effects=(
+                dict(data["workspace_effects"])
+                if data.get("workspace_effects")
                 else None
             ),
         )

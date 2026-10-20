@@ -500,6 +500,19 @@ def build_parser() -> argparse.ArgumentParser:
     test_run.add_argument("--max-output", type=int, default=8192)
     test_run.add_argument("--json", action="store_true")
 
+    cleanup_cmd = subparsers.add_parser(
+        "cleanup",
+        help="remove one file this task provably created (opt-in)",
+    )
+    cleanup_cmd.add_argument("task_id")
+    cleanup_cmd.add_argument("--path", required=True)
+    cleanup_cmd.add_argument(
+        "--confirm",
+        action="store_true",
+        help="explicitly authorize this deletion",
+    )
+    cleanup_cmd.add_argument("--json", action="store_true")
+
     status = subparsers.add_parser("status", help="show a persisted task")
     status.add_argument("task_id")
     status.add_argument("--json", action="store_true")
@@ -922,6 +935,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             task = service.require_task(args.task_id)
             _print_task(task, args.json)
             return _exit_code(task)
+        if args.command == "cleanup":
+            record = service.cleanup_workspace_file(
+                args.task_id,
+                args.path,
+                enabled=True,
+                authorized=bool(args.confirm),
+            )
+            if args.json:
+                print(
+                    json.dumps(
+                        record, ensure_ascii=False, indent=2, sort_keys=True
+                    )
+                )
+            else:
+                print(
+                    f"{record.get('status')}: {record.get('code')} "
+                    f"{record.get('relative_path')}"
+                )
+            return 0 if record.get("status") == "completed" else 4
         if args.command == "events":
             events = service.events(args.task_id)
             if args.json:

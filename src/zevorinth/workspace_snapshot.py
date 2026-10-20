@@ -303,8 +303,12 @@ def scan_workspace(
 
 
 def _normalize_prefix(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         raise SnapshotError("invalid_policy_path", "prefix must be a string")
+    if not value.strip() or value.strip() == ".":
+        # Empty prefix means "the workspace root itself"; it survives a
+        # round-trip through ``EffectPolicy`` without being re-rejected.
+        return ""
     if value.startswith("/") or "\\" in value:
         raise SnapshotError(
             "invalid_policy_path", "prefix must be a relative posix path"
@@ -428,11 +432,16 @@ def diff_snapshots(
         ),
     }
     complete = before.complete and after.complete
+    retained = len(reported)
+    detail_complete = not truncated
     return {
         "complete": complete,
         "before_digest": digest(before.entries),
         "after_digest": digest(after.entries),
         "change_count": total,
+        "retained_count": retained,
+        "detail_complete": detail_complete,
+        "truncated": truncated,
         "counts": counts,
         "changes": reported,
         "changes_truncated": truncated,
@@ -454,6 +463,17 @@ def validate_diff_record(diff: Mapping[str, Any]) -> None:
     total = int(diff.get("change_count", -1))
     if total < 0:
         raise SnapshotError("invalid_diff", "change_count is missing")
+    truncated = bool(diff.get("changes_truncated"))
+    if bool(diff.get("truncated", truncated)) != truncated:
+        raise SnapshotError("invalid_diff", "truncation flags disagree")
+    if bool(diff.get("detail_complete", not truncated)) == truncated:
+        raise SnapshotError(
+            "invalid_diff", "detail_complete contradicts truncation"
+        )
+    if int(diff.get("retained_count", len(changes))) != len(changes):
+        raise SnapshotError(
+            "invalid_diff", "retained_count does not match detail length"
+        )
     change_total = sum(
         int(counts.get(name, 0))
         for name in (

@@ -295,6 +295,25 @@ class DiffPolicyTests(unittest.TestCase):
             ["a.txt", "z.txt"],
         )
 
+    def test_large_diff_is_truncated_and_not_claimed_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            before = _snapshot(root)
+            for index in range(205):
+                (root / f"f{index:03d}.txt").write_text("x", encoding="utf-8")
+            after = _snapshot(root)
+        diff = diff_snapshots(before, after, EffectPolicy.build({}))
+        self.assertEqual(diff["change_count"], 205)
+        self.assertTrue(diff["truncated"])
+        self.assertFalse(diff["detail_complete"])
+        self.assertEqual(diff["retained_count"], 200)
+        self.assertEqual(len(diff["changes"]), 200)
+        validate_diff_record(diff)
+        forged = json.loads(json.dumps(diff))
+        forged["detail_complete"] = True
+        with self.assertRaises(SnapshotError):
+            validate_diff_record(forged)
+
 
 def _workspace(root: Path, files: dict[str, str] | None = None) -> Path:
     workspace = root / "workspaces" / "demo"
@@ -549,9 +568,13 @@ class LifecycleSideEffectTests(unittest.TestCase):
             evidence = task.tool_result.test_evidence
             forged = json.loads(json.dumps(evidence.workspace_diff))
             forged["changes"] = []
+            forged["retained_count"] = 0
+            forged["change_count"] = 0
+            forged["detail_complete"] = True
+            forged["truncated"] = False
+            forged["changes_truncated"] = False
             forged["counts"]["added"] = 0
             forged["counts"]["unexpected"] = 0
-            forged["change_count"] = 0
             from zevorinth.verifier import TestResultVerifier
 
             result = TestResultVerifier().verify(

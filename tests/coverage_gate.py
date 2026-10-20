@@ -19,6 +19,8 @@ THRESHOLDS = {
     "service.py": (80.0, 70.0),
     "verifier.py": (70.0, 70.0),
     "workspace_snapshot.py": (75.0, 65.0),
+    "workspace_effects.py": (75.0, 65.0),
+    "workspace_cleanup.py": (75.0, 65.0),
 }
 
 

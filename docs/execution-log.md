@@ -598,6 +598,40 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.18 阶段执行记录
+
+## 实现
+
+- 新增 `workspace_effects.py`：写入与测试共用的副作用证据契约与校验；
+- `write_text_artifact` 增加前后快照与 `workspace_effects`，Verifier 复核；
+- 差异新增 `detail_complete` / `retained_count` / `truncated` 语义；
+- 新增 `workspace_cleanup.py`：所有权来自持久化证据，默认关闭，需显式授权；
+- 新增 `zevorinth cleanup --task --path --confirm`；
+- 清理前后都校验哈希，完成后确认路径消失并持久化事件。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 406/406，exit 0 |
+| 清理专项 | 16/16 |
+| 副作用专项 | 29/29 |
+| 稳定结果复现 | `bb16aa94…` 两次一致 |
+| Mutation runner | 28 killed |
+| 覆盖率门禁 | 406 项通过，11/11 PASS |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- TOCTOU 未完全消除，采取保守拒绝；
+- 非操作系统级隔离；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.18-workspace-effect-governance-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.17 阶段执行记录
 
 ## 实现

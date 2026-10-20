@@ -49,16 +49,19 @@ from .local_test_runner import (
     resolve_workspace,
     run_unittest,
 )
-from .planner import DeterministicPlanner, Planner
+from .planner import WRITE_TEXT_ARTIFACT, DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
 from .verifier import ArtifactVerifier, TestResultVerifier
 from .workspace_snapshot import (
     EffectPolicy,
+    Snapshot,
     SnapshotError,
     diff_snapshots,
     scan_workspace,
 )
+from .workspace_effects import build_workspace_effects, validate_workspace_effects
+from .workspace_cleanup import execute_cleanup, plan_cleanup
 
 
 def utc_now() -> str:
@@ -299,6 +302,82 @@ class TaskService:
 
     def get_task(self, task_id: str) -> Task | None:
         return self.store.get_task(task_id)
+
+    def cleanup_workspace_file(
+        self,
+        task_id: str,
+        relative_path: str,
+        *,
+        enabled: bool = False,
+        authorized: bool = False,
+    ) -> dict[str, Any]:
+        """Delete one file this task provably created, if strictly allowed."""
+        task = self.store.require_task(task_id)
+        record: dict[str, Any] = {
+            "task_id": task_id,
+            "relative_path": relative_path,
+            "enabled": enabled,
+            "authorized": authorized,
+        }
+        effects = (
+            task.tool_result.workspace_effects
+            if task.tool_result is not None
+            else None
+        )
+        if effects is None:
+            record.update(status="rejected", code="no_effects", removed=False)
+            return record
+        if task.lease_token is not None:
+            record.update(
+                status="rejected", code="active_lease", removed=False
+            )
+            return record
+        workspace = str(effects.get("workspace"))
+        if effects.get("operation") == RUN_TESTS_TOOL:
+            root = resolve_workspace(self.project_root, workspace)
+        else:
+            root = self.artifacts_root / workspace
+        decision = plan_cleanup(
+            effects=effects,
+            workspace_root=root,
+            relative_path=relative_path,
+            current_generation=task.claim_generation,
+            enabled=enabled,
+            authorized=authorized,
+        )
+        record["decision"] = decision.to_dict()
+        if not decision.allowed:
+            record.update(
+                status="rejected", code=decision.code, removed=False
+            )
+            self._record_cleanup_event(task, record)
+            return record
+        outcome = execute_cleanup(decision)
+        record.update(outcome)
+        self._record_cleanup_event(task, record)
+        return record
+
+    def _record_cleanup_event(
+        self, task: Task, record: dict[str, Any]
+    ) -> None:
+        event_type = (
+            "cleanup_completed"
+            if record.get("status") == "completed"
+            else "cleanup_rejected"
+        )
+        try:
+            self.store.record_event_and_update(
+                task.task_id,
+                event_type,
+                self.clock(),
+                payload=record,
+            )
+        except Exception:
+            # Cleanup evidence is advisory for the original task; a failure
+            # to append it must not be reported as a successful cleanup.
+            record["evidence_persisted"] = False
+            return
+        record["evidence_persisted"] = True
 
     def require_task(self, task_id: str) -> Task:
         return self.store.require_task(task_id)
@@ -1269,6 +1348,26 @@ class TaskService:
             lease_token=lease_token,
         )
         try:
+            task_dir = self.artifacts_root / task.task_id
+            before_write = (
+                scan_workspace(
+                    task_dir,
+                    workspace_id=task.task_id,
+                    task_id=task.task_id,
+                    attempt_id=task.attempt_id,
+                    claim_generation=task.claim_generation,
+                    captured_at=started_at,
+                )
+                if task_dir.is_dir()
+                else Snapshot(
+                    workspace=task.task_id,
+                    task_id=task.task_id,
+                    attempt_id=task.attempt_id,
+                    claim_generation=task.claim_generation,
+                    captured_at=started_at,
+                    complete=True,
+                )
+            )
             result = self.writer.write(
                 task_id=task.task_id,
                 attempt_id=task.attempt_id,
@@ -1314,6 +1413,29 @@ class TaskService:
                 started_at,
             )
 
+        after_write = scan_workspace(
+            task_dir,
+            workspace_id=task.task_id,
+            task_id=task.task_id,
+            attempt_id=task.attempt_id,
+            claim_generation=task.claim_generation,
+            captured_at=self.clock(),
+        )
+        result.workspace_effects = build_workspace_effects(
+            operation=WRITE_TEXT_ARTIFACT,
+            source=self.writer.tool_name,
+            workspace=task.task_id,
+            task_id=task.task_id,
+            attempt_id=task.attempt_id,
+            claim_generation=task.claim_generation,
+            before=before_write,
+            after=after_write,
+            # ``.staging`` is the writer's own recovery directory inside the
+            # task folder; it is declared explicitly rather than hidden.
+            policy_parameters={
+                "allowed_side_effects": [artifact_path, ".staging"]
+            },
+        )
         self._assert_execution_authority(task, lease_token)
         latest = self.store.require_task(task.task_id)
         if latest.cancel_requested_at is not None:
@@ -1622,6 +1744,17 @@ class TaskService:
             started_at=started_at,
             finished_at=self.clock(),
             test_evidence=evidence,
+            workspace_effects=build_workspace_effects(
+                operation=RUN_TESTS_TOOL,
+                source="local_test_runner",
+                workspace=str(parameters["workspace"]),
+                task_id=task.task_id,
+                attempt_id=task.attempt_id,
+                claim_generation=task.claim_generation,
+                before=before,
+                after=after,
+                policy_parameters=parameters,
+            ),
         )
         task, _ = self.store.record_event_and_update(
             task.task_id,
@@ -1902,6 +2035,55 @@ class TaskService:
                 artifact=None,
                 checked_at=self.clock(),
             )
+        effects = (
+            result.workspace_effects
+            if result is not None and result.workspace_effects
+            else None
+        )
+        if effects is not None:
+            try:
+                validate_workspace_effects(effects)
+            except SnapshotError as exc:
+                verification = VerificationResult(
+                    verifier_name=self.verifier.name,
+                    passed=False,
+                    exists=False,
+                    path_safe=False,
+                    content_matches=False,
+                    evidence_matches=False,
+                    reason=f"workspace_effects_invalid_{exc.code}",
+                    artifact=None,
+                    checked_at=self.clock(),
+                )
+            else:
+                counts = effects["diff"]["counts"]
+                if not effects["complete"] or effects["truncated"]:
+                    reason = "workspace_audit_incomplete"
+                elif counts["unexpected"] or counts["unknown"]:
+                    reason = "unexpected_workspace_change"
+                else:
+                    added = [
+                        item
+                        for item in effects["diff"]["changes"]
+                        if item["change"] == "added"
+                        and item["path"] != ".staging"
+                    ]
+                    if len(added) != 1 or added[0]["path"] != artifact_path:
+                        reason = "unexpected_workspace_change"
+                    else:
+                        reason = ""
+                if reason:
+                    verification = VerificationResult(
+                        verifier_name=self.verifier.name,
+                        passed=False,
+                        exists=False,
+                        path_safe=False,
+                        content_matches=False,
+                        evidence_matches=False,
+                        reason=reason,
+                        artifact=None,
+                        checked_at=self.clock(),
+                    )
         self._assert_execution_authority(task, lease_token)
         task, _ = self.store.record_event_and_update(
             task.task_id,

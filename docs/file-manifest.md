@@ -155,6 +155,33 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.18 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.18-workspace-effect-governance-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/workspace_effects.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/workspace_cleanup.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_workspace_cleanup.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/models.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/workspace_snapshot.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/coverage_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/side_effect_audit_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_workspace_side_effects.py`
+
+运行产物不纳入源码提交；Schema 版本保持 v4。
+
+---
+
 # 第 3.17 阶段新增与修改
 
 ## 新增
