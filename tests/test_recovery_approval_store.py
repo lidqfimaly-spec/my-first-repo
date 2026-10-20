@@ -33,6 +33,17 @@ LATER = "2026-10-20T00:05:00.000+00:00"
 WORKER = PROJECT_ROOT / "tests" / "approval_revalidation_worker.py"
 
 
+def _approve(preview, *, approver: str = "operator", now: str = NOW):
+    action = preview.actions[0]
+    return approve_recovery_preview(
+        preview,
+        approver=approver,
+        action=action.action,
+        target=action.target,
+        now=now,
+    )
+
+
 class RecoveryApprovalStoreTests(unittest.TestCase):
     def _preview(self):
         service, task, events = _host_test_task()
@@ -43,9 +54,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
         _, task, preview = self._preview()
         root = Path(tempfile.mkdtemp(prefix="zv-approval-store-"))
         store = RecoveryApprovalStore(root)
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         self.assertEqual(store.save(approval)["status"], "saved")
         reloaded = RecoveryApprovalStore(root).load(approval.approval_id)
         self.assertEqual(reloaded.to_dict(), approval.to_dict())
@@ -58,9 +67,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
         _, _, preview = self._preview()
         root = Path(tempfile.mkdtemp(prefix="zv-approval-duplicate-"))
         store = RecoveryApprovalStore(root)
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         self.assertEqual(store.save(approval)["status"], "saved")
         self.assertEqual(store.save(approval)["status"], "unchanged")
         other = replace(approval, approver="other")
@@ -75,9 +82,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
         _, _, preview = self._preview()
         root = Path(tempfile.mkdtemp(prefix="zv-approval-tamper-"))
         store = RecoveryApprovalStore(root)
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         store.save(approval)
         path = root / "recovery_approvals" / f"{approval.approval_id}.json"
         path.write_text(json.dumps({"tampered": True}), encoding="utf-8")
@@ -89,9 +94,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
         _, _, preview = self._preview()
         root = Path(tempfile.mkdtemp(prefix="zv-approval-exec-"))
         store = RecoveryApprovalStore(root)
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         forbidden = replace(approval, execution_authorized=True)
         forbidden = replace(
             forbidden, record_digest=approval_record_digest(forbidden)
@@ -106,9 +109,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
         _, task, preview = self._preview()
         root = Path(tempfile.mkdtemp(prefix="zv-approval-revoke-"))
         store = RecoveryApprovalStore(root)
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         store.save(approval)
         revoked = store.revoke(
             approval.approval_id, reason="operator revoked", now=LATER
@@ -151,9 +152,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
 
     def test_stale_approval_and_action_scope(self) -> None:
         service, task, preview = self._preview()
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         service.store.record_event_and_update(
             task.task_id,
             "state_changed",
@@ -190,9 +189,7 @@ class RecoveryApprovalStoreTests(unittest.TestCase):
         service, task, preview = self._preview()
         root = Path(tempfile.mkdtemp(prefix="zv-approval-process-"))
         store = RecoveryApprovalStore(root)
-        approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
-        )
+        approval = _approve(preview)
         store.save(approval)
         service.store.record_event_and_update(
             task.task_id,

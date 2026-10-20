@@ -6,11 +6,16 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from uuid import uuid4
+
+import fcntl
 
 from .models import Event, Task, TaskStatus
 from .task_lifecycle import audit_task_lifecycle
@@ -18,6 +23,7 @@ from .task_lifecycle import audit_task_lifecycle
 
 PREVIEW_VERSION = "recovery-preview-v1"
 APPROVAL_DIR = "recovery_approvals"
+APPROVAL_LOCK_DIR = ".locks"
 APPROVAL_ID_PATTERN = re.compile(r"^approval-[A-Za-z0-9_-]{1,120}$")
 
 
@@ -134,6 +140,18 @@ class RecoveryApproval:
     status: str = "approved"
     revoked_at: str | None = None
     revoked_reason: str | None = None
+    action: str | None = None
+    target: str | None = None
+    preconditions: tuple[str, ...] = ()
+    expected_result: str | None = None
+    verification: str | None = None
+    action_digest: str | None = None
+    execution_attempt_id: str | None = None
+    claimed_at: str | None = None
+    completed_at: str | None = None
+    result: dict[str, Any] | None = None
+    verification_result: str | None = None
+    verification_passed: bool | None = None
     record_digest: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,6 +168,18 @@ class RecoveryApproval:
             "status": self.status,
             "revoked_at": self.revoked_at,
             "revoked_reason": self.revoked_reason,
+            "action": self.action,
+            "target": self.target,
+            "preconditions": list(self.preconditions),
+            "expected_result": self.expected_result,
+            "verification": self.verification,
+            "action_digest": self.action_digest,
+            "execution_attempt_id": self.execution_attempt_id,
+            "claimed_at": self.claimed_at,
+            "completed_at": self.completed_at,
+            "result": self.result,
+            "verification_result": self.verification_result,
+            "verification_passed": self.verification_passed,
             "record_digest": self.record_digest,
         }
 
@@ -176,6 +206,64 @@ class RecoveryApproval:
                 if data.get("revoked_reason") is not None
                 else None
             ),
+            action=(
+                str(data["action"])
+                if data.get("action") is not None
+                else None
+            ),
+            target=(
+                str(data["target"])
+                if data.get("target") is not None
+                else None
+            ),
+            preconditions=tuple(
+                str(item) for item in data.get("preconditions", [])
+            ),
+            expected_result=(
+                str(data["expected_result"])
+                if data.get("expected_result") is not None
+                else None
+            ),
+            verification=(
+                str(data["verification"])
+                if data.get("verification") is not None
+                else None
+            ),
+            action_digest=(
+                str(data["action_digest"])
+                if data.get("action_digest") is not None
+                else None
+            ),
+            execution_attempt_id=(
+                str(data["execution_attempt_id"])
+                if data.get("execution_attempt_id") is not None
+                else None
+            ),
+            claimed_at=(
+                str(data["claimed_at"])
+                if data.get("claimed_at") is not None
+                else None
+            ),
+            completed_at=(
+                str(data["completed_at"])
+                if data.get("completed_at") is not None
+                else None
+            ),
+            result=(
+                dict(data["result"])
+                if data.get("result") is not None
+                else None
+            ),
+            verification_result=(
+                str(data["verification_result"])
+                if data.get("verification_result") is not None
+                else None
+            ),
+            verification_passed=(
+                bool(data["verification_passed"])
+                if data.get("verification_passed") is not None
+                else None
+            ),
             record_digest=(
                 str(data["record_digest"])
                 if data.get("record_digest") is not None
@@ -186,6 +274,7 @@ class RecoveryApproval:
             raise ApprovalStoreError(
                 "approval_corrupt", "approval record digest mismatch"
             )
+        _validate_persisted_approval_state(approval)
         return approval
 
 
@@ -199,7 +288,67 @@ class ApprovalStoreError(RuntimeError):
 def approval_record_digest(approval: RecoveryApproval) -> str:
     payload = approval.to_dict()
     payload.pop("record_digest", None)
-    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+    try:
+        encoded = _canonical(payload).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ApprovalStoreError(
+            "approval_store_write_failed", type(exc).__name__
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _recovery_action_digest(action: RecoveryAction) -> str:
+    return hashlib.sha256(
+        _canonical(action.to_dict()).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_persisted_approval_state(
+    approval: RecoveryApproval,
+) -> None:
+    if approval.execution_authorized:
+        raise ApprovalStoreError(
+            "execution_authorization_forbidden",
+            "approval records cannot authorize execution",
+        )
+    if approval.status == "approved":
+        if (
+            not approval.action
+            or not approval.target
+            or not approval.preconditions
+            or not approval.expected_result
+            or not approval.verification
+            or not approval.action_digest
+        ):
+            raise ApprovalStoreError(
+                "approval_action_binding_missing",
+                "approved records require a complete action binding",
+            )
+    if approval.status not in {"consuming", "consumed", "failed"}:
+        return
+    if not approval.execution_attempt_id or not approval.claimed_at:
+        raise ApprovalStoreError(
+            "approval_state_invalid",
+            "claimed approval state requires an attempt and claim time",
+        )
+    if approval.status not in {"consumed", "failed"}:
+        return
+    if (
+        not approval.completed_at
+        or not approval.result
+        or approval.verification_passed is None
+        or not approval.verification_result
+    ):
+        raise ApprovalStoreError(
+            "approval_state_invalid",
+            "completed approval state requires result and verification",
+        )
+    expected_verification = approval.status == "consumed"
+    if approval.verification_passed is not expected_verification:
+        raise ApprovalStoreError(
+            "approval_state_invalid",
+            "terminal approval status disagrees with verification",
+        )
 
 
 class RecoveryApprovalStore:
@@ -208,6 +357,7 @@ class RecoveryApprovalStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
         self.directory = self.root / APPROVAL_DIR
+        self.lock_directory = self.directory / APPROVAL_LOCK_DIR
 
     def _ensure_directory(self) -> None:
         if self.directory.is_symlink():
@@ -217,6 +367,15 @@ class RecoveryApprovalStore:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
 
+    def _ensure_lock_directory(self) -> None:
+        self._ensure_directory()
+        if self.lock_directory.is_symlink():
+            raise ApprovalStoreError(
+                "unsafe_store", "approval lock directory is a symlink"
+            )
+        self.lock_directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(self.lock_directory, 0o700)
+
     def _path(self, approval_id: str) -> Path:
         if not APPROVAL_ID_PATTERN.fullmatch(approval_id):
             raise ApprovalStoreError(
@@ -224,38 +383,72 @@ class RecoveryApprovalStore:
             )
         return self.directory / f"{approval_id}.json"
 
+    @contextmanager
+    def _approval_lock(self, approval_id: str):
+        """Hold an exclusive process-safe lock for one approval record."""
+        self._path(approval_id)
+        self._ensure_lock_directory()
+        lock_path = self.lock_directory / f"{approval_id}.lock"
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(lock_path, flags, 0o600)
+        except OSError as exc:
+            raise ApprovalStoreError(
+                "approval_lock_failed", type(exc).__name__
+            ) from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ApprovalStoreError(
+                    "unsafe_store", "approval lock is not a regular file"
+                )
+            os.fchmod(fd, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     def save(self, approval: RecoveryApproval) -> dict[str, Any]:
         self._ensure_directory()
-        if approval.execution_authorized:
-            raise ApprovalStoreError(
-                "execution_authorization_forbidden",
-                "approval records cannot authorize execution",
-            )
         if approval_record_digest(approval) != approval.record_digest:
             raise ApprovalStoreError(
                 "approval_corrupt", "approval digest does not match"
             )
-        target = self._path(approval.approval_id)
-        if target.is_symlink():
-            raise ApprovalStoreError(
-                "unsafe_store", "approval record path is a symlink"
-            )
-        if target.exists():
-            existing = self.load(approval.approval_id)
-            if existing.to_dict() == approval.to_dict():
-                return {
-                    "status": "unchanged",
-                    "approval_id": approval.approval_id,
-                }
-            raise ApprovalStoreError(
-                "approval_conflict",
-                "a different record already uses this approval id",
-            )
-        self._write_record(approval)
-        return {"status": "saved", "approval_id": approval.approval_id}
+        _validate_persisted_approval_state(approval)
+        with self._approval_lock(approval.approval_id):
+            target = self._path(approval.approval_id)
+            if target.is_symlink():
+                raise ApprovalStoreError(
+                    "unsafe_store", "approval record path is a symlink"
+                )
+            if target.exists():
+                existing = self.load(approval.approval_id)
+                if existing.to_dict() == approval.to_dict():
+                    return {
+                        "status": "unchanged",
+                        "approval_id": approval.approval_id,
+                    }
+                raise ApprovalStoreError(
+                    "approval_conflict",
+                    "a different record already uses this approval id",
+                )
+            self._write_record(approval)
+            return {
+                "status": "saved",
+                "approval_id": approval.approval_id,
+            }
 
     def _write_record(self, approval: RecoveryApproval) -> None:
-        data = _canonical(approval.to_dict()).encode("utf-8")
+        try:
+            data = _canonical(approval.to_dict()).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ApprovalStoreError(
+                "approval_store_write_failed", type(exc).__name__
+            ) from exc
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{approval.approval_id}.", dir=str(self.directory)
         )
@@ -268,6 +461,11 @@ class RecoveryApprovalStore:
             os.chmod(temp_name, 0o600)
             os.replace(temp_name, target)
             target.chmod(0o600)
+            directory_fd = os.open(self.directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except OSError as exc:
             try:
                 os.unlink(temp_name)
@@ -326,25 +524,230 @@ class RecoveryApprovalStore:
     def revoke(
         self, approval_id: str, *, reason: str, now: str | None = None
     ) -> RecoveryApproval:
-        current = self.load(approval_id)
-        if current.status == "revoked":
-            return current
-        if current.status != "approved":
-            raise ApprovalStoreError(
-                "approval_not_revocable", current.status
+        with self._approval_lock(approval_id):
+            current = self.load(approval_id)
+            if current.status == "revoked":
+                return current
+            if current.status != "approved":
+                raise ApprovalStoreError(
+                    "approval_not_revocable", current.status
+                )
+            revoked = replace(
+                current,
+                status="revoked",
+                revoked_at=_now(now).isoformat(timespec="milliseconds"),
+                revoked_reason=reason,
             )
-        revoked = replace(
-            current,
-            status="revoked",
-            revoked_at=_now(now).isoformat(timespec="milliseconds"),
-            revoked_reason=reason,
+            revoked = replace(
+                revoked,
+                record_digest=approval_record_digest(revoked),
+            )
+            self._write_record(revoked)
+            return revoked
+
+    def claim(
+        self,
+        approval_id: str,
+        preview: RecoveryPreview,
+        *,
+        action: str,
+        target: str,
+        now: str | None = None,
+    ) -> dict[str, Any]:
+        """Reserve one execution attempt without granting execution capability."""
+        with self._approval_lock(approval_id):
+            current = self.load(approval_id)
+            verdict = validate_recovery_approval(current, preview)
+            if not verdict["valid"]:
+                return self._denied(
+                    approval_id,
+                    verdict["reason"],
+                    state=verdict["state"],
+                )
+            if current.scope != "plan_acknowledgement_only":
+                return self._denied(
+                    approval_id, "approval_scope_mismatch"
+                )
+            if current.action is None or current.target is None:
+                return self._denied(
+                    approval_id, "approval_action_binding_missing"
+                )
+            if current.action != action or current.target != target:
+                return self._denied(
+                    approval_id, "approved_action_mismatch"
+                )
+            matching = [
+                item
+                for item in preview.actions
+                if item.action == action and item.target == target
+            ]
+            if not matching:
+                return self._denied(
+                    approval_id, "action_not_in_preview"
+                )
+            candidate = matching[0]
+            if (
+                current.action_digest != _recovery_action_digest(candidate)
+                or current.preconditions != candidate.preconditions
+                or current.expected_result != candidate.expected_result
+                or current.verification != candidate.verification
+            ):
+                return self._denied(
+                    approval_id, "action_binding_mismatch"
+                )
+            attempt_id = f"attempt-{uuid4().hex}"
+            claimed = replace(
+                current,
+                status="consuming",
+                execution_attempt_id=attempt_id,
+                claimed_at=_now(now).isoformat(timespec="milliseconds"),
+            )
+            claimed = replace(
+                claimed,
+                record_digest=approval_record_digest(claimed),
+            )
+            self._write_record(claimed)
+            return {
+                "status": "claimed",
+                "approval_id": approval_id,
+                "execution_attempt_id": attempt_id,
+                "approval_status": claimed.status,
+                "execution_supported": False,
+                "safe_to_retry": False,
+            }
+
+    def complete(
+        self,
+        approval_id: str,
+        *,
+        execution_attempt_id: str,
+        result: dict[str, Any] | None,
+        verification_passed: bool | None,
+        verification_result: str | None,
+        now: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a claimed attempt's outcome after independent verification."""
+        with self._approval_lock(approval_id):
+            current = self.load(approval_id)
+            if current.status != "consuming":
+                return self._denied(
+                    approval_id,
+                    f"approval_status_{current.status}",
+                    state=current.status,
+                )
+            if execution_attempt_id != current.execution_attempt_id:
+                return self._denied(
+                    approval_id,
+                    "execution_attempt_mismatch",
+                    state="consuming",
+                )
+            if not result:
+                return self._denied(
+                    approval_id,
+                    "execution_result_required",
+                    state="consuming",
+                )
+            if verification_passed is None:
+                return self._denied(
+                    approval_id,
+                    "independent_verification_required",
+                    state="consuming",
+                )
+            if not verification_result or not verification_result.strip():
+                return self._denied(
+                    approval_id,
+                    "verification_result_required",
+                    state="consuming",
+                )
+            status = "consumed" if verification_passed else "failed"
+            completed = replace(
+                current,
+                status=status,
+                completed_at=_now(now).isoformat(timespec="milliseconds"),
+                result=dict(result),
+                verification_result=verification_result.strip(),
+                verification_passed=verification_passed,
+            )
+            completed = replace(
+                completed,
+                record_digest=approval_record_digest(completed),
+            )
+            self._write_record(completed)
+            return {
+                "status": "completed",
+                "approval_id": approval_id,
+                "approval_status": completed.status,
+                "execution_attempt_id": completed.execution_attempt_id,
+                "verification_passed": completed.verification_passed,
+                "execution_supported": False,
+                "safe_to_retry": False,
+            }
+
+    def reconcile(self, approval_id: str) -> dict[str, Any]:
+        """Classify persisted consumption state without changing it."""
+        current = self.load(approval_id)
+        if current.status == "approved":
+            return {
+                "status": "not_claimed",
+                "approval_status": current.status,
+                "manual_review": False,
+                "safe_to_retry": False,
+                "execution_supported": False,
+            }
+        if current.status == "consuming":
+            return {
+                "status": "unverified",
+                "approval_status": current.status,
+                "manual_review": True,
+                "reason": "claimed_attempt_has_no_verified_result",
+                "execution_attempt_id": current.execution_attempt_id,
+                "safe_to_retry": False,
+                "execution_supported": False,
+            }
+        if current.status == "consumed":
+            return {
+                "status": "completed",
+                "approval_status": current.status,
+                "manual_review": False,
+                "reason": "attempt_result_and_verification_persisted",
+                "execution_attempt_id": current.execution_attempt_id,
+                "safe_to_retry": False,
+                "execution_supported": False,
+            }
+        if current.status == "failed":
+            return {
+                "status": "verified_failure",
+                "approval_status": current.status,
+                "manual_review": True,
+                "reason": "attempt_failed_independent_verification",
+                "execution_attempt_id": current.execution_attempt_id,
+                "safe_to_retry": False,
+                "execution_supported": False,
+            }
+        return self._denied(
+            approval_id,
+            f"approval_status_{current.status}",
+            state=current.status,
+            manual_review=True,
         )
-        revoked = replace(
-            revoked,
-            record_digest=approval_record_digest(revoked),
-        )
-        self._write_record(revoked)
-        return revoked
+
+    @staticmethod
+    def _denied(
+        approval_id: str,
+        reason: str,
+        *,
+        state: str = "denied",
+        manual_review: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "status": "denied",
+            "approval_id": approval_id,
+            "approval_status": state,
+            "reason": reason,
+            "manual_review": manual_review,
+            "execution_supported": False,
+            "safe_to_retry": False,
+        }
 
 
 def _state_digest(task: Task, events: Iterable[Event], audit: dict[str, Any]) -> str:
@@ -532,15 +935,25 @@ def approve_recovery_preview(
     preview: RecoveryPreview,
     *,
     approver: str,
+    action: str,
+    target: str,
     now: str | None = None,
 ) -> RecoveryApproval:
     if not approver.strip():
         raise ValueError("approver must not be empty")
+    matching = [
+        item
+        for item in preview.actions
+        if item.action == action and item.target == target
+    ]
+    if not matching:
+        raise ValueError("approved action is not present in the preview")
+    bound_action = matching[0]
     approved = _now(now)
     approval_id = "approval-" + hashlib.sha256(
         (
             f"{preview.preview_id}|{preview.state_digest}|"
-            f"{approver}|{approved.isoformat()}"
+            f"{approver}|{approved.isoformat()}|{action}|{target}"
         ).encode("utf-8")
     ).hexdigest()[:16]
     approval = RecoveryApproval(
@@ -554,6 +967,12 @@ def approve_recovery_preview(
         scope="plan_acknowledgement_only",
         execution_authorized=False,
         status="approved",
+        action=bound_action.action,
+        target=bound_action.target,
+        preconditions=bound_action.preconditions,
+        expected_result=bound_action.expected_result,
+        verification=bound_action.verification,
+        action_digest=_recovery_action_digest(bound_action),
     )
     return replace(
         approval,
@@ -667,6 +1086,18 @@ def authorize_recovery_action(
             "execution_supported": False,
             "reason": "approval_scope_mismatch",
         }
+    if approval.action is None or approval.target is None:
+        return {
+            "authorized": False,
+            "execution_supported": False,
+            "reason": "approval_action_binding_missing",
+        }
+    if approval.action != action or approval.target != target:
+        return {
+            "authorized": False,
+            "execution_supported": False,
+            "reason": "approved_action_mismatch",
+        }
     matching = [
         item
         for item in preview.actions
@@ -677,6 +1108,18 @@ def authorize_recovery_action(
             "authorized": False,
             "execution_supported": False,
             "reason": "action_not_in_preview",
+        }
+    candidate = matching[0]
+    if (
+        approval.action_digest != _recovery_action_digest(candidate)
+        or approval.preconditions != candidate.preconditions
+        or approval.expected_result != candidate.expected_result
+        or approval.verification != candidate.verification
+    ):
+        return {
+            "authorized": False,
+            "execution_supported": False,
+            "reason": "action_binding_mismatch",
         }
     return {
         "authorized": True,

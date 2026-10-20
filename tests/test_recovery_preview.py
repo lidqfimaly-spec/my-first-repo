@@ -91,8 +91,13 @@ class RecoveryPreviewTests(unittest.TestCase):
     def test_approval_binds_preview_and_becomes_stale(self) -> None:
         service, task, events = _host_test_task()
         preview = build_recovery_preview(task, events, now=NOW)
+        action = preview.actions[0]
         approval = approve_recovery_preview(
-            preview, approver="operator", now=NOW
+            preview,
+            approver="operator",
+            action=action.action,
+            target=action.target,
+            now=NOW,
         )
         current = build_recovery_preview(
             task,

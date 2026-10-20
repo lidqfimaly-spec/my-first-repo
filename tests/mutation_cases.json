@@ -275,7 +275,7 @@
       "property": "cleanup is off by default",
       "path": "src/zevorinth/workspace_cleanup.py",
       "old": "    if not enabled:\n",
-      "new": "    if False:\n",
+      "new": "def _validate_persisted_approval_state(\n    approval: RecoveryApproval,\n) -> None:\n    if False:\n",
       "tests": [
         "tests.test_workspace_cleanup.CleanupTests.test_cleanup_is_disabled_by_default"
       ],
@@ -896,10 +896,165 @@
       "id": "approval_store_execution_authorization_allowed",
       "property": "approval records cannot authorize execution",
       "path": "src/zevorinth/recovery_preview.py",
-      "old": "        if approval.execution_authorized:\n",
-      "new": "        if False:\n",
+      "old": "def _validate_persisted_approval_state(\n    approval: RecoveryApproval,\n) -> None:\n    if approval.execution_authorized:\n",
+      "new": "def _validate_persisted_approval_state(\n    approval: RecoveryApproval,\n) -> None:\n    if False:\n",
       "tests": [
         "tests.test_recovery_approval_store.RecoveryApprovalStoreTests.test_approval_cannot_authorize_execution"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_invalid_state_bypass",
+      "property": "claim requires a valid and fresh approval",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if not verdict[\"valid\"]:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_stale_preview_is_denied",
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_second_claim_and_replay_after_completion_are_denied"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_scope_bypass",
+      "property": "claim requires acknowledgement-only scope",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if current.scope != \"plan_acknowledgement_only\":\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_non_acknowledgement_scope_cannot_be_claimed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_action_target_bypass",
+      "property": "claim requires the exact approved action and target",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if current.action != action or current.target != target:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_wrong_action_or_target_is_denied_without_claim"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_binding_metadata_bypass",
+      "property": "claim binds preconditions, expected result and verification",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if (\n                current.action_digest != _recovery_action_digest(candidate)\n                or current.preconditions != candidate.preconditions\n                or current.expected_result != candidate.expected_result\n                or current.verification != candidate.verification\n            ):\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_preview_action_binding_drift_is_denied"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_action_digest_bypass",
+      "property": "claim binds the complete previewed action",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if (\n                current.action_digest != _recovery_action_digest(candidate)\n                or current.preconditions != candidate.preconditions\n",
+      "new": "            if (\n                False\n                or current.preconditions != candidate.preconditions\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_preview_action_binding_drift_is_denied"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_persistence_failure_reported_claimed",
+      "property": "claim persistence failure must not be reported as claimed",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            self._write_record(claimed)\n",
+      "new": "            pass\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_claim_and_completion_write_failures_fail_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_completion_without_verification",
+      "property": "completion requires an independent verification result",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if verification_passed is None:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_completion_requires_attempt_result_and_verification"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_completion_without_verification_detail",
+      "property": "completion requires persisted verification detail",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if not verification_result or not verification_result.strip():\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_completion_requires_attempt_result_and_verification"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_failed_verification_marked_consumed",
+      "property": "failed independent verification cannot become consumed",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            status = \"consumed\" if verification_passed else \"failed\"\n",
+      "new": "            status = \"consumed\"\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_failed_verification_becomes_failed_not_consumed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_completion_persistence_failure_reported_completed",
+      "property": "completion persistence failure must not be reported completed",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            self._write_record(completed)\n",
+      "new": "            pass\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_claim_and_completion_write_failures_fail_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_grants_execution",
+      "property": "claim result never grants execution capability",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "                \"approval_status\": claimed.status,\n                \"execution_supported\": False,\n",
+      "new": "                \"approval_status\": claimed.status,\n                \"execution_supported\": True,\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_claim_requires_exact_action_and_target"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_claim_crash_allows_retry",
+      "property": "an unverified consuming state cannot be retried",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "                \"reason\": \"claimed_attempt_has_no_verified_result\",\n                \"execution_attempt_id\": current.execution_attempt_id,\n                \"safe_to_retry\": False,\n",
+      "new": "                \"reason\": \"claimed_attempt_has_no_verified_result\",\n                \"execution_attempt_id\": current.execution_attempt_id,\n                \"safe_to_retry\": True,\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_claim_crash_is_unverified_and_not_retried"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_terminal_state_validation_bypass",
+      "property": "terminal approval records require result and verification",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "    if (\n        not approval.completed_at\n        or not approval.result\n        or approval.verification_passed is None\n        or not approval.verification_result\n    ):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_malformed_terminal_record_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_terminal_verification_consistency_bypass",
+      "property": "terminal status must agree with verification result",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "    if approval.verification_passed is not expected_verification:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_terminal_status_must_match_verification_result"
       ],
       "expected": "killed"
     }

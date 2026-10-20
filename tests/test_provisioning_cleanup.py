@@ -123,17 +123,23 @@ class ProvisioningCleanupTests(unittest.TestCase):
 
     def test_concurrent_requests_delete_at_most_once(self) -> None:
         service, task, _, target = self._task()
-        barrier = threading.Barrier(2)
+        start_barrier = threading.Barrier(2)
+        opened_barrier = threading.Barrier(2)
         results: list[dict] = []
 
+        def checkpoint(stage: str) -> None:
+            if stage == "opened":
+                opened_barrier.wait(timeout=5)
+
         def worker() -> None:
-            barrier.wait(timeout=5)
+            start_barrier.wait(timeout=5)
             results.append(
                 service.cleanup_provisioning_artifact(
                     task.task_id,
                     "probe-written.txt",
                     enabled=True,
                     authorized=True,
+                    checkpoint=checkpoint,
                 )
             )
 
