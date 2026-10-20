@@ -161,6 +161,7 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 - `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.7-release-readiness.md`
 - `/Users/lidequan/PythonProject/Zevorinth/tests/test_release_readiness.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/offline_release_check.py`
 
 ## 修改
 

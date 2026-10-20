@@ -46,14 +46,37 @@
 - 现有 v2/v3/v4 迁移与回滚测试继续通过；
 - 现有 SIGKILL、lease/fencing、预算与恢复测试继续通过。
 
-限制：
+Phase 3.8 已完成真正的干净环境离线安装：
 
-- 完全空 venv 无法离线执行 `pip install -e .`，因为当前 Python 3.14 环境没有
-  `setuptools`，而安全要求禁止联网安装 build dependency。
-- `ensurepip` 只提供 pip，不提供 setuptools。
-- 因此本次没有声称“从完全空 venv 成功安装”。源码运行、现有 `.venv` 和
-  entrypoint 声明已验证。
-- 要完成安装门槛，需要在允许离线提供 `setuptools>=68` wheel 的环境中重跑。
+- 使用本地、离线的 Python 3.12 构建环境构建 wheel/sdist；
+- 构建环境：setuptools 81.0.0、wheel 0.46.3、build 1.4.1；
+- 目标为全新 Python 3.14.6 venv；
+- `pip install --no-index --no-deps zevorinth-0.3.0-py3-none-any.whl` 成功；
+- wheel、sdist、CLI、v4 初始化、资源加载和最小独立验证任务全部通过；
+- `pip check` 通过；
+- runtime dependencies 为空。
+
+构建工具只存在于本地构建环境，不复制到目标 venv；目标 venv 不需要构建后端。
+
+最终离线构建证据：
+
+```text
+artifacts/packaging/phase-3.8-release-1792461734/
+zevorinth-0.3.0-py3-none-any.whl
+sha256=adf1749a6d9c2c4f441cf6e942c8a40d57f15720805401d5daa4e64b1515e947
+zevorinth-0.3.0.tar.gz
+sha256=0cb9110c1a2dc00bbc169858a2ab79cae9f8833d281e839b1b8f9575ba403369
+release-check.json
+sha256=2a4738027b31ad5e8f3d1f9a0088f39acd832455e78483f13b7102f251b75532
+```
+
+构建依赖文件清单哈希：
+
+```text
+setuptools 81.0.0 cc160ff8d9690eaaa87a6850a76b40aa59a321fe1e92e0417454d04688884bf5
+wheel 0.46.3 dc24e9d541ccafc794ed1b062378fda06e9044b7766150b131261bf617d4a06b
+build 1.4.1 17d3fbb657e416e01612dbf1585d90a2a86f326d6c534c5402b331383c11e2fb
+```
 
 ## 4. Provider Boundary
 
@@ -159,6 +182,7 @@ artifacts/audits/phase-3.7-acceptance.json
 | 隔离环境完整 unittest | 219/219，exit 0 |
 | release readiness | 3/3，连续 20 轮 0 失败 |
 | E2E acceptance | 11/11，连续 10 轮 0 失败 |
+| clean Python 3.14 wheel install | passed |
 | `compileall` | exit 0 |
 | `git diff --check` | exit 0 |
 
@@ -166,7 +190,8 @@ coverage / mutation framework：NOT RUN，环境未安装且未联网安装。
 
 ## 8. 剩余风险
 
-- 完全空 venv 的离线安装未验证，原因是缺少离线 setuptools。
+- 目标安装已离线验证；构建工具链本身没有作为独立 wheel 集合提交，复现构建
+  仍要求具备相同版本的本地离线 setuptools/wheel/build。
 - 真实模型在线行为没有在本阶段测试。
 - 文件系统与 SQLite 仍不能共同原子提交。
 - 多机、共享文件系统和网络文件系统未验证。

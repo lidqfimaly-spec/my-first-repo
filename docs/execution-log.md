@@ -623,7 +623,8 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ## 边界
 
-- 完全空 venv 无法离线安装，因为缺少 setuptools；未联网补齐；
+- 干净 Python 3.14 venv 已从 wheel 离线安装并完成 CLI/DB/验证任务；
+- 构建工具版本与文件清单哈希已记录，构建工具未复制到目标环境；
 - 真实模型 API 请求：0；
 - 在线试点仍需用户明确授权；
 - 详见 `docs/phase-3.7-release-readiness.md`；
