@@ -161,6 +161,8 @@ def _service(args: argparse.Namespace) -> TaskService:
         writer=writer,
         planner=planner,
         lease_seconds=args.lease_seconds,
+        max_execution_seconds=args.max_execution_seconds,
+        lease_renewal_interval_seconds=args.lease_renewal_interval_seconds,
         busy_timeout_ms=args.busy_timeout_ms,
     )
 
@@ -339,6 +341,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=60.0,
         help="execution lease duration for cross-process coordination",
+    )
+    parser.add_argument(
+        "--max-execution-seconds",
+        type=float,
+        default=600.0,
+        help="maximum bounded execution time with lease renewal",
+    )
+    parser.add_argument(
+        "--lease-renewal-interval-seconds",
+        type=float,
+        default=None,
+        help="lease renewal interval (default: one third of lease duration)",
     )
     parser.add_argument(
         "--busy-timeout-ms",

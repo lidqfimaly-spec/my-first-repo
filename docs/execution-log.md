@@ -598,6 +598,44 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.4.5 阶段执行记录
+
+## 审计与修复
+
+- 新增 token、generation、状态和到期时间保护的 Lease 续租 API；
+- 新增有界后台续租器，默认总执行上限 600 秒；
+- 续租失败通过线程安全状态传播到 planning、工具发布、Verifier 和终态提交；
+- staging 与发布锁等待期间持续续租；
+- 过期、接管后、取消和终态 Lease 不能复活；
+- CLI 增加执行时长与续租间隔配置。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 192/192 通过，exit 0 |
+| 隔离环境完整 unittest | 192/192 通过，exit 0 |
+| Lease renewal 专项 | 10/10 |
+| 文件副作用 fencing 专项 | 9/9 |
+| 崩溃一致性专项 | 16/16 |
+| 并发任务专项 | 3/3 |
+| 并发初始化 | 100/100 |
+| 并发澄清答案 | 20/20 |
+| 隔离副本变异 | 9/9 适用项被捕获 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version 4；
+- 续租总时长有界，但不是跨主机 Lease 服务；
+- SQLite 与文件系统仍不能共同原子提交；
+- 锁顺序仍为文件发布锁后 SQLite；
+- 详见 `docs/phase-3.4.5-lease-renewal-audit.md`；
+- 真实模型 API 请求：0，未推送。
+
+---
+
 # 第 3.4.4 阶段执行记录
 
 ## 审计与修复

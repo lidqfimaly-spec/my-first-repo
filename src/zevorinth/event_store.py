@@ -63,6 +63,12 @@ class ClaimLost(EventStoreError):
     pass
 
 
+class LeaseRenewalError(EventStoreError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class MessageConflict(EventStoreError):
     pass
 
@@ -1873,7 +1879,8 @@ class EventStore:
             task.lease_token != lease_token
             or task.attempt_id != attempt_id
             or task.claim_generation != claim_generation
-            or task.status is not TaskStatus.RUNNING
+            or task.status
+            not in {TaskStatus.RUNNING, TaskStatus.VERIFYING}
         ):
             raise ClaimLost(
                 f"task {task_id} no longer belongs to the calling attempt"
@@ -1883,6 +1890,67 @@ class EventStore:
             or not self._lease_is_active(task.lease_expires_at, now)
         ):
             raise ClaimLost(f"task {task_id} lease is no longer active")
+        return task
+
+    def renew_lease(
+        self,
+        task_id: str,
+        *,
+        lease_token: str,
+        claim_generation: int,
+        now: str,
+        expires_at: str,
+    ) -> Task:
+        """Extend an unexpired, still-owned lease without reviving it."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            if (
+                task.lease_token != lease_token
+                or task.claim_generation != claim_generation
+                or task.status
+                not in {
+                    TaskStatus.QUEUED,
+                    TaskStatus.RUNNING,
+                    TaskStatus.VERIFYING,
+                }
+            ):
+                raise ClaimLost(
+                    f"task {task_id} no longer belongs to the renewal attempt"
+                )
+            previous_expiry = task.lease_expires_at
+            if (
+                previous_expiry is None
+                or not self._lease_is_active(previous_expiry, now)
+            ):
+                raise ClaimLost(
+                    f"task {task_id} lease cannot be renewed after expiry"
+                )
+            if datetime.fromisoformat(expires_at) < datetime.fromisoformat(
+                previous_expiry
+            ):
+                raise LeaseRenewalError(
+                    "lease_renewal_would_shorten",
+                    "renewal expiry is earlier than the current expiry",
+                )
+            task.lease_expires_at = expires_at
+            task.updated_at = now
+            self._update_task(connection, task)
+            self._insert_event(
+                connection,
+                Event.new(
+                    task_id,
+                    EventType.LEASE_RENEWED,
+                    now,
+                    {
+                        "owner_id": task.execution_owner,
+                        "generation": task.claim_generation,
+                        "previous_expires_at": previous_expiry,
+                        "lease_expires_at": expires_at,
+                    },
+                ),
+            )
+            connection.commit()
         return task
 
     def list_events(self, task_id: str) -> list[Event]:

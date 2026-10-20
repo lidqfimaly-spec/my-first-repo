@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
@@ -15,6 +16,7 @@ from .artifact_tool import (
     task_publication_lock,
 )
 from .event_store import ClaimLost, EventStore, StoreBusyError
+from .lease_renewal import LeaseRenewer
 from .models import (
     ClaimResult,
     Event,
@@ -40,6 +42,10 @@ def utc_now() -> str:
 
 
 FaultHook = Callable[[str, Task], None]
+_ACTIVE_RENEWER: ContextVar[LeaseRenewer | None] = ContextVar(
+    "zevorinth_active_lease_renewer",
+    default=None,
+)
 
 
 class TaskService:
@@ -73,12 +79,23 @@ class TaskService:
         fault_hook: FaultHook | None = None,
         clock: Callable[[], str] = utc_now,
         lease_seconds: float = 60.0,
+        max_execution_seconds: float = 600.0,
+        lease_renewal_interval_seconds: float | None = None,
         publish_lock_timeout_seconds: float = 10.0,
         busy_timeout_ms: int = 10_000,
         owner_id: str | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
+        if max_execution_seconds <= 0:
+            raise ValueError("max_execution_seconds must be positive")
+        if (
+            lease_renewal_interval_seconds is not None
+            and lease_renewal_interval_seconds <= 0
+        ):
+            raise ValueError(
+                "lease_renewal_interval_seconds must be positive"
+            )
         if publish_lock_timeout_seconds <= 0:
             raise ValueError("publish_lock_timeout_seconds must be positive")
         self.project_root = project_root.resolve()
@@ -86,6 +103,10 @@ class TaskService:
         self.database_path = self.project_root / "data" / "zevorinth.sqlite3"
         self.clock = clock
         self.lease_seconds = lease_seconds
+        self.max_execution_seconds = max_execution_seconds
+        self.lease_renewal_interval_seconds = (
+            lease_renewal_interval_seconds
+        )
         self.publish_lock_timeout_seconds = publish_lock_timeout_seconds
         self.owner_id = owner_id or str(uuid4())
         self.writer = writer or RealArtifactWriter(
@@ -333,12 +354,15 @@ class TaskService:
 
     def _lease_deadline(self, now: str) -> str:
         current = datetime.fromisoformat(now)
-        required = max(
-            self.lease_seconds,
-            float(getattr(self.planner, "required_lease_seconds", 0.0)),
-        )
+        required = self._effective_lease_seconds()
         return (current + timedelta(seconds=required)).isoformat(
             timespec="milliseconds"
+        )
+
+    def _effective_lease_seconds(self) -> float:
+        return max(
+            self.lease_seconds,
+            float(getattr(self.planner, "required_lease_seconds", 0.0)),
         )
 
     @staticmethod
@@ -352,19 +376,96 @@ class TaskService:
         if lease_token is None:
             raise ValueError("claimed task is missing lease token")
         if task.status is TaskStatus.QUEUED:
-            return self._plan_and_execute(task, lease_token)
+            return self._run_with_renewal(
+                task,
+                lease_token,
+                lambda: self._plan_and_execute(task, lease_token),
+            )
         if task.status is TaskStatus.INTERRUPTED:
-            return self._resume_interrupted(task, lease_token)
+            return self._run_with_renewal(
+                task,
+                lease_token,
+                lambda: self._resume_interrupted(task, lease_token),
+            )
         return self._release_claim(
             task,
             lease_token,
             reason=f"claim_not_executable:{task.status.value}",
         )
 
+    def _run_with_renewal(
+        self,
+        task: Task,
+        lease_token: str,
+        action: Callable[[], Task],
+    ) -> Task:
+        effective_lease_seconds = self._effective_lease_seconds()
+        renewer = LeaseRenewer(
+            self.store,
+            task_id=task.task_id,
+            lease_token=lease_token,
+            claim_generation=task.claim_generation,
+            clock=self.clock,
+            lease_seconds=effective_lease_seconds,
+            interval_seconds=(
+                self.lease_renewal_interval_seconds
+                if self.lease_renewal_interval_seconds is not None
+                else max(0.01, effective_lease_seconds / 3.0)
+            ),
+            max_duration_seconds=max(
+                self.max_execution_seconds,
+                effective_lease_seconds,
+            ),
+        )
+        reset_token = _ACTIVE_RENEWER.set(renewer)
+        renewer.start()
+        try:
+            renewer.ensure_healthy()
+            return action()
+        finally:
+            renewer.stop()
+            _ACTIVE_RENEWER.reset(reset_token)
+
+    def _ensure_execution_health(self) -> None:
+        renewer = _ACTIVE_RENEWER.get()
+        if renewer is not None:
+            renewer.ensure_healthy()
+
+    def _assert_execution_authority(
+        self,
+        task: Task,
+        lease_token: str,
+    ) -> None:
+        self._ensure_execution_health()
+        self.store.assert_task_authority(
+            task.task_id,
+            lease_token=lease_token,
+            attempt_id=task.attempt_id,
+            claim_generation=task.claim_generation,
+            now=self.clock(),
+        )
+
+    def _authorize_publication(
+        self,
+        task_id: str,
+        attempt_id: str,
+        lease_token: str,
+        claim_generation: int,
+    ) -> None:
+        self._ensure_execution_health()
+        self.store.assert_task_authority(
+            task_id,
+            lease_token=lease_token,
+            attempt_id=attempt_id,
+            claim_generation=claim_generation,
+            now=self.clock(),
+        )
+
     def _plan_and_execute(self, task: Task, lease_token: str) -> Task:
         return self._plan_with_current_status(task, lease_token)
 
     def _plan_with_current_status(self, task: Task, lease_token: str) -> Task:
+        self._ensure_execution_health()
         task, _ = self.store.record_event_and_update(
             task.task_id,
             EventType.PLANNING_STARTED,
@@ -388,6 +489,7 @@ class TaskService:
                     "planner_name": self.planner.name,
                 },
             )
+        self._ensure_execution_health()
 
         planning_metadata = {
             "classification": outcome.classification.value,
@@ -597,6 +699,7 @@ class TaskService:
 
         intended_mode = getattr(self.writer, "execution_mode", ExecutionMode.REAL)
         started_at = self.clock()
+        self._assert_execution_authority(task, lease_token)
         task, _ = self.store.record_event_and_update(
             task.task_id,
             EventType.TOOL_STARTED,
@@ -624,14 +727,11 @@ class TaskService:
                 finished_at=self.clock(),
                 lease_token=lease_token,
                 claim_generation=task.claim_generation,
-                authorize=lambda token, generation: (
-                    self.store.assert_task_authority(
-                        task.task_id,
-                        lease_token=token,
-                        attempt_id=task.attempt_id,
-                        claim_generation=generation,
-                        now=self.clock(),
-                    )
+                authorize=lambda token, generation: self._authorize_publication(
+                    task.task_id,
+                    task.attempt_id,
+                    token,
+                    generation,
                 ),
             )
         except ClaimLost:
@@ -653,6 +753,7 @@ class TaskService:
                 started_at,
             )
 
+        self._assert_execution_authority(task, lease_token)
         if not result.success:
             return self._finish_tool_failure(
                 task,
@@ -675,6 +776,7 @@ class TaskService:
                 },
                 lease_token=lease_token,
             )
+            self._assert_execution_authority(simulated, lease_token)
             simulated, _ = self.store.transition(
                 simulated.task_id,
                 TaskStatus.SIMULATED,
@@ -798,6 +900,7 @@ class TaskService:
         return failed
 
     def _verify_and_finish(self, task: Task, lease_token: str) -> Task:
+        self._assert_execution_authority(task, lease_token)
         parameters = task.request.parameters
         artifact_path = parameters["artifact_path"]
         content = parameters["content"]
@@ -855,6 +958,7 @@ class TaskService:
                 artifact=None,
                 checked_at=self.clock(),
             )
+        self._assert_execution_authority(task, lease_token)
         task, _ = self.store.record_event_and_update(
             task.task_id,
             EventType.VERIFICATION_COMPLETED,
@@ -867,6 +971,7 @@ class TaskService:
             },
             lease_token=lease_token,
         )
+        self._assert_execution_authority(task, lease_token)
         if verification.passed:
             succeeded, _ = self.store.transition(
                 task.task_id,

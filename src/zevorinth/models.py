@@ -99,6 +99,7 @@ class EventType(str, Enum):
     TASK_CLAIMED = "task_claimed"
     CLAIM_REJECTED = "claim_rejected"
     LEASE_EXPIRED = "lease_expired"
+    LEASE_RENEWED = "lease_renewed"
     LEASE_RELEASED = "lease_released"
     POLICY_REJECTED = "policy_rejected"
     TOOL_STARTED = "tool_started"
