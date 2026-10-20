@@ -523,6 +523,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cleanup_cmd.add_argument("--json", action="store_true")
 
+    verify_iso = subparsers.add_parser(
+        "verify-isolation",
+        help="probe the container boundary and store isolation evidence",
+    )
+    verify_iso.add_argument("--workspace", required=True)
+    verify_iso.add_argument("--target", required=True)
+    verify_iso.add_argument("--image", required=True)
+    verify_iso.add_argument("--request-id", required=True)
+    verify_iso.add_argument("--evidence-id", required=True)
+    verify_iso.add_argument("--json", action="store_true")
+
     status = subparsers.add_parser("status", help="show a persisted task")
     status.add_argument("task_id")
     status.add_argument("--json", action="store_true")
@@ -961,6 +972,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             task = service.require_task(args.task_id)
             _print_task(task, args.json)
             return _exit_code(task)
+        if args.command == "verify-isolation":
+            from .evidence_provisioning import provision_evidence
+
+            record = provision_evidence(
+                service.project_root,
+                image=args.image,
+                workspace_name=args.workspace,
+                target=args.target,
+                request_id=args.request_id,
+                evidence_id=args.evidence_id,
+            )
+            if args.json:
+                print(json.dumps(record, indent=2, sort_keys=True))
+            else:
+                print(
+                    f"{record['status']}: {record['evidence_id']} "
+                    f"({record['image_digest']})"
+                )
+            return 0 if record["status"] in {"saved", "unchanged"} else 4
         if args.command == "cleanup":
             record = service.cleanup_workspace_file(
                 args.task_id,

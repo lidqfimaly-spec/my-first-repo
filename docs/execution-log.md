@@ -598,7 +598,33 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.36 阶段执行记录
+# 第 3.37 阶段执行记录
+
+## 实现
+
+- 新增 `evidence_provisioning.provision_evidence()`：跑七项容器探针并保存证据；
+- CLI 新增 `verify-isolation`；
+- 真实测试：准备证据后同一任务在容器内跑通 unittest。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 537/537，exit 0 |
+| 证据准备专项 | 2/2（真实容器） |
+| Mutation runner | 58 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 证据仍由调用方触发；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.37-isolation-evidence-provisioning-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

@@ -340,5 +340,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.34 阶段内核文件上限、预算与恢复幂等](docs/phase-3.34-fsize-budget-recovery-audit.md)
 - [第 3.35 阶段受限真实模型试点复跑](docs/phase-3.35-real-model-pilot-rerun.md)
 - [第 3.36 阶段真实模型驱动的执行闭环](docs/phase-3.36-real-model-execution-audit.md)
+- [第 3.37 阶段隔离证据自动准备](docs/phase-3.37-isolation-evidence-provisioning-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)
