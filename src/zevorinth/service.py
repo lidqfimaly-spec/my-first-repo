@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 from uuid import uuid4
 
-from .artifact_tool import ArtifactToolError, ArtifactWriter, RealArtifactWriter
-from .event_store import ClaimLost, EventStore
+from .artifact_tool import (
+    ArtifactToolError,
+    ArtifactWriter,
+    RealArtifactWriter,
+    task_publication_lock,
+)
+from .event_store import ClaimLost, EventStore, StoreBusyError
 from .models import (
     ClaimResult,
     Event,
@@ -67,18 +73,25 @@ class TaskService:
         fault_hook: FaultHook | None = None,
         clock: Callable[[], str] = utc_now,
         lease_seconds: float = 60.0,
+        publish_lock_timeout_seconds: float = 10.0,
         busy_timeout_ms: int = 10_000,
         owner_id: str | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
+        if publish_lock_timeout_seconds <= 0:
+            raise ValueError("publish_lock_timeout_seconds must be positive")
         self.project_root = project_root.resolve()
         self.artifacts_root = self.project_root / "artifacts"
         self.database_path = self.project_root / "data" / "zevorinth.sqlite3"
         self.clock = clock
         self.lease_seconds = lease_seconds
+        self.publish_lock_timeout_seconds = publish_lock_timeout_seconds
         self.owner_id = owner_id or str(uuid4())
-        self.writer = writer or RealArtifactWriter(self.artifacts_root)
+        self.writer = writer or RealArtifactWriter(
+            self.artifacts_root,
+            publish_lock_timeout_seconds=publish_lock_timeout_seconds,
+        )
         self.fault_hook = fault_hook
         self.planner = planner or DeterministicPlanner()
         self.policy = ArtifactPolicy()
@@ -282,15 +295,41 @@ class TaskService:
     def _claim(self, task_id: str, *, allowed: frozenset[TaskStatus]) -> ClaimResult:
         now = self._normalize_time(self.clock())
         expires_at = self._lease_deadline(now)
-        return self.store.claim_task(
-            task_id,
-            owner_id=self.owner_id,
-            lease_token=str(uuid4()),
-            attempt_id=str(uuid4()),
-            now=now,
-            expires_at=expires_at,
-            allowed_statuses=allowed,
+        current = self.store.require_task(task_id)
+        needs_publication_lock = (
+            getattr(self.writer, "execution_mode", ExecutionMode.REAL)
+            is ExecutionMode.REAL
+            and current.status
+            in {
+                TaskStatus.RUNNING,
+                TaskStatus.VERIFYING,
+                TaskStatus.INTERRUPTED,
+            }
         )
+        coordination = (
+            task_publication_lock(
+                self.artifacts_root,
+                task_id,
+                timeout_seconds=self.publish_lock_timeout_seconds,
+            )
+            if needs_publication_lock
+            else nullcontext()
+        )
+        try:
+            with coordination:
+                return self.store.claim_task(
+                    task_id,
+                    owner_id=self.owner_id,
+                    lease_token=str(uuid4()),
+                    attempt_id=str(uuid4()),
+                    now=now,
+                    expires_at=expires_at,
+                    allowed_statuses=allowed,
+                )
+        except ArtifactToolError as exc:
+            raise StoreBusyError(
+                f"task publication coordination failed: {exc.code}"
+            ) from exc
 
     def _lease_deadline(self, now: str) -> str:
         current = datetime.fromisoformat(now)

@@ -332,11 +332,19 @@ def _execution_checkpoint(root: Path, mode: str) -> None:
     service = TaskService(root)
     store = CheckpointStore(database, mode)
     service.store = store
-    if mode in {"writer_after_staging", "writer_after_publish"}:
+    if mode in {
+        "writer_after_staging",
+        "writer_after_authority",
+        "writer_after_publish",
+    }:
         checkpoint_stage = (
             "after_staging_write"
             if mode == "writer_after_staging"
-            else "after_publish"
+            else (
+                "after_publish_authority"
+                if mode == "writer_after_authority"
+                else "after_publish"
+            )
         )
 
         def writer_checkpoint(
@@ -424,6 +432,7 @@ def main() -> int:
         "success_before_commit",
         "success_after_commit",
         "writer_after_staging",
+        "writer_after_authority",
         "writer_after_publish",
     }:
         _execution_checkpoint(root, mode)

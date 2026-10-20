@@ -495,7 +495,52 @@ class CrashConsistencyTests(unittest.TestCase):
                 2,
             )
             self.assertTrue(staging_files[0].exists())
-            self.assertFalse((task_dir / ".publish.lock").is_symlink())
+            self.assertFalse(
+                (root / "artifacts" / ".locks" / f"{task_id}.lock").is_symlink()
+            )
+
+    def test_sigkill_while_holding_publish_lock_releases_coordination(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = self._run_until_checkpoint(
+                "writer_after_authority",
+                root,
+            )
+            task_id = checkpoint["task_id"]
+            task_dir = root / "artifacts" / task_id
+            artifact = task_dir / ARTIFACT_PATH
+
+            self._assert_database_consistent(root)
+            task = EventStore(self._db(root)).require_task(task_id)
+            self.assertEqual(task.status, TaskStatus.RUNNING)
+            self.assertFalse(artifact.exists())
+            self.assertEqual(
+                len(list((task_dir / ".staging").glob("*.part"))),
+                1,
+            )
+
+            recovery_time = (
+                datetime.fromisoformat(str(task.lease_expires_at))
+                + timedelta(seconds=1)
+            ).isoformat(timespec="milliseconds")
+            writer = CountingWriter(root / "artifacts")
+            restarted = TaskService(
+                root,
+                writer=writer,
+                clock=lambda: recovery_time,
+            )
+            recovered = restarted.resume(task_id)
+
+            self.assertEqual(recovered.status, TaskStatus.SUCCEEDED)
+            self.assertEqual(writer.calls, 1)
+            self.assertEqual(recovered.claim_generation, 2)
+            self.assertEqual(artifact.read_text(), ARTIFACT_CONTENT)
+            self.assertEqual(
+                self._task_event_types(root, task_id).count("task_succeeded"),
+                1,
+            )
 
     def test_sigkill_after_publish_blocks_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

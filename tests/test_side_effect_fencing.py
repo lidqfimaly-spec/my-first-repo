@@ -6,9 +6,11 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 
@@ -18,8 +20,13 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from zevorinth.artifact_tool import (  # noqa: E402
     ArtifactToolError,
     RealArtifactWriter,
+    task_publication_lock,
 )
-from zevorinth.event_store import ClaimLost, EventStore  # noqa: E402
+from zevorinth.event_store import (  # noqa: E402
+    ClaimLost,
+    EventStore,
+    StoreBusyError,
+)
 from zevorinth.models import (  # noqa: E402
     ExecutionMode,
     TaskRequest,
@@ -52,6 +59,7 @@ def _execute_worker(
     entered: Any,
     release: Any,
     queue: Any,
+    role: str,
 ) -> None:
     root = Path(root_text)
 
@@ -84,6 +92,7 @@ def _execute_worker(
             {
                 "ok": True,
                 "status": task.status.value,
+                "role": role,
                 "claim_generation": task.claim_generation,
                 "artifact": (
                     task.artifact.to_dict() if task.artifact else None
@@ -95,6 +104,7 @@ def _execute_worker(
         queue.put(
             {
                 "ok": False,
+                "role": role,
                 "error": "ClaimLost",
             }
         )
@@ -102,6 +112,7 @@ def _execute_worker(
         queue.put(
             {
                 "ok": False,
+                "role": role,
                 "error": f"{type(exc).__name__}: {exc}",
             }
         )
@@ -112,8 +123,10 @@ def _resume_worker(
     task_id: str,
     owner_id: str,
     recovery_time: str,
+    attempting: Any,
     entered: Any,
     queue: Any,
+    role: str,
 ) -> None:
     root = Path(root_text)
 
@@ -138,21 +151,24 @@ def _resume_worker(
         lease_seconds=30,
     )
     try:
+        attempting.set()
         task = service.resume(task_id)
         queue.put(
             {
                 "ok": True,
+                "role": role,
                 "status": task.status.value,
                 "claim_generation": task.claim_generation,
                 "error": task.error.code if task.error else None,
             }
         )
     except ClaimLost:
-        queue.put({"ok": False, "error": "ClaimLost"})
+        queue.put({"ok": False, "role": role, "error": "ClaimLost"})
     except BaseException as exc:
         queue.put(
             {
                 "ok": False,
+                "role": role,
                 "error": f"{type(exc).__name__}: {exc}",
             }
         )
@@ -206,6 +222,129 @@ def _hold_publish_lock(
 
 
 class SideEffectFencingTests(unittest.TestCase):
+    def test_takeover_claim_uses_publication_coordination_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = TaskService(
+                root,
+                clock=lambda: NOW,
+                lease_seconds=30,
+            )
+            task = service.enqueue(_request("coordinated takeover\n"))
+            first_attempt = str(uuid4())
+            claim = service.store.claim_task(
+                task.task_id,
+                owner_id="owner-a",
+                lease_token="lease-a",
+                attempt_id=first_attempt,
+                now=NOW,
+                expires_at="2026-10-20T00:00:01.000+00:00",
+                allowed_statuses=TaskService.RUNNABLE_STATUSES,
+            )
+            self.assertTrue(claim.acquired)
+            service.store.transition(
+                task.task_id,
+                TaskStatus.RUNNING,
+                "task_planned",
+                NOW,
+                lease_token="lease-a",
+            )
+            service.store.expire_claim(
+                task.task_id,
+                now="2026-10-20T00:00:02.000+00:00",
+            )
+            coordination_calls: list[str] = []
+
+            @contextmanager
+            def fake_lock(*_args: Any, **_kwargs: Any):
+                coordination_calls.append("entered")
+                yield
+                coordination_calls.append("exited")
+
+            original_claim = service.store.claim_task
+
+            def coordinated_claim(*args: Any, **kwargs: Any):
+                coordination_calls.append("db_claim")
+                return original_claim(*args, **kwargs)
+
+            with (
+                patch(
+                    "zevorinth.service.task_publication_lock",
+                    fake_lock,
+                ),
+                patch.object(
+                    service.store,
+                    "claim_task",
+                    side_effect=coordinated_claim,
+                ),
+            ):
+                takeover = service._claim(
+                    task.task_id,
+                    allowed=TaskService.RESUMABLE_STATUSES,
+                )
+
+            self.assertTrue(takeover.acquired)
+            self.assertEqual(takeover.task.claim_generation, 2)
+            self.assertEqual(
+                coordination_calls,
+                ["entered", "db_claim", "exited"],
+            )
+
+    def test_writer_holds_lock_through_authority_and_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            seed = TaskService(
+                root,
+                clock=lambda: NOW,
+                lease_seconds=30,
+            )
+            task = seed.enqueue(_request("held lock\n"))
+            context = multiprocessing.get_context("spawn")
+            queue = context.Queue()
+            entered = context.Event()
+            release = context.Event()
+            worker = context.Process(
+                target=_execute_worker,
+                args=(
+                    str(root),
+                    task.task_id,
+                    "lock-holder",
+                    "after_publish_authority",
+                    entered,
+                    release,
+                    queue,
+                    "lock-holder",
+                ),
+            )
+            try:
+                worker.start()
+                self.assertTrue(entered.wait(timeout=10))
+                with self.assertRaises(ArtifactToolError) as raised:
+                    with task_publication_lock(
+                        root / "artifacts",
+                        task.task_id,
+                        timeout_seconds=0.1,
+                    ):
+                        self.fail("publish lock was not held")
+            finally:
+                release.set()
+                worker.join(timeout=10)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=5)
+                    self.fail("lock-holder worker did not finish")
+                worker_result = queue.get(timeout=10)
+                queue.close()
+                queue.join_thread()
+
+            self.assertEqual(raised.exception.code, "publish_lock_timeout")
+            self.assertTrue(worker_result["ok"], worker_result)
+            self.assertEqual(worker_result["status"], "succeeded")
+            self.assertEqual(
+                (root / "artifacts" / task.task_id / ARTIFACT_NAME).read_text(),
+                "held lock\n",
+            )
+
     def test_publish_lock_wait_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "artifacts"
@@ -213,7 +352,9 @@ class SideEffectFencingTests(unittest.TestCase):
             attempt_id = str(uuid4())
             task_dir = root / task_id
             (task_dir / ".staging").mkdir(parents=True)
-            lock_path = task_dir / ".publish.lock"
+            locks_dir = root / ".locks"
+            locks_dir.mkdir()
+            lock_path = locks_dir / f"{task_id}.lock"
             context = multiprocessing.get_context("spawn")
             entered = context.Event()
             release = context.Event()
@@ -249,6 +390,65 @@ class SideEffectFencingTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "publish_lock_timeout")
             self.assertFalse((task_dir / ARTIFACT_NAME).exists())
             self.assertFalse(any((task_dir / ".staging").iterdir()))
+
+    def test_takeover_wait_timeout_does_not_advance_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = TaskService(
+                root,
+                clock=lambda: NOW,
+                lease_seconds=30,
+                publish_lock_timeout_seconds=0.1,
+            )
+            task = service.enqueue(_request("blocked takeover\n"))
+            claim = service.store.claim_task(
+                task.task_id,
+                owner_id="owner-a",
+                lease_token="lease-a",
+                attempt_id=str(uuid4()),
+                now=NOW,
+                expires_at="2026-10-20T00:00:01.000+00:00",
+                allowed_statuses=TaskService.RUNNABLE_STATUSES,
+            )
+            self.assertTrue(claim.acquired)
+            service.store.transition(
+                task.task_id,
+                TaskStatus.RUNNING,
+                "task_planned",
+                NOW,
+                lease_token="lease-a",
+            )
+            service.store.expire_claim(
+                task.task_id,
+                now="2026-10-20T00:00:02.000+00:00",
+            )
+            lock_path = root / "artifacts" / ".locks" / f"{task.task_id}.lock"
+            lock_path.parent.mkdir(parents=True)
+            context = multiprocessing.get_context("spawn")
+            entered = context.Event()
+            release = context.Event()
+            holder = context.Process(
+                target=_hold_publish_lock,
+                args=(str(lock_path), entered, release),
+            )
+            try:
+                holder.start()
+                self.assertTrue(entered.wait(timeout=10))
+                with self.assertRaises(StoreBusyError):
+                    service.resume(task.task_id)
+            finally:
+                release.set()
+                if holder.is_alive():
+                    holder.kill()
+                holder.join(timeout=5)
+
+            final = service.require_task(task.task_id)
+            self.assertEqual(final.status, TaskStatus.INTERRUPTED)
+            self.assertEqual(final.claim_generation, 1)
+            self.assertIsNone(final.lease_token)
+            self.assertFalse(
+                (root / "artifacts" / task.task_id / ARTIFACT_NAME).exists()
+            )
 
     def test_authority_check_rejects_wrong_token_attempt_or_generation(
         self,
@@ -383,6 +583,7 @@ class SideEffectFencingTests(unittest.TestCase):
                     entered,
                     release,
                     queue,
+                    "stale-pre-publish",
                 ),
             )
             try:
@@ -454,6 +655,7 @@ class SideEffectFencingTests(unittest.TestCase):
             queue = context.Queue()
             stale_entered = context.Event()
             stale_release = context.Event()
+            newer_attempting = context.Event()
             newer_entered = context.Event()
             stale = context.Process(
                 target=_execute_worker,
@@ -465,6 +667,7 @@ class SideEffectFencingTests(unittest.TestCase):
                     stale_entered,
                     stale_release,
                     queue,
+                    "stale-after-authority",
                 ),
             )
             newer: Any = None
@@ -479,12 +682,15 @@ class SideEffectFencingTests(unittest.TestCase):
                         task.task_id,
                         "newer-owner",
                         recovery_time,
+                        newer_attempting,
                         newer_entered,
                         queue,
+                        "newer",
                     ),
                 )
                 newer.start()
-                self.assertTrue(newer_entered.wait(timeout=10))
+                self.assertTrue(newer_attempting.wait(timeout=10))
+                self.assertFalse(newer_entered.is_set())
                 self.assertFalse(artifact.exists())
 
                 stale_release.set()
@@ -502,27 +708,43 @@ class SideEffectFencingTests(unittest.TestCase):
                 queue.join_thread()
 
             stale_result = next(
-                result for result in results if not result["ok"]
+                result
+                for result in results
+                if result["role"] == "stale-after-authority"
             )
             newer_result = next(
-                result for result in results if result["ok"]
+                result for result in results if result["role"] == "newer"
             )
-            self.assertEqual(stale_result["error"], "ClaimLost")
-            self.assertEqual(newer_result["status"], "failed")
-            self.assertEqual(newer_result["error"], "artifact_exists")
             self.assertEqual(artifact.read_text(), "single publish\n")
             final = EventStore(
                 root / "data" / "zevorinth.sqlite3"
             ).require_task(task.task_id)
-            self.assertEqual(final.status, TaskStatus.FAILED)
-            self.assertEqual(final.error.code, "artifact_exists")
+            self.assertIn(
+                final.status,
+                {TaskStatus.SUCCEEDED, TaskStatus.BLOCKED},
+            )
+            if final.status is TaskStatus.SUCCEEDED:
+                self.assertTrue(stale_result["ok"], stale_result)
+                self.assertEqual(stale_result["status"], "succeeded")
+            else:
+                self.assertFalse(stale_result["ok"], stale_result)
+                self.assertEqual(stale_result["error"], "ClaimLost")
+                self.assertTrue(newer_result["ok"], newer_result)
+                self.assertEqual(newer_result["status"], "blocked")
+                self.assertEqual(newer_result["error"], "artifact_exists")
             event_types = [
                 event.event_type
                 for event in EventStore(
                     root / "data" / "zevorinth.sqlite3"
                 ).list_events(task.task_id)
             ]
-            self.assertNotIn("task_succeeded", event_types)
+            expected_successes = (
+                1 if final.status is TaskStatus.SUCCEEDED else 0
+            )
+            self.assertEqual(
+                event_types.count("task_succeeded"),
+                expected_successes,
+            )
 
     def test_same_relative_path_in_different_tasks_is_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

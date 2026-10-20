@@ -4,6 +4,9 @@
 
 本阶段没有调用真实模型 API，没有读取 `.env`，没有推送远程。
 
+> Phase 3.4.4 后续变更：发布锁已从 Task 目录内的 `.publish.lock`
+> 移至 `artifacts/.locks/<task_id>.lock`，并纳入 Lease 接管协调。
+
 ## 1. 基线与范围
 
 - 仓库：`/Users/lidequan/PythonProject/Zevorinth`

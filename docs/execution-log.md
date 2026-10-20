@@ -598,6 +598,43 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.4.4 阶段执行记录
+
+## 审计与修复
+
+- 发布锁移到稳定的每 Task `artifacts/.locks/<task_id>.lock`；
+- RUNNING/VERIFYING/INTERRUPTED 接管 claim 先取得同一发布锁；
+- 锁顺序统一为文件锁后 SQLite，claim 在锁内完成 generation 更新；
+- claim 锁等待和 publish 锁等待均有界，超时不改变 generation；
+- 发布者在 authority 与最终发布之间保持锁；
+- 新增真实 SIGKILL 持锁恢复和接管超时测试。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 182/182 通过，exit 0 |
+| 隔离环境完整 unittest | 182/182 通过，exit 0 |
+| 文件副作用 fencing 专项 | 8/8，连续 10 轮 0 失败 |
+| 崩溃一致性专项 | 16/16，连续 10 轮 0 失败 |
+| 并发任务专项 | 3/3，连续 10 轮 0 失败 |
+| 并发初始化 | 100/100，0 失败 |
+| 并发澄清答案 | 20/20，0 失败 |
+| 隔离副本变异 | 7/7 适用项被捕获 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version 4；
+- 当前没有 Lease 续租 API；
+- SQLite 与文件系统仍不能共同原子提交；
+- lock key 为单机本地 Task 文件锁，非跨主机协议；
+- 详见 `docs/phase-3.4.4-lease-takeover-coordination-audit.md`；
+- 真实模型 API 请求：0，未推送。
+
+---
+
 # 第 3.4.3 阶段执行记录
 
 ## 审计与修复

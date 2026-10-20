@@ -155,6 +155,28 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.4.4 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.4.4-lease-takeover-coordination-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.4.3-side-effect-fencing-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/artifact_tool.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/crash_consistency_worker.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_crash_consistency.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_side_effect_fencing.py`
+
+Schema version 保持 4；运行产物和 `.idea/` 不纳入源码清单。
+
+---
+
 # 第 3.4.3 阶段新增与修改
 
 ## 新增
