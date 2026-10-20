@@ -392,6 +392,9 @@ class TestExecutionEvidence:
     terminated_confirmed: bool
     output_limit_bytes: int
     timeout_seconds: float
+    before_snapshot: JsonObject | None = None
+    after_snapshot: JsonObject | None = None
+    workspace_diff: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -416,6 +419,9 @@ class TestExecutionEvidence:
             "terminated_confirmed": self.terminated_confirmed,
             "output_limit_bytes": self.output_limit_bytes,
             "timeout_seconds": self.timeout_seconds,
+            "before_snapshot": self.before_snapshot,
+            "after_snapshot": self.after_snapshot,
+            "workspace_diff": self.workspace_diff,
         }
 
     @classmethod
@@ -443,6 +449,21 @@ class TestExecutionEvidence:
             terminated_confirmed=bool(data["terminated_confirmed"]),
             output_limit_bytes=int(data["output_limit_bytes"]),
             timeout_seconds=float(data["timeout_seconds"]),
+            before_snapshot=(
+                dict(data["before_snapshot"])
+                if data.get("before_snapshot")
+                else None
+            ),
+            after_snapshot=(
+                dict(data["after_snapshot"])
+                if data.get("after_snapshot")
+                else None
+            ),
+            workspace_diff=(
+                dict(data["workspace_diff"])
+                if data.get("workspace_diff")
+                else None
+            ),
         )
 
 

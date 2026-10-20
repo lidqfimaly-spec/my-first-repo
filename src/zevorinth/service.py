@@ -53,6 +53,12 @@ from .planner import DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
 from .verifier import ArtifactVerifier, TestResultVerifier
+from .workspace_snapshot import (
+    EffectPolicy,
+    SnapshotError,
+    diff_snapshots,
+    scan_workspace,
+)
 
 
 def utc_now() -> str:
@@ -1107,6 +1113,8 @@ class TaskService:
         return self._execute_tool(running, lease_token)
 
     def _resume_interrupted(self, task: Task, lease_token: str) -> Task:
+        if self._is_test_plan(task):
+            return self._resume_test_task(task, lease_token)
         can_verify_existing = (
             task.tool_result is not None
             and task.tool_result.execution_mode is ExecutionMode.REAL
@@ -1154,6 +1162,64 @@ class TaskService:
             lease_token=lease_token,
         )
         return self._execute_tool(running, lease_token)
+
+    @staticmethod
+    def _is_test_plan(task: Task) -> bool:
+        return bool(
+            task.plan is not None
+            and task.plan.steps
+            and task.plan.steps[0].tool_name == RUN_TESTS_TOOL
+        )
+
+    def _resume_test_task(self, task: Task, lease_token: str) -> Task:
+        """Never re-run a test whose result is unknown.
+
+        A persisted test result is verified read-only; anything else is
+        blocked as an unknown execution state instead of being retried.
+        """
+        evidence = (
+            task.tool_result.test_evidence
+            if task.tool_result is not None
+            else None
+        )
+        if evidence is None:
+            return self._block(
+                task,
+                lease_token,
+                code="test_execution_unknown",
+                reason=(
+                    "test execution state is unknown; refusing to re-run"
+                ),
+                phase="blocked_test_unknown",
+                mark_not_executed=False,
+            )
+        verifying, _ = self.store.transition(
+            task.task_id,
+            TaskStatus.VERIFYING,
+            EventType.VERIFICATION_STARTED,
+            self.clock(),
+            payload={
+                "resume": True,
+                "source": "persisted_test_evidence",
+            },
+            updates={"phase": "resumed_test_verification", "error": None},
+            lease_token=lease_token,
+        )
+        return self._verify_test_and_finish(
+            verifying,
+            lease_token,
+            {
+                "runner": evidence.runner,
+                "target": evidence.target,
+                "workspace": evidence.workspace,
+                "allowed_side_effects": list(
+                    task.request.parameters.get("allowed_side_effects") or []
+                ),
+                "protected_paths": list(
+                    task.request.parameters.get("protected_paths") or []
+                ),
+            },
+        )
 
     def _execute_tool(self, task: Task, lease_token: str) -> Task:
         plan_step = (
@@ -1375,8 +1441,23 @@ class TaskService:
             "workspace": plan_step.parameters.get("workspace"),
             "timeout_seconds": plan_step.parameters.get("timeout_seconds", 10.0),
             "max_output_bytes": plan_step.parameters.get("max_output_bytes", 8192),
+            "allowed_side_effects": list(
+                plan_step.parameters.get("allowed_side_effects") or []
+            ),
+            "protected_paths": list(
+                plan_step.parameters.get("protected_paths") or []
+            ),
         }
         started_at = self.clock()
+        try:
+            policy = EffectPolicy.build(parameters)
+            workspace_path = resolve_workspace(
+                self.project_root, str(parameters["workspace"])
+            )
+        except (SnapshotError, TestExecutionError) as exc:
+            return self._finish_tool_failure(
+                task, lease_token, exc.code, exc.message, started_at
+            )
         cancelled = self._cancel_if_requested(
             task,
             lease_token,
@@ -1386,6 +1467,66 @@ class TaskService:
         if cancelled is not None:
             return cancelled
         self._assert_execution_authority(task, lease_token)
+        prior_starts = sum(
+            1
+            for event in self.store.list_events(task.task_id)
+            if event.event_type == EventType.TOOL_STARTED.value
+        )
+        if prior_starts > 0:
+            # Recovery must never re-run a test whose outcome is unknown.
+            persisted = (
+                task.tool_result.test_evidence
+                if task.tool_result is not None
+                else None
+            )
+            if persisted is None:
+                return self._block(
+                    task,
+                    lease_token,
+                    code="test_execution_unknown",
+                    reason=(
+                        "a previous test run started but its result is "
+                        "unknown; refusing to re-run"
+                    ),
+                    phase="blocked_test_unknown",
+                    mark_not_executed=False,
+                )
+            verifying, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.VERIFYING,
+                EventType.VERIFICATION_STARTED,
+                self.clock(),
+                payload={
+                    "resume": True,
+                    "source": "persisted_test_evidence",
+                },
+                updates={"phase": "resumed_test_verification", "error": None},
+                lease_token=lease_token,
+            )
+            return self._verify_test_and_finish(
+                verifying, lease_token, parameters
+            )
+        before = scan_workspace(
+            workspace_path,
+            workspace_id=str(parameters["workspace"]),
+            task_id=task.task_id,
+            attempt_id=task.attempt_id,
+            claim_generation=task.claim_generation,
+            captured_at=self.clock(),
+        )
+        if not before.complete:
+            # Fail closed: never claim a complete audit from a partial scan.
+            return self._fail(
+                task,
+                lease_token,
+                code="snapshot_incomplete_before",
+                message="workspace snapshot was incomplete before execution",
+                phase="snapshot_incomplete",
+                payload_extra={
+                    "limits_hit": list(before.limits_hit),
+                    "unreadable": list(before.unreadable),
+                },
+            )
         task, _ = self.store.record_event_and_update(
             task.task_id,
             EventType.TOOL_STARTED,
@@ -1399,6 +1540,8 @@ class TaskService:
                 "claim_generation": task.claim_generation,
                 "plan_version": task.plan_version,
                 "intended_execution_mode": ExecutionMode.REAL.value,
+                "before_snapshot_digest": before.to_dict()["digest"],
+                "before_snapshot_entries": len(before.entries),
             },
             updates={
                 "execution_mode": ExecutionMode.REAL,
@@ -1458,7 +1601,19 @@ class TaskService:
             terminated_confirmed=bool(raw["terminated_confirmed"]),
             output_limit_bytes=int(raw["output_limit_bytes"]),
             timeout_seconds=float(raw["timeout_seconds"]),
+            before_snapshot=before.to_dict(),
         )
+        after = scan_workspace(
+            workspace_path,
+            workspace_id=str(parameters["workspace"]),
+            task_id=task.task_id,
+            attempt_id=task.attempt_id,
+            claim_generation=task.claim_generation,
+            captured_at=self.clock(),
+        )
+        workspace_diff = diff_snapshots(before, after, policy)
+        evidence.after_snapshot = after.to_dict()
+        evidence.workspace_diff = workspace_diff
         result = ToolResult(
             attempt_id=task.attempt_id,
             tool_name=RUN_TESTS_TOOL,

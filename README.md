@@ -320,5 +320,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.14 阶段生命周期证据与可复现审计产物](docs/phase-3.14-lifecycle-evidence-reproducibility-audit.md)
 - [第 3.15 阶段离线端到端用户验收](docs/phase-3.15-offline-user-acceptance-audit.md)
 - [第 3.16 阶段受控本地测试执行审计](docs/phase-3.16-controlled-test-execution-audit.md)
+- [第 3.17 阶段工作区副作用审计与恢复](docs/phase-3.17-workspace-side-effect-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

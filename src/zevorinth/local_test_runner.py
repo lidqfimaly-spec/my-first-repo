@@ -52,6 +52,8 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         "workspace",
         "timeout_seconds",
         "max_output_bytes",
+        "allowed_side_effects",
+        "protected_paths",
     }
     if unknown:
         raise TestExecutionError(
@@ -98,12 +100,27 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
             f"max_output_bytes must be between {MIN_OUTPUT_BYTES} and "
             f"{MAX_OUTPUT_BYTES}",
         )
+    from .workspace_snapshot import SnapshotError, _normalize_prefix
+
+    policies: dict[str, list[str]] = {}
+    for field in ("allowed_side_effects", "protected_paths"):
+        raw = parameters.get(field) or []
+        if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+            raise TestExecutionError(
+                "invalid_policy", f"{field} must be an array of paths"
+            )
+        try:
+            policies[field] = [_normalize_prefix(str(item)) for item in raw]
+        except SnapshotError as exc:
+            raise TestExecutionError(exc.code, exc.message) from exc
     return {
         "runner": runner,
         "target": target,
         "workspace": workspace,
         "timeout_seconds": float(timeout),
         "max_output_bytes": int(limit),
+        "allowed_side_effects": policies["allowed_side_effects"],
+        "protected_paths": policies["protected_paths"],
     }
 
 

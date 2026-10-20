@@ -214,6 +214,61 @@
           "new": "    if False:\n        raise TestExecutionError(\n            \"unsafe_workspace\", \"workspace escapes the registered root\"\n        )\n"
         }
       ]
+    },
+    {
+      "id": "side_effect_ignores_deletion",
+      "property": "deleted files are reported",
+      "path": "src/zevorinth/workspace_snapshot.py",
+      "old": "    if before is not None and after is None:\n        return \"deleted\"\n",
+      "new": "    if before is not None and after is None:\n        return None\n",
+      "tests": [
+        "tests.test_workspace_side_effects.DiffPolicyTests.test_deleted_and_modified_are_detected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "side_effect_before_snapshot_skip",
+      "property": "incomplete before snapshot blocks execution",
+      "path": "src/zevorinth/service.py",
+      "old": "        if not before.complete:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_workspace_side_effects.LifecycleSideEffectTests.test_before_snapshot_failure_blocks_execution"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "side_effect_unexpected_as_expected",
+      "property": "unexpected changes stay unexpected",
+      "path": "src/zevorinth/workspace_snapshot.py",
+      "old": "        if not self.allowed_prefixes:\n            return UNEXPECTED, \"read_only_policy\"\n",
+      "new": "        if not self.allowed_prefixes:\n            return EXPECTED, \"read_only_policy\"\n",
+      "tests": [
+        "tests.test_workspace_side_effects.LifecycleSideEffectTests.test_unexpected_write_fails_even_when_tests_pass"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "side_effect_count_forgery",
+      "property": "diff counts must match detail",
+      "path": "src/zevorinth/workspace_snapshot.py",
+      "old": "    counts = diff.get(\"counts\")\n",
+      "new": "    return\n    counts = diff.get(\"counts\")\n",
+      "tests": [
+        "tests.test_workspace_side_effects.DiffPolicyTests.test_count_mismatch_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "side_effect_recovery_rerun",
+      "property": "unknown test state blocks instead of re-running",
+      "path": "src/zevorinth/service.py",
+      "old": "        if prior_starts > 0:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_workspace_side_effects.LifecycleSideEffectTests.test_unknown_recovery_blocks_without_rerun"
+      ],
+      "expected": "killed"
     }
   ]
 }

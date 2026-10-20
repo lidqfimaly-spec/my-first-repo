@@ -108,6 +108,12 @@ def build_test_plan(
                     "workspace": validation.get("workspace"),
                     "timeout_seconds": validation.get("timeout_seconds", 10.0),
                     "max_output_bytes": validation.get("max_output_bytes", 8192),
+                    "allowed_side_effects": list(
+                        validation.get("allowed_side_effects") or []
+                    ),
+                    "protected_paths": list(
+                        validation.get("protected_paths") or []
+                    ),
                 },
             )
         ],

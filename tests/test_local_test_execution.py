@@ -24,6 +24,11 @@ from zevorinth.models import (  # noqa: E402
 from zevorinth.planner import RUN_TESTS  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 from zevorinth.verifier import TestResultVerifier  # noqa: E402
+from zevorinth.workspace_snapshot import (  # noqa: E402
+    EffectPolicy,
+    Snapshot,
+    diff_snapshots,
+)
 
 
 PASSING = (
@@ -379,7 +384,23 @@ class LocalTestSecurityTests(unittest.TestCase):
             self.assertEqual(cancelled.verification.reason, "test_cancelled")
 
 
+def _snapshot(captured_at: str) -> dict:
+    return Snapshot(
+        workspace="demo",
+        task_id="task",
+        attempt_id="attempt",
+        claim_generation=1,
+        captured_at=captured_at,
+        complete=True,
+    ).to_dict()
+
+
 def _evidence(**overrides: Any) -> TestExecutionEvidence:
+    before = Snapshot.from_dict(_snapshot("before"))
+    after = Snapshot.from_dict(_snapshot("after"))
+    workspace_diff = diff_snapshots(
+        before, after, EffectPolicy.build({})
+    )
     base = {
         "runner": "unittest",
         "target": "test_demo",
@@ -402,12 +423,16 @@ def _evidence(**overrides: Any) -> TestExecutionEvidence:
         "terminated_confirmed": True,
         "output_limit_bytes": 1024,
         "timeout_seconds": 10.0,
+        "before_snapshot": before.to_dict(),
+        "after_snapshot": after.to_dict(),
+        "workspace_diff": workspace_diff,
     }
     base.update(overrides)
     return TestExecutionEvidence(**base)
 
 
 class _TaskStub:
+    task_id = "task"
     attempt_id = "attempt"
     claim_generation = 1
 

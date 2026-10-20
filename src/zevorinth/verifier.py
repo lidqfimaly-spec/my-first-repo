@@ -181,8 +181,12 @@ class TestResultVerifier:
         if evidence is None:
             return result(False, "test_evidence_missing", False)
         structural = (
-            evidence.attempt_id == task.attempt_id
-            and evidence.claim_generation == task.claim_generation
+            evidence.claim_generation >= 1
+            and evidence.claim_generation <= task.claim_generation
+            and (
+                evidence.claim_generation != task.claim_generation
+                or evidence.attempt_id == task.attempt_id
+            )
             and evidence.runner == expected_parameters.get("runner")
             and evidence.target == expected_parameters.get("target")
             and evidence.workspace == expected_parameters.get("workspace")
@@ -197,6 +201,57 @@ class TestResultVerifier:
                 "test_timeout" if evidence.terminated_confirmed else "test_timeout_unconfirmed",
                 True,
             )
+        before_data = getattr(evidence, "before_snapshot", None)
+        after_data = getattr(evidence, "after_snapshot", None)
+        diff_data = getattr(evidence, "workspace_diff", None)
+        if not (before_data and after_data and diff_data):
+            return result(False, "snapshot_missing", False)
+        from .workspace_snapshot import (
+            EffectPolicy,
+            Snapshot,
+            SnapshotError,
+            diff_snapshots,
+            validate_diff_record,
+        )
+
+        before = Snapshot.from_dict(before_data)
+        after = Snapshot.from_dict(after_data)
+        # Snapshots and evidence must describe one attempt.  After a lease
+        # takeover the persisted evidence belongs to an earlier generation;
+        # it may be verified read-only, but never newer than the task.
+        identity_ok = (
+            before.task_id == task.task_id == after.task_id
+            and before.attempt_id
+            == after.attempt_id
+            == evidence.attempt_id
+            and before.claim_generation
+            == after.claim_generation
+            == evidence.claim_generation
+            and evidence.claim_generation <= task.claim_generation
+            and (
+                evidence.claim_generation != task.claim_generation
+                or evidence.attempt_id == task.attempt_id
+            )
+        )
+        if not identity_ok:
+            return result(False, "snapshot_identity_mismatch", False)
+        if not (before.complete and after.complete):
+            return result(False, "snapshot_incomplete", True)
+        try:
+            validate_diff_record(diff_data)
+        except SnapshotError:
+            return result(False, "diff_record_invalid", False)
+        policy = EffectPolicy.build(expected_parameters)
+        recomputed = diff_snapshots(before, after, policy)
+        if (
+            recomputed["counts"] != dict(diff_data.get("counts", {}))
+            or recomputed["changes"] != list(diff_data.get("changes", []))
+        ):
+            return result(False, "diff_recompute_mismatch", False)
+        if recomputed["counts"]["unexpected"]:
+            return result(False, "unexpected_workspace_change", True)
+        if recomputed["counts"]["unknown"]:
+            return result(False, "unknown_workspace_change", True)
         if evidence.exit_code is None:
             return result(False, "test_exit_unknown", False)
         if evidence.truncated:

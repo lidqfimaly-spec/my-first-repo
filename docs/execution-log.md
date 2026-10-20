@@ -598,6 +598,42 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.17 阶段执行记录
+
+## 实现
+
+- 新增 `workspace_snapshot.py`：有界、确定性、不跟随符号链接的工作区快照；
+- 新增确定性差异与 `EffectPolicy`（expected/unexpected/unknown）；
+- `run_tests` 执行前后各生成快照，证据挂到既有 `TestExecutionEvidence`；
+- Verifier 从快照独立重算差异并校验身份、完整性、计数；
+- 恢复时未知状态一律 BLOCKED，不重跑；已有结果只读复核；
+- 新增 `side_effect_audit_runner.py` 指标与交叉校验。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 389/389，exit 0 |
+| 快照/差异专项 | 28/28 |
+| 副作用审计场景 | 8/8 |
+| 稳定结果复现 | `582a10e9…` 两次一致 |
+| Phase 3.16 专项 | 26/26 |
+| 用户验收 / E2E | PASS / 12/12 |
+| Mutation runner | 22 killed |
+| 覆盖率门禁 | 389 项通过，9/9 PASS |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 非操作系统级隔离，只观察工作区；
+- 不做自动回滚；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.17-workspace-side-effect-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.16 阶段执行记录
 
 ## 实现

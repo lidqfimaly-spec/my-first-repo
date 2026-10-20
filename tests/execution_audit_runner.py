@@ -129,13 +129,20 @@ def run_audit() -> dict[str, Any]:
         request: TaskRequest,
         checks: dict[str, bool],
         cancel_after: float | None = None,
+        cancel_before: bool = False,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files)
             service = TaskService(root)
             task = service.enqueue(request)
-            if cancel_after is None:
+            if cancel_before:
+                # Deterministic "cancel before start": no thread, no race.
+                service.request_cancel(
+                    task.task_id, requested_by="audit", reason="stop"
+                )
+                result = service.execute_task(task.task_id)
+            elif cancel_after is None:
                 result = service.execute_task(task.task_id)
             else:
                 def cancel() -> None:
@@ -177,7 +184,7 @@ def run_audit() -> dict[str, Any]:
         {"test_demo.py": PASSING},
         _request(),
         {"not_started": True},
-        cancel_after=0.0,
+        cancel_before=True,
     )
     case(
         "E-5-cancel-during",
