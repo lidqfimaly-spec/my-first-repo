@@ -13,6 +13,7 @@ THRESHOLDS = {
     "artifact_tool.py": (70.0, 60.0),
     "conversation_service.py": (60.0, 55.0),
     "event_store.py": (80.0, 65.0),
+    "local_test_runner.py": (70.0, 60.0),
     "policy.py": (70.0, 65.0),
     "safety_gate.py": (75.0, 60.0),
     "service.py": (80.0, 70.0),

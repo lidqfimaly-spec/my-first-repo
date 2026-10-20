@@ -30,7 +30,7 @@ class UserAcceptanceTests(unittest.TestCase):
     def test_every_scenario_meets_its_expectation(self) -> None:
         self.assertEqual(self.report["status"], "PASS")
         self.assertEqual(self.report["failed_scenarios"], [])
-        self.assertEqual(len(self.report["scenarios"]), 15)
+        self.assertEqual(len(self.report["scenarios"]), 16)
         ids = [item["id"] for item in self.report["scenarios"]]
         self.assertEqual(len(ids), len(set(ids)))
 
@@ -157,7 +157,7 @@ class UserAcceptanceTests(unittest.TestCase):
 
     def test_capability_gaps_are_explicit(self) -> None:
         self.assertIn(
-            "gap", self.by_id["B2-test-execution"]["details"]
+            "gap", self.by_id["B2b-shell"]["details"]
         )
         self.assertIn("gap", self.by_id["C1-research"]["details"])
         self.assertIn(

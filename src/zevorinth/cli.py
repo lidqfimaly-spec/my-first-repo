@@ -487,6 +487,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--json", action="store_true")
 
+    test_run = subparsers.add_parser(
+        "test",
+        help="run one approved local test target in a registered workspace",
+    )
+    test_run.add_argument("--workspace", required=True)
+    test_run.add_argument("--target", required=True)
+    test_run.add_argument(
+        "--runner", default="unittest", choices=["unittest"]
+    )
+    test_run.add_argument("--timeout", type=float, default=10.0)
+    test_run.add_argument("--max-output", type=int, default=8192)
+    test_run.add_argument("--json", action="store_true")
+
     status = subparsers.add_parser("status", help="show a persisted task")
     status.add_argument("task_id")
     status.add_argument("--json", action="store_true")
@@ -886,6 +899,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _request_from_args(args),
                 conversation_id=args.conversation_id,
                 turn_id=args.turn_id,
+            )
+            _print_task(task, args.json)
+            return _exit_code(task)
+        if args.command == "test":
+            task = service.submit(
+                TaskRequest(
+                    goal=f"run {args.runner} target {args.target}",
+                    operation="run_tests",
+                    parameters={
+                        "runner": args.runner,
+                        "target": args.target,
+                        "workspace": args.workspace,
+                        "timeout_seconds": args.timeout,
+                        "max_output_bytes": args.max_output,
+                    },
+                )
             )
             _print_task(task, args.json)
             return _exit_code(task)

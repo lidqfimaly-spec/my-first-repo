@@ -18,6 +18,7 @@ from .models import (
 
 
 WRITE_TEXT_ARTIFACT = "write_text_artifact"
+RUN_TESTS = "run_tests"
 
 
 class PlanningError(ValueError):
@@ -73,11 +74,53 @@ def build_artifact_plan(
     )
 
 
+def build_test_plan(
+    request: TaskRequest,
+    *,
+    planner_name: str,
+) -> Plan:
+    """Plan one bounded local test run.
+
+    The planner only copies already-validated structured fields; it never
+    composes a command string.  Policy re-validates everything before the
+    executor starts a process.
+    """
+    validation = dict(request.parameters)
+    # Format and policy checks belong to ``ArtifactPolicy``; planning only
+    # copies structured fields so a rejection surfaces as ``blocked`` rather
+    # than a planning failure.
+    return Plan(
+        plan_id=str(uuid4()),
+        planner_name=planner_name,
+        deterministic=True,
+        steps=[
+            PlanStep(
+                step_id="test-1",
+                tool_name=RUN_TESTS,
+                expected_result=(
+                    f"run {validation.get('runner')} target "
+                    f"{validation.get('target')} in workspace "
+                    f"{validation.get('workspace')}"
+                ),
+                parameters={
+                    "runner": validation.get("runner"),
+                    "target": validation.get("target"),
+                    "workspace": validation.get("workspace"),
+                    "timeout_seconds": validation.get("timeout_seconds", 10.0),
+                    "max_output_bytes": validation.get("max_output_bytes", 8192),
+                },
+            )
+        ],
+    )
+
+
 class DeterministicPlanner:
     mode = PlannerMode.DETERMINISTIC
     name = "deterministic-v1"
 
     def plan(self, request: TaskRequest) -> Plan:
+        if request.operation == RUN_TESTS:
+            return build_test_plan(request, planner_name=self.name)
         if request.operation != WRITE_TEXT_ARTIFACT:
             raise PlanningError(
                 "unsupported_operation",
@@ -95,6 +138,45 @@ class DeterministicPlanner:
             missing.append("goal")
         if request.operation is None or not request.operation.strip():
             missing.append("operation")
+        if request.operation == RUN_TESTS:
+            for field in ("runner", "target", "workspace"):
+                if request.parameters.get(field) is None:
+                    missing.append(field)
+            if not missing:
+                try:
+                    plan = build_test_plan(request, planner_name=self.name)
+                except PlanningError as exc:
+                    return PlanningOutcome(
+                        classification=PlanningClassification.FAILED,
+                        request=request,
+                        error_code=exc.code,
+                        error_message=exc.message,
+                        metadata={
+                            "planner_name": self.name,
+                            "planner_mode": self.mode.value,
+                        },
+                    )
+                return PlanningOutcome(
+                    classification=PlanningClassification.PLANNED,
+                    request=request,
+                    plan=plan,
+                    metadata={
+                        "planner_name": self.name,
+                        "planner_mode": self.mode.value,
+                    },
+                )
+            return PlanningOutcome(
+                classification=PlanningClassification.CLARIFICATION,
+                request=request,
+                missing_fields=missing,
+                clarification_questions=[
+                    f"请提供 {field}" for field in missing
+                ],
+                metadata={
+                    "planner_name": self.name,
+                    "planner_mode": self.mode.value,
+                },
+            )
         if request.parameters.get("artifact_path") is None:
             missing.append("artifact_path")
         if request.parameters.get("content") is None:

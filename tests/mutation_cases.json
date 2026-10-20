@@ -60,8 +60,8 @@
       "id": "verifier_failure_success",
       "property": "verifier failure cannot become success",
       "path": "src/zevorinth/service.py",
-      "old": "if verification.passed:",
-      "new": "if True:",
+      "old": "        if cancelled is not None:\n            return cancelled\n        if verification.passed:\n",
+      "new": "        if cancelled is not None:\n            return cancelled\n        if True:\n",
       "tests": [
         "tests.test_safety_gate.SafetyGateTests.test_gate_passes_with_layered_cases_and_bounded_metrics"
       ],
@@ -172,6 +172,48 @@
         "tests.test_execution_budget.ExecutionBudgetTests.test_runtime_layer_rejects_budget_expired_after_claim"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "test_target_validation",
+      "property": "local test targets reject shell syntax",
+      "path": "src/zevorinth/local_test_runner.py",
+      "old": "    if not isinstance(target, str) or not TARGET_PATTERN.fullmatch(target):\n",
+      "new": "    if not isinstance(target, str):\n",
+      "tests": [
+        "tests.test_local_test_execution.LocalTestSecurityTests.test_shell_injection_targets_are_blocked"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "test_evidence_generation",
+      "property": "test evidence must match attempt and generation",
+      "path": "src/zevorinth/verifier.py",
+      "old": "        structural = (\n",
+      "new": "        structural = True or (\n",
+      "tests": [
+        "tests.test_local_test_execution.TestVerifierBoundaryTests.test_stale_generation_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "test_workspace_symlink",
+      "property": "symlinked workspaces are rejected",
+      "tests": [
+        "tests.test_local_test_execution.LocalTestSecurityTests.test_symlinked_workspace_is_blocked"
+      ],
+      "expected": "killed",
+      "patches": [
+        {
+          "path": "src/zevorinth/local_test_runner.py",
+          "old": "    if candidate.is_symlink():\n        raise TestExecutionError(\n            \"unsafe_workspace\", \"workspace must not be a symlink\"\n        )\n",
+          "new": "    if False:\n        raise TestExecutionError(\n            \"unsafe_workspace\", \"workspace must not be a symlink\"\n        )\n"
+        },
+        {
+          "path": "src/zevorinth/local_test_runner.py",
+          "old": "    if resolved != root / workspace:\n        raise TestExecutionError(\n            \"unsafe_workspace\", \"workspace escapes the registered root\"\n        )\n",
+          "new": "    if False:\n        raise TestExecutionError(\n            \"unsafe_workspace\", \"workspace escapes the registered root\"\n        )\n"
+        }
+      ]
     }
   ]
 }

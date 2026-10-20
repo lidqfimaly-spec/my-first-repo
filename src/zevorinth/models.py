@@ -326,6 +326,7 @@ class ToolResult:
     artifact: ArtifactEvidence | None = None
     error_code: str | None = None
     error_message: str | None = None
+    test_evidence: "TestExecutionEvidence | None" = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -338,6 +339,11 @@ class ToolResult:
             "artifact": self.artifact.to_dict() if self.artifact else None,
             "error_code": self.error_code,
             "error_message": self.error_message,
+            "test_evidence": (
+                self.test_evidence.to_dict()
+                if self.test_evidence is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -353,6 +359,90 @@ class ToolResult:
             artifact=ArtifactEvidence.from_dict(artifact) if artifact else None,
             error_code=data.get("error_code"),
             error_message=data.get("error_message"),
+            test_evidence=(
+                TestExecutionEvidence.from_dict(data["test_evidence"])
+                if data.get("test_evidence")
+                else None
+            ),
+        )
+
+
+@dataclass(slots=True)
+class TestExecutionEvidence:
+    """Structured, bounded record of one controlled test run."""
+
+    runner: str
+    target: str
+    workspace: str
+    attempt_id: str
+    claim_generation: int
+    exit_code: int | None
+    started_at: str
+    finished_at: str
+    duration_ms: float
+    timed_out: bool
+    cancelled: bool
+    truncated: bool
+    stdout_sha256: str
+    stderr_sha256: str
+    stdout_bytes: int
+    stderr_bytes: int
+    stdout_excerpt: str
+    stderr_excerpt: str
+    terminated_confirmed: bool
+    output_limit_bytes: int
+    timeout_seconds: float
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "runner": self.runner,
+            "target": self.target,
+            "workspace": self.workspace,
+            "attempt_id": self.attempt_id,
+            "claim_generation": self.claim_generation,
+            "exit_code": self.exit_code,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_ms": self.duration_ms,
+            "timed_out": self.timed_out,
+            "cancelled": self.cancelled,
+            "truncated": self.truncated,
+            "stdout_sha256": self.stdout_sha256,
+            "stderr_sha256": self.stderr_sha256,
+            "stdout_bytes": self.stdout_bytes,
+            "stderr_bytes": self.stderr_bytes,
+            "stdout_excerpt": self.stdout_excerpt,
+            "stderr_excerpt": self.stderr_excerpt,
+            "terminated_confirmed": self.terminated_confirmed,
+            "output_limit_bytes": self.output_limit_bytes,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TestExecutionEvidence":
+        exit_code = data.get("exit_code")
+        return cls(
+            runner=str(data["runner"]),
+            target=str(data["target"]),
+            workspace=str(data["workspace"]),
+            attempt_id=str(data["attempt_id"]),
+            claim_generation=int(data["claim_generation"]),
+            exit_code=int(exit_code) if exit_code is not None else None,
+            started_at=str(data["started_at"]),
+            finished_at=str(data["finished_at"]),
+            duration_ms=float(data["duration_ms"]),
+            timed_out=bool(data["timed_out"]),
+            cancelled=bool(data["cancelled"]),
+            truncated=bool(data["truncated"]),
+            stdout_sha256=str(data["stdout_sha256"]),
+            stderr_sha256=str(data["stderr_sha256"]),
+            stdout_bytes=int(data["stdout_bytes"]),
+            stderr_bytes=int(data["stderr_bytes"]),
+            stdout_excerpt=str(data.get("stdout_excerpt", "")),
+            stderr_excerpt=str(data.get("stderr_excerpt", "")),
+            terminated_confirmed=bool(data["terminated_confirmed"]),
+            output_limit_bytes=int(data["output_limit_bytes"]),
+            timeout_seconds=float(data["timeout_seconds"]),
         )
 
 

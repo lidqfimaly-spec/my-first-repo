@@ -20,7 +20,7 @@
 | 协作式取消、预算、Lease、恢复 | 支持 | `TaskService` / `EventStore` |
 | 多轮对话、澄清回填、计划修订 | 支持（确定性规则） | `ConversationService` / `IntentClassifier` |
 | 通用 shell / 代码编辑 | **不支持** | 无对应工具，`plan()` 对未知操作抛 `unsupported_operation` |
-| 运行测试并读取退出码 | **不支持** | 同上 |
+| 运行测试并读取退出码 | 支持（Phase 3.16 起，限 `unittest` + 注册工作区） | `run_tests` 工具 |
 | 网络检索 / 引用核实 | **不支持** | 无检索工具、无离线语料 |
 | 真实模型 API | 未启用 | 本阶段为 0 次 |
 
@@ -28,7 +28,7 @@
 
 ## 3. 场景矩阵与结果
 
-共 15 个场景，全部通过预期判定（`status = PASS`）。
+共 16 个场景，全部通过预期判定（`status = PASS`）。本套件在 Phase 3.16 增加了受控测试执行能力后同步更新（B2 由“拒绝”改为“真实执行”，新增 B2b 验证任意 shell 仍被拒绝）。
 
 | ID | 场景 | 入口 | 预期状态 | 实际状态 | 判定 |
 | --- | --- | --- | --- | --- | --- |
@@ -37,7 +37,8 @@
 | A3 | 路径穿越 `../escaped.txt` | 真实 CLI `run` | blocked | blocked | blocked |
 | A4 | 发布后篡改文件（负向对照） | 真实 CLI + 重新验证 | succeeded | succeeded | passed（验证必须失败） |
 | B1 | 写出代码文件，由验收器运行测试 | 真实 CLI + 外部 `unittest` | succeeded | succeeded | passed |
-| B2 | 要求 Agent 自己运行测试 | 真实 CLI `run --operation run_tests` | blocked | blocked | blocked |
+| B2 | 运行批准的测试目标 | 真实 CLI `test` | succeeded | succeeded | passed |
+| B2b | 要求任意 shell | 真实 CLI `run --operation shell` | blocked | blocked | blocked |
 | B3 | 缺少 content | 真实 CLI `run` | awaiting_clarification | awaiting_clarification | needs_clarification |
 | C1 | 要求联网检索 | 真实 CLI `run --operation web_search` | blocked | blocked | blocked |
 | D1 | 计划中使用 `shell` 工具 | `ArtifactPolicy` | blocked | blocked | blocked |
@@ -70,9 +71,9 @@
 
 | 指标 | 分子 / 分母 | 值 |
 | --- | --- | --- |
-| scenario_count | — | 15 |
+| scenario_count | — | 16 |
 | real_execution_count | origin ≠ none | 7 |
-| passed | SUCCEEDED 且全部检查通过 | 7 |
+| passed | SUCCEEDED 且全部检查通过 | 8 |
 | blocked | 策略/能力拒绝 | 5 |
 | needs_clarification | 等待澄清 | 1 |
 | cancelled | 用户取消 | 1 |
@@ -97,7 +98,6 @@
 | 缺口 | 影响 | 当前行为 |
 | --- | --- | --- |
 | 无通用 shell / 代码编辑工具 | 无法自行修改现有代码库或运行测试 | 以 `unsupported_operation` 明确拒绝；B1 中由验收器代为运行测试 |
-| 无测试运行器 | 无法读取测试退出码并据此决策 | 同上 |
 | 无网络检索 / 引用核实 | 无法完成研究类任务 | C1 明确拒绝，不生成任何引用或产物 |
 | 无多步骤计划 | 一次只允许一个计划步骤 | `policy` 以 `unbounded_plan` 拒绝多步计划；本阶段未验证依赖链 |
 | 无并行执行 | — | 未实现，未在验收中假设 |
@@ -122,7 +122,8 @@
 
 ## 8. 稳定报告与哈希
 
-稳定结果两次独立运行哈希一致：`8638869837cdbb547356f4857eafc7741cfa23fdfca34164be074ba579f20129`。
+稳定结果两次独立运行哈希一致：`8914e936beebbcfeab45132cd2c67e1f859eddd082d018e051b2f730577ed3f3`（Phase 3.16 能力更新后的口径）。
+Phase 3.15 提交时为 `fc941714…`，随后修正计数口径得到 `86388698…`，Phase 3.16 新增测试执行能力后为 `8914e936…`。
 （首次提交时为 `fc941714…`；随后修正了正向计数口径——`artifact_count` 排除负向对照而部分计数未排除——重新生成。）
 
 产物位于 `artifacts/audits/phase-3.15/`，被 `.gitignore` 排除，**未进入 Git 提交**：

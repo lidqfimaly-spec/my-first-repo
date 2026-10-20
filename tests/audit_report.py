@@ -48,6 +48,7 @@ VOLATILE_PATHS = {
     # The user-acceptance runner never emits wall-clock fields in its result
     # object; timing lives only in the metadata envelope.
     "user_acceptance": (),
+    "execution_audit": (),
 }
 CASE_VOLATILE_FIELDS = {
     "safety_gate": ("cases", "duration_ms"),

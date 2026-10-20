@@ -598,6 +598,44 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.16 阶段执行记录
+
+## 实现
+
+- 新增 `run_tests` 工具：只允许 `unittest` + 点分目标 + 注册工作区；
+- `local_test_runner.py`：固定 argv、最小环境变量、进程组、有界输出、超时/取消终止；
+- Policy 在执行前校验全部参数并拒绝越界路径/符号链接/未知运行器；
+- `TestExecutionEvidence` 挂到既有 `ToolResult`，未新建平行模型；
+- `TestResultVerifier` 独立判断通过/失败/超时/取消/截断；
+- CLI 新增 `zevorinth test --workspace --target`；
+- `execution_audit_runner.py` 提供指标与交叉校验。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 352/352，exit 0 |
+| 受控执行专项 | 26/26 |
+| 执行审计场景 | 9/9 |
+| 稳定结果复现 | `0c5b6ba6…` 两次一致 |
+| 用户验收（16 场景） | PASS |
+| E2E acceptance | 12/12 |
+| Mutation runner | 17 killed |
+| 覆盖率门禁 | 352 项通过，8/8 PASS |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 非操作系统级沙箱；
+- 只支持 `unittest`；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.16-controlled-test-execution-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.15 阶段执行记录
 
 ## 实现

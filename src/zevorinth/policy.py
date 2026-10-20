@@ -11,9 +11,15 @@ from .artifact_tool import (
 )
 from .models import Plan, PolicyDecision, TaskRequest
 from .planner import WRITE_TEXT_ARTIFACT
+from .local_test_runner import (
+    RUN_TESTS_TOOL,
+    TestExecutionError,
+    resolve_workspace,
+    validate_parameters,
+)
 
 
-SUPPORTED_OPERATIONS = frozenset({WRITE_TEXT_ARTIFACT})
+SUPPORTED_OPERATIONS = frozenset({WRITE_TEXT_ARTIFACT, RUN_TESTS_TOOL})
 
 
 def missing_required_fields(request: TaskRequest) -> list[str]:
@@ -22,6 +28,11 @@ def missing_required_fields(request: TaskRequest) -> list[str]:
         missing.append("goal")
     if request.operation is None or not request.operation.strip():
         missing.append("operation")
+    if request.operation == RUN_TESTS_TOOL:
+        for field in ("runner", "target", "workspace"):
+            if request.parameters.get(field) is None:
+                missing.append(field)
+        return missing
     if request.parameters.get("artifact_path") is None:
         missing.append("artifact_path")
     if request.parameters.get("content") is None:
@@ -51,6 +62,12 @@ class ArtifactPolicy:
                 reason="Phase 1 permits exactly one plan step",
             )
         step = plan.steps[0]
+        if request.operation == RUN_TESTS_TOOL:
+            return self._evaluate_tests(
+                request=request,
+                step_tool=step.tool_name,
+                artifacts_root=artifacts_root,
+            )
         if step.tool_name != WRITE_TEXT_ARTIFACT:
             return PolicyDecision(
                 allowed=False,
@@ -124,4 +141,57 @@ class ArtifactPolicy:
             allowed=True,
             code="allowed",
             reason="single-step artifact creation is authorized",
+        )
+
+    def _evaluate_tests(
+        self,
+        *,
+        request: TaskRequest,
+        step_tool: str,
+        artifacts_root: Path,
+    ) -> PolicyDecision:
+        if step_tool != RUN_TESTS_TOOL:
+            return PolicyDecision(
+                allowed=False,
+                code="unsupported_tool",
+                reason=f"tool is not allowed: {step_tool!r}",
+            )
+        try:
+            parameters = validate_parameters(dict(request.parameters))
+            workspace = resolve_workspace(
+                artifacts_root.parent, parameters["workspace"]
+            )
+        except TestExecutionError as exc:
+            return PolicyDecision(False, exc.code, exc.message)
+        top = parameters["target"].split(".")[0]
+        module = workspace / f"{top}.py"
+        package = workspace / top
+        if not module.is_file() and not package.is_dir():
+            return PolicyDecision(
+                allowed=False,
+                code="test_target_missing",
+                reason=(
+                    f"test target {parameters['target']!r} is not present in "
+                    f"workspace {parameters['workspace']!r}"
+                ),
+            )
+        for candidate in (module, package):
+            if candidate.exists():
+                resolved = candidate.resolve()
+                if workspace not in resolved.parents and resolved != workspace:
+                    return PolicyDecision(
+                        allowed=False,
+                        code="unsafe_test_target",
+                        reason=(
+                            "test target resolves outside the approved "
+                            "workspace"
+                        ),
+                    )
+        return PolicyDecision(
+            allowed=True,
+            code="allowed",
+            reason=(
+                f"bounded {parameters['runner']} target "
+                f"{parameters['target']} in {parameters['workspace']}"
+            ),
         )

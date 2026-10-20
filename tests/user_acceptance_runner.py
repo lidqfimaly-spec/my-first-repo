@@ -480,16 +480,73 @@ def run_acceptance() -> dict[str, Any]:
             )
         )
 
-    # ---- B2: asking the agent to run tests is refused ----
+    # ---- B2: controlled local test execution (Phase 3.16 capability) ----
+    with tempfile.TemporaryDirectory() as temp_dir:
+        home = Path(temp_dir)
+        workspace = home / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_demo.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        run = _cli(
+            home,
+            "test",
+            "--workspace",
+            "demo",
+            "--target",
+            "test_demo",
+            "--json",
+        )
+        task = run["json"] or {}
+        service = TaskService(home)
+        stored = service.require_task(task["task_id"])
+        evidence = stored.tool_result.test_evidence
+        scenarios.append(
+            _record(
+                "B2-test-execution",
+                "approved test target runs and is independently verified",
+                "test_execution",
+                input_text="test --workspace demo --target test_demo",
+                expected_status="succeeded",
+                observed_status=stored.status.value,
+                checks={
+                    "cli_exit_zero": run["exit_code"] == 0,
+                    "real_exit_code_zero": (
+                        evidence is not None and evidence.exit_code == 0
+                    ),
+                    "not_truncated": (
+                        evidence is not None and not evidence.truncated
+                    ),
+                    "verified": stored.verification.reason == "tests_passed",
+                    "single_tool_start": _event_counts(
+                        service, stored.task_id
+                    ).get("tool_started", 0)
+                    == 1,
+                },
+                effects=_no_effect(tool_calls=1),
+                artifact=None,
+                evidence={
+                    "runner": evidence.runner if evidence else None,
+                    "target": evidence.target if evidence else None,
+                    "exit_code": evidence.exit_code if evidence else None,
+                },
+            )
+        )
+
+    # ---- B2b: arbitrary shell is still refused ----
     with tempfile.TemporaryDirectory() as temp_dir:
         home = Path(temp_dir)
         run = _cli(
             home,
             "run",
             "--goal",
-            "run the test suite",
+            "run an arbitrary shell command",
             "--operation",
-            "run_tests",
+            "shell",
             "--artifact-path",
             "unused.txt",
             "--content",
@@ -501,10 +558,10 @@ def run_acceptance() -> dict[str, Any]:
         stored = service.require_task(task["task_id"])
         scenarios.append(
             _record(
-                "B2-test-execution",
-                "agent-initiated test execution is refused",
+                "B2b-shell",
+                "arbitrary shell execution is refused",
                 "capability_gap",
-                input_text="run --operation run_tests",
+                input_text="run --operation shell",
                 expected_status="blocked",
                 observed_status=stored.status.value,
                 checks={
@@ -521,7 +578,7 @@ def run_acceptance() -> dict[str, Any]:
                 effects=_no_effect(),
                 artifact=None,
                 evidence=None,
-                details={"gap": "no shell or test-runner tool exists"},
+                details={"gap": "no general shell tool; only run_tests"},
             )
         )
 

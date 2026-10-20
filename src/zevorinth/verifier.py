@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from .artifact_tool import (
     ArtifactToolError,
@@ -145,3 +146,62 @@ class ArtifactVerifier:
             artifact=actual_evidence,
             checked_at=checked_at,
         )
+
+
+class TestResultVerifier:
+    """Independent check of a structured local test execution.
+
+    The verifier never trusts ``ToolResult.success`` or the executor's phase;
+    it re-derives the verdict from the bounded evidence record and the plan.
+    """
+
+    name = "local-test-result"
+
+    def verify(
+        self,
+        *,
+        task: Any,
+        evidence: Any,
+        expected_parameters: dict[str, Any],
+        checked_at: str,
+    ) -> VerificationResult:
+        def result(passed: bool, reason: str, evidence_matches: bool) -> VerificationResult:
+            return VerificationResult(
+                verifier_name=self.name,
+                passed=passed,
+                exists=evidence is not None,
+                path_safe=True,
+                content_matches=(evidence is not None and evidence.exit_code == 0),
+                evidence_matches=evidence_matches,
+                reason=reason,
+                artifact=None,
+                checked_at=checked_at,
+            )
+
+        if evidence is None:
+            return result(False, "test_evidence_missing", False)
+        structural = (
+            evidence.attempt_id == task.attempt_id
+            and evidence.claim_generation == task.claim_generation
+            and evidence.runner == expected_parameters.get("runner")
+            and evidence.target == expected_parameters.get("target")
+            and evidence.workspace == expected_parameters.get("workspace")
+        )
+        if not structural:
+            return result(False, "test_evidence_mismatch", False)
+        if evidence.cancelled:
+            return result(False, "test_cancelled", True)
+        if evidence.timed_out:
+            return result(
+                False,
+                "test_timeout" if evidence.terminated_confirmed else "test_timeout_unconfirmed",
+                True,
+            )
+        if evidence.exit_code is None:
+            return result(False, "test_exit_unknown", False)
+        if evidence.truncated:
+            # Truncated output means the result cannot be fully audited.
+            return result(False, "test_output_truncated", True)
+        if evidence.exit_code == 0:
+            return result(True, "tests_passed", True)
+        return result(False, "tests_failed", True)

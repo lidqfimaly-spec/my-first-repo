@@ -36,15 +36,23 @@ from .models import (
     TaskRequest,
     TaskStatus,
     ToolResult,
+    TestExecutionEvidence,
     VerificationResult,
     PlanningClassification,
     PlanningOutcome,
     PlanRevision,
 )
+from .local_test_runner import (
+    RUN_TESTS_TOOL,
+    TestExecutionError,
+    excerpt,
+    resolve_workspace,
+    run_unittest,
+)
 from .planner import DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
-from .verifier import ArtifactVerifier
+from .verifier import ArtifactVerifier, TestResultVerifier
 
 
 def utc_now() -> str:
@@ -131,6 +139,8 @@ class TaskService:
         self.planner = planner or DeterministicPlanner()
         self.policy = ArtifactPolicy()
         self.verifier = ArtifactVerifier(self.artifacts_root)
+        self.test_verifier = TestResultVerifier()
+        self.test_runner = run_unittest
         self.store = EventStore(
             self.database_path,
             busy_timeout_ms=busy_timeout_ms,
@@ -1146,6 +1156,13 @@ class TaskService:
         return self._execute_tool(running, lease_token)
 
     def _execute_tool(self, task: Task, lease_token: str) -> Task:
+        plan_step = (
+            task.plan.steps[0]
+            if task.plan is not None and task.plan.steps
+            else None
+        )
+        if plan_step is not None and plan_step.tool_name == RUN_TESTS_TOOL:
+            return self._execute_test_tool(task, lease_token, plan_step)
         parameters = task.request.parameters
         artifact_path = parameters["artifact_path"]
         content = parameters["content"]
@@ -1340,6 +1357,224 @@ class TaskService:
         if self.fault_hook is not None:
             self.fault_hook("after_write_before_verification", verifying)
         return self._verify_and_finish(verifying, lease_token)
+
+    def _execute_test_tool(
+        self,
+        task: Task,
+        lease_token: str,
+        plan_step: Any,
+    ) -> Task:
+        """Run one bounded local test target.
+
+        The executor never builds a command string: ``run_unittest`` takes
+        structured fields and the policy has already validated them.
+        """
+        parameters = {
+            "runner": plan_step.parameters.get("runner"),
+            "target": plan_step.parameters.get("target"),
+            "workspace": plan_step.parameters.get("workspace"),
+            "timeout_seconds": plan_step.parameters.get("timeout_seconds", 10.0),
+            "max_output_bytes": plan_step.parameters.get("max_output_bytes", 8192),
+        }
+        started_at = self.clock()
+        cancelled = self._cancel_if_requested(
+            task,
+            lease_token,
+            checkpoint="before_tool",
+            side_effect_observed=False,
+        )
+        if cancelled is not None:
+            return cancelled
+        self._assert_execution_authority(task, lease_token)
+        task, _ = self.store.record_event_and_update(
+            task.task_id,
+            EventType.TOOL_STARTED,
+            started_at,
+            payload={
+                "tool_name": RUN_TESTS_TOOL,
+                "runner": parameters["runner"],
+                "target": parameters["target"],
+                "workspace": parameters["workspace"],
+                "attempt_id": task.attempt_id,
+                "claim_generation": task.claim_generation,
+                "plan_version": task.plan_version,
+                "intended_execution_mode": ExecutionMode.REAL.value,
+            },
+            updates={
+                "execution_mode": ExecutionMode.REAL,
+                "phase": "test_started",
+                "execution_plan_version": task.plan_version,
+                "execution_plan_snapshot": (
+                    task.plan.to_dict() if task.plan is not None else None
+                ),
+            },
+            lease_token=lease_token,
+        )
+
+        def cancel_check() -> bool:
+            try:
+                current = self.store.require_task(task.task_id)
+            except Exception:
+                return True
+            return current.cancel_requested_at is not None
+
+        try:
+            raw = self.test_runner(
+                project_root=self.project_root,
+                parameters=parameters,
+                cancel_check=cancel_check,
+            )
+        except TestExecutionError as exc:
+            return self._finish_tool_failure(
+                task, lease_token, exc.code, exc.message, started_at
+            )
+        except Exception as exc:
+            return self._finish_tool_failure(
+                task,
+                lease_token,
+                "test_runner_error",
+                f"test runner raised {type(exc).__name__}",
+                started_at,
+            )
+        evidence = TestExecutionEvidence(
+            runner=str(raw["runner"]),
+            target=str(raw["target"]),
+            workspace=str(raw["workspace"]),
+            attempt_id=task.attempt_id,
+            claim_generation=task.claim_generation,
+            exit_code=raw["exit_code"],
+            started_at=started_at,
+            finished_at=self.clock(),
+            duration_ms=float(raw["duration_ms"]),
+            timed_out=bool(raw["timed_out"]),
+            cancelled=bool(raw["cancelled"]),
+            truncated=bool(raw["truncated"]),
+            stdout_sha256=str(raw["stdout_sha256"]),
+            stderr_sha256=str(raw["stderr_sha256"]),
+            stdout_bytes=int(raw["stdout_bytes"]),
+            stderr_bytes=int(raw["stderr_bytes"]),
+            stdout_excerpt=excerpt(raw["stdout"]),
+            stderr_excerpt=excerpt(raw["stderr"]),
+            terminated_confirmed=bool(raw["terminated_confirmed"]),
+            output_limit_bytes=int(raw["output_limit_bytes"]),
+            timeout_seconds=float(raw["timeout_seconds"]),
+        )
+        result = ToolResult(
+            attempt_id=task.attempt_id,
+            tool_name=RUN_TESTS_TOOL,
+            execution_mode=ExecutionMode.REAL,
+            success=True,
+            started_at=started_at,
+            finished_at=self.clock(),
+            test_evidence=evidence,
+        )
+        task, _ = self.store.record_event_and_update(
+            task.task_id,
+            EventType.TOOL_SUCCEEDED,
+            self.clock(),
+            payload={"tool_result": result.to_dict()},
+            updates={
+                "tool_result": result,
+                "execution_mode": ExecutionMode.REAL,
+                "phase": "test_completed",
+            },
+            lease_token=lease_token,
+        )
+        verifying, _ = self.store.transition(
+            task.task_id,
+            TaskStatus.VERIFYING,
+            EventType.VERIFICATION_STARTED,
+            self.clock(),
+            payload={
+                "test_evidence": evidence.to_dict(),
+                "tool_result_trusted": False,
+            },
+            updates={"phase": "verification_started"},
+            lease_token=lease_token,
+        )
+        return self._verify_test_and_finish(verifying, lease_token, parameters)
+
+    def _verify_test_and_finish(
+        self,
+        task: Task,
+        lease_token: str,
+        parameters: dict[str, Any],
+    ) -> Task:
+        self._assert_execution_authority(task, lease_token)
+        evidence = (
+            task.tool_result.test_evidence
+            if task.tool_result is not None
+            else None
+        )
+        verification = self.test_verifier.verify(
+            task=task,
+            evidence=evidence,
+            expected_parameters=parameters,
+            checked_at=self.clock(),
+        )
+        task, _ = self.store.record_event_and_update(
+            task.task_id,
+            EventType.VERIFICATION_COMPLETED,
+            self.clock(),
+            payload={"verification": verification.to_dict()},
+            updates={
+                "verification": verification,
+                "phase": (
+                    "verified"
+                    if verification.passed
+                    else "verification_failed"
+                ),
+            },
+            lease_token=lease_token,
+        )
+        self._assert_execution_authority(task, lease_token)
+        if evidence is not None and evidence.cancelled:
+            cancelled_task, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.CANCELLED,
+                EventType.TASK_CANCELLED,
+                self.clock(),
+                payload={
+                    "reason": "test run was cancelled",
+                    "test_evidence": evidence.to_dict(),
+                },
+                updates={
+                    **self._clear_claim_updates(),
+                    "phase": "cancelled_test_run",
+                    "error": TaskError(
+                        "cancelled", "test execution was cancelled"
+                    ),
+                },
+                lease_token=lease_token,
+            )
+            return cancelled_task
+        if verification.passed:
+            succeeded, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.SUCCEEDED,
+                EventType.TASK_SUCCEEDED,
+                self.clock(),
+                payload={
+                    "verifier": verification.verifier_name,
+                    "target": parameters["target"],
+                },
+                updates=self._clear_claim_updates(),
+                lease_token=lease_token,
+            )
+            return succeeded
+        code = (
+            verification.reason
+            if verification.reason in {"test_timeout", "tests_failed"}
+            else "test_execution_failed"
+        )
+        return self._fail(
+            task,
+            lease_token,
+            code=code,
+            message=f"test verification failed: {verification.reason}",
+            phase="test_failed",
+            payload_extra={"reason": verification.reason},
+        )
 
     def _finish_tool_failure(
         self,
