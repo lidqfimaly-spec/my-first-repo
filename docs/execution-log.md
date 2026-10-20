@@ -598,7 +598,35 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.33 阶段执行记录
+# 第 3.34 阶段执行记录
+
+## 实现
+
+- 容器新增 `--ulimit fsize`（默认 64 MiB，可配）；
+- 新增 `workspace_budget_bytes` 产物总量预算（超限 `workspace_over_budget`）；
+- 容器任务中断恢复不重跑（`test_execution_unknown`）。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 535/535，exit 0 |
+| 容器生命周期专项 | 11/11（真实容器） |
+| Mutation runner | 58 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- fsize 只管单文件；
+- 预算只校验已收集产物，无端到端用例；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.34-fsize-budget-recovery-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

@@ -223,6 +223,34 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
             getattr(result.error, "code", None), "success"
         )
 
+    def test_fsize_limit_stops_oversized_file(self) -> None:
+        big = (
+            "import pathlib, unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_big(self):\n"
+            "        pathlib.Path('artifacts').mkdir(exist_ok=True)\n"
+            "        pathlib.Path('artifacts/huge.bin').write_bytes(b'x' * 90_000_000)\n"
+        )
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_huge.py").write_text(big, encoding="utf-8")
+        service = TaskService(root)
+        queued = service.enqueue(_request("test_huge"))
+        evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
+        _bind_evidence(evidence, workspace, "test_huge", queued.task_id)
+        EvidenceStore(root).save_evidence(evidence)
+        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
+        service.store.record_event_and_update(
+            queued.task_id, "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+        result = service.execute_task(queued.task_id)
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        huge = workspace / "artifacts" / "huge.bin"
+        self.assertTrue(not huge.exists() or huge.stat().st_size < 90_000_000)
+
     def test_unconfirmed_termination_fails_closed(self) -> None:
         root = Path(tempfile.mkdtemp())
         workspace = root / "workspaces" / "demo"

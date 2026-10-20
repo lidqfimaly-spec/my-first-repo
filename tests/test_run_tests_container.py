@@ -88,6 +88,39 @@ class ContainerBackendGateTests(unittest.TestCase):
             self.assertEqual(task.error.code, "invalid_execution_backend")
             self.assertIsNone(task.tool_result)
 
+    def test_interrupted_container_task_is_not_rerun_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = _workspace(root)
+            service = TaskService(
+                root, clock=lambda: "2026-10-20T00:00:00.000+00:00"
+            )
+            task = service.enqueue(_request(execution_backend="container"))
+            claim = service._claim(
+                task.task_id, allowed=TaskService.RUNNABLE_STATUSES
+            )
+            token = str(claim.task.lease_token)
+            service.store.record_event_and_update(
+                task.task_id,
+                "tool_started",
+                "2026-10-20T00:00:00.000+00:00",
+                updates={"phase": "test_started"},
+                lease_token=token,
+            )
+            service.store.expire_claim(
+                task.task_id, now="2026-10-20T00:01:00.000+00:00"
+            )
+            resumed = TaskService(
+                root, clock=lambda: "2026-10-20T00:01:00.000+00:00"
+            ).resume(task.task_id)
+            self.assertEqual(resumed.status, TaskStatus.BLOCKED)
+            self.assertEqual(resumed.error.code, "test_execution_unknown")
+            starts = [
+                e.event_type
+                for e in TaskService(root).events(task.task_id)
+            ].count("tool_started")
+            self.assertEqual(starts, 1)
+
     def test_host_backend_requires_explicit_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

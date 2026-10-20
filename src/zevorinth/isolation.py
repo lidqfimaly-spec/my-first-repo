@@ -469,6 +469,7 @@ def build_container_command(
     pids_limit: int = 64,
     cpus: str = "0.5",
     disk_limit_bytes: int | None = None,
+    fsize_limit_bytes: int = 64 * 1024 * 1024,
 ) -> list[str]:
     """Hardened ``docker run`` argv: no network, no host mounts, no caps."""
     if not image or ":" not in image and "@" not in image:
@@ -505,6 +506,8 @@ def build_container_command(
             memory,
             "--cpus",
             cpus,
+            "--ulimit",
+            f"fsize={int(fsize_limit_bytes)}",
             "--tmpfs",
             f"/workspace:rw,noexec,nosuid,size={capped}",
             "--mount",
@@ -535,6 +538,8 @@ def build_container_command(
         memory,
         "--cpus",
         cpus,
+        "--ulimit",
+        f"fsize={int(fsize_limit_bytes)}",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=16m",
         "--mount",

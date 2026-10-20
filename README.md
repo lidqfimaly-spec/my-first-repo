@@ -337,5 +337,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.31 阶段容器生命周期、产物回收与 host 授权](docs/phase-3.31-container-lifecycle-artifat-audit.md)
 - [第 3.32 阶段容器超时/取消闭环与产物清单](docs/phase-3.32-container-timeout-cancel-artifact-audit.md)
 - [第 3.33 阶段资源边界与失败恢复验收](docs/phase-3.33-resource-limits-failure-recovery-audit.md)
+- [第 3.34 阶段内核文件上限、预算与恢复幂等](docs/phase-3.34-fsize-budget-recovery-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

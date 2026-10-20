@@ -1891,6 +1891,22 @@ class TaskService:
             container_command, process.returncode, stdout_raw, stderr_raw
         )
         artifacts = self._collect_test_artifacts(workspace, limit)
+        workspace_bytes = sum(
+            item["bytes"] for item in artifacts
+        )
+        budget = int(parameters.get("workspace_budget_bytes") or 0)
+        if budget and workspace_bytes > budget:
+            return self._fail(
+                task,
+                lease_token,
+                code="workspace_over_budget",
+                message=(
+                    f"collected artifacts exceed the workspace budget "
+                    f"({workspace_bytes} > {budget})"
+                ),
+                phase="workspace_over_budget",
+                payload_extra={"artifacts": artifacts},
+            )
         collection_status = _collection_status(
             parameters.get("required_artifacts") or [], artifacts
         )
@@ -2063,6 +2079,9 @@ class TaskService:
                 plan_step.parameters.get("required_artifacts") or []
             ),
             "disk_limit_bytes": plan_step.parameters.get("disk_limit_bytes"),
+            "workspace_budget_bytes": plan_step.parameters.get(
+                "workspace_budget_bytes"
+            ),
             "allowed_side_effects": list(
                 plan_step.parameters.get("allowed_side_effects") or []
             ),

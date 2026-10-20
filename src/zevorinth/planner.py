@@ -126,6 +126,9 @@ def build_test_plan(
                         validation.get("required_artifacts") or []
                     ),
                     "disk_limit_bytes": validation.get("disk_limit_bytes"),
+                    "workspace_budget_bytes": validation.get(
+                        "workspace_budget_bytes"
+                    ),
                 },
             )
         ],
