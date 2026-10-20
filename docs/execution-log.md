@@ -598,6 +598,36 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.23 阶段执行记录
+
+## 实现
+
+- 逐条测试 Seatbelt 读取限制组合，记录 exit 71 / SIGABRT 134 证据；
+- 读取隔离判定为 BLOCKED，`classify()` 维持 partial，`run_protected` 继续拒绝启动；
+- 新增进程生命周期测试：超时 `killpg` 后子进程树无残留，检测器不可用时报 unknown；
+- 新增 2 条变异（只杀父进程、partial 冒充 verified），均被捕获。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 446/446，exit 0 |
+| 读取边界与生命周期专项 | 6/6 |
+| Mutation runner | 40 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| 读取隔离 | BLOCKED（解释器无法在限制读的 profile 下启动） |
+
+## 边界
+
+- 读隔离未实现，受保护执行仍 BLOCKED；
+- 子进程创建限制、凭据可达性未验证；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.23-read-confinement-process-lifecycle-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.22 阶段执行记录
 
 ## 实现

@@ -445,6 +445,28 @@
         "tests.test_durable_intent_and_isolation.IsolationBoundaryTests.test_probe_distinguishes_kernel_denial_from_unenforced"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "timeout_kills_parent_only",
+      "property": "timeout terminates the whole process group",
+      "path": "src/zevorinth/local_test_runner.py",
+      "old": "        os.killpg(os.getpgid(process.pid), signal.SIGKILL)\n",
+      "new": "        process.kill()\n",
+      "tests": [
+        "tests.test_read_confinement_and_lifecycle.ProcessLifecycleTests.test_timeout_termination_leaves_no_descendants"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "partial_isolation_as_verified",
+      "property": "partial isolation is never verified",
+      "path": "src/zevorinth/isolation.py",
+      "old": "    if not missing:\n        return \"verified\", []\n",
+      "new": "    if True:\n        return \"verified\", []\n",
+      "tests": [
+        "tests.test_read_confinement_and_lifecycle.ReadBoundaryMatrixTests.test_classify_never_verifies_a_partial_profile"
+      ],
+      "expected": "killed"
     }
   ]
 }
