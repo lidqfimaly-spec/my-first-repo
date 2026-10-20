@@ -598,6 +598,46 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.13 阶段执行记录
+
+## 实现
+
+- `effects` 契约提升为公共 API（`build_effect` / `validate_case_effects`），Gate 与 E2E 共用；
+- 新增 `integrity` 字段（verified / mismatch / unbacked / not_applicable）；
+- E2E runner 每个场景记录来源，汇总由来源重算并交叉校验；
+- 新增 `E2E-12`：真实 Verifier 检测证据哈希与文件不一致；
+- E2E 指标版本 1.0.0 → 1.1.0，新增 artifact/write/evidence 计数与 `evidence_integrity_rate`；
+- 预算防护拆分为 claim / runtime / compound 三条变异，新增运行时层测试；
+- 变异 runner 支持多点补丁，并记录变异行是否真实执行；
+- `cli.py` 增加 `__main__` 守卫，`python -m zevorinth.cli` 与 console script 一致；
+- `eval_compare` 支持 E2E 报告类型与跨版本可比性判定。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 282/282，exit 0 |
+| E2E acceptance | 12/12 场景通过 |
+| Mutation runner | 14 killed / 0 survived / 0 invalid / 0 error |
+| 变异行执行证明 | 14/14 executed |
+| Mutation self-test | killed/survived/invalid/error 各 1 |
+| 同解释器覆盖率 | 282 项通过，7/7 模块 PASS |
+| Gate 3.12 ↔ 3.13 | PASS（同口径） |
+| E2E 3.12 ↔ 3.13 | NOT_COMPARABLE（1.0.0 → 1.1.0，预期） |
+| CLI 模块入口 | `python -m zevorinth.cli --version` = 0.3.0，退出 0 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 变异追踪不覆盖子进程；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.13-e2e-provenance-compound-mutation-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.12 阶段执行记录
 
 ## 实现

@@ -248,6 +248,40 @@ class ExecutionBudgetTests(unittest.TestCase):
             )
             self.assertIsNone(claim.task.lease_token)
 
+    def test_runtime_layer_rejects_budget_expired_after_claim(self) -> None:
+        """The executor re-checks the budget in case the clock moves.
+
+        ``claim_task`` already rejects an expired deadline, so this guard is
+        only reachable when the clock advances between the successful claim
+        and the executor loop.  The test simulates exactly that jump.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            clock = [NOW]
+            service = TaskService(
+                root,
+                clock=lambda: clock[0],
+                max_execution_seconds=2,
+            )
+            task = service.enqueue(_request())
+            writer = CountingWriter(root / "artifacts")
+            service.writer = writer
+            original_claim = service._claim
+
+            def claim_then_advance(task_id, *, allowed):
+                claim = original_claim(task_id, allowed=allowed)
+                clock[0] = "2026-10-20T00:00:30.000+00:00"
+                return claim
+
+            service._claim = claim_then_advance
+            failed = service.execute_task(task.task_id)
+
+            self.assertEqual(failed.status, TaskStatus.FAILED)
+            self.assertEqual(
+                failed.error.code, "execution_budget_exceeded"
+            )
+            self.assertEqual(writer.calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

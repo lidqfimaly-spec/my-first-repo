@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -265,6 +266,64 @@ class CliTests(unittest.TestCase):
         self.assertNotIn(sentinel, output.getvalue())
         self.assertTrue(payload["llm_planner"]["api_key_configured"])
         self.assertEqual(payload["llm_planner"]["model"], "configured-test-model")
+
+    def _run_module_entry(self, module: str) -> subprocess.CompletedProcess:
+        environment = {
+            **os.environ,
+            "PYTHONPATH": str(PROJECT_ROOT / "src"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "ZEVORINTH_PLANNER": "deterministic",
+            "OPENAI_API_KEY": "",
+        }
+        return subprocess.run(
+            [sys.executable, "-m", module, "--version"],
+            capture_output=True,
+            text=True,
+            env=environment,
+            cwd=PROJECT_ROOT,
+            timeout=60,
+        )
+
+    def test_package_entry_point_prints_one_version_line(self) -> None:
+        completed = self._run_module_entry("zevorinth")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        lines = [
+            line
+            for line in completed.stdout.splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(lines, ["0.3.0"])
+
+    def test_cli_module_entry_matches_console_script(self) -> None:
+        package = self._run_module_entry("zevorinth")
+        module = self._run_module_entry("zevorinth.cli")
+        self.assertEqual(module.returncode, 0, module.stderr)
+        self.assertEqual(module.stdout, package.stdout)
+        self.assertEqual(
+            len([line for line in module.stdout.splitlines() if line.strip()]),
+            1,
+        )
+
+    def test_cli_module_entry_has_no_side_effects_on_import(self) -> None:
+        environment = {
+            **os.environ,
+            "PYTHONPATH": str(PROJECT_ROOT / "src"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import zevorinth.cli, sys; print('ok')",
+            ],
+            capture_output=True,
+            text=True,
+            env=environment,
+            cwd=PROJECT_ROOT,
+            timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "ok")
 
 
 if __name__ == "__main__":

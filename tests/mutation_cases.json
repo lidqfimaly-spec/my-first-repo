@@ -112,17 +112,6 @@
       "expected": "killed"
     },
     {
-      "id": "execution_budget_enforced",
-      "property": "expired execution budget fails the claim before any tool",
-      "path": "src/zevorinth/event_store.py",
-      "old": "                task.execution_deadline_at is not None\n                and not self._lease_is_active(task.execution_deadline_at, now)\n",
-      "new": "                False\n                and not self._lease_is_active(task.execution_deadline_at, now)\n",
-      "tests": [
-        "tests.test_execution_budget.ExecutionBudgetTests.test_claim_layer_rejects_expired_budget_on_its_own"
-      ],
-      "expected": "killed"
-    },
-    {
       "id": "recovery_verify_existing",
       "property": "recovered publish is verified instead of rewritten",
       "path": "src/zevorinth/service.py",
@@ -130,6 +119,57 @@
       "new": "        if False:\n            verifying, _ = self.store.transition(\n",
       "tests": [
         "tests.test_crash_consistency.CrashConsistencyTests.test_sigkill_inside_final_success_transaction_rolls_back_together"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "budget_claim_layer_only",
+      "property": "claim-time execution budget guard",
+      "patches": [
+        {
+          "path": "src/zevorinth/event_store.py",
+          "old": "                task.execution_deadline_at is not None\n                and not self._lease_is_active(task.execution_deadline_at, now)\n",
+          "new": "                False\n                and not self._lease_is_active(task.execution_deadline_at, now)\n"
+        }
+      ],
+      "tests": [
+        "tests.test_execution_budget.ExecutionBudgetTests.test_claim_layer_rejects_expired_budget_on_its_own"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "budget_runtime_layer_only",
+      "property": "runtime execution budget guard",
+      "patches": [
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "        if remaining_budget <= 0:\n            failed, _ = self.store.transition(\n",
+          "new": "        if False:\n            failed, _ = self.store.transition(\n"
+        }
+      ],
+      "tests": [
+        "tests.test_execution_budget.ExecutionBudgetTests.test_runtime_layer_rejects_budget_expired_after_claim"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "budget_compound_layers",
+      "property": "both execution budget guards removed together",
+      "patches": [
+        {
+          "path": "src/zevorinth/event_store.py",
+          "old": "                task.execution_deadline_at is not None\n                and not self._lease_is_active(task.execution_deadline_at, now)\n",
+          "new": "                False\n                and not self._lease_is_active(task.execution_deadline_at, now)\n"
+        },
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "        if remaining_budget <= 0:\n            failed, _ = self.store.transition(\n",
+          "new": "        if False:\n            failed, _ = self.store.transition(\n"
+        }
+      ],
+      "tests": [
+        "tests.test_execution_budget.ExecutionBudgetTests.test_claim_layer_rejects_expired_budget_on_its_own",
+        "tests.test_execution_budget.ExecutionBudgetTests.test_runtime_layer_rejects_budget_expired_after_claim"
       ],
       "expected": "killed"
     }

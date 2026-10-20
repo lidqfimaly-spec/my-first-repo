@@ -32,6 +32,10 @@ from zevorinth.models import (  # noqa: E402
     ToolResult,
 )
 from zevorinth.planner import WRITE_TEXT_ARTIFACT  # noqa: E402
+from zevorinth.safety_gate import (  # noqa: E402
+    build_effect,
+    validate_case_effects,
+)
 from zevorinth.service import TaskService  # noqa: E402
 
 
@@ -99,12 +103,14 @@ def _scenario(
     expected: TaskStatus,
     actual: TaskStatus,
     *,
+    effects: dict[str, Any],
     artifact: Path | None,
-    evidence_complete: bool,
     exit_code: int,
     failure_class: str | None,
     details: dict[str, Any],
+    checks: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
+    resolved_checks = dict(checks or {})
     return {
         "id": scenario_id,
         "description": description,
@@ -112,20 +118,59 @@ def _scenario(
         "input": details,
         "expected_status": expected.value,
         "actual_status": actual.value,
+        "effects": dict(effects),
         "artifact": (
             {
                 "path": str(artifact),
                 "exists": artifact.exists(),
                 "bytes": artifact.stat().st_size if artifact.exists() else 0,
+                "claimed": effects["origin"] != "none",
             }
             if artifact is not None
             else None
         ),
-        "evidence_complete": evidence_complete,
+        "evidence_complete": effects["integrity"] == "verified",
         "exit_code": exit_code,
         "failure_class": failure_class,
-        "passed": actual is expected,
+        "checks": resolved_checks,
+        "passed": actual is expected and all(resolved_checks.values()),
     }
+
+
+def _tool_starts(service: TaskService, task_id: str) -> int:
+    return sum(
+        1
+        for event in service.events(task_id)
+        if event.event_type == EventType.TOOL_STARTED.value
+    )
+
+
+def _task_effects(
+    root: Path,
+    task: Any,
+    *,
+    origin: str,
+    tool_calls: int = 0,
+    file_writes: int = 0,
+    integrity: str | None = None,
+) -> tuple[dict[str, Any], Path | None]:
+    """Build one E2E effect record with the shared Phase 3.12 contract."""
+    evidence = getattr(task, "artifact", None) if task is not None else None
+    artifact_path = (
+        root / "artifacts" / task.task_id / evidence.relative_path
+        if evidence is not None
+        else None
+    )
+    effects = build_effect(
+        origin=origin,
+        integrity=integrity,
+        tool_calls=tool_calls,
+        file_writes=file_writes,
+        evidence=evidence,
+        artifact_root=root / "artifacts",
+        task_id=task.task_id if task is not None else None,
+    )
+    return effects, artifact_path
 
 
 def _run_sigkill_worker(root: Path) -> dict[str, Any]:
@@ -164,6 +209,62 @@ def _run_sigkill_worker(root: Path) -> dict[str, Any]:
             process.wait(timeout=5)
 
 
+class AcceptanceContractError(RuntimeError):
+    """Raised when acceptance summaries disagree with case provenance."""
+
+
+def validate_acceptance_report(report: dict[str, Any]) -> None:
+    """Re-check a finished report against the shared effects contract."""
+    scenarios = report.get("scenarios")
+    metrics = report.get("metrics")
+    if not isinstance(scenarios, list) or not isinstance(metrics, dict):
+        raise AcceptanceContractError("acceptance report is incomplete")
+    for scenario in scenarios:
+        validate_case_effects(scenario)
+    artifacts = sum(
+        1 for item in scenarios if item["effects"]["origin"] != "none"
+    )
+    writes = sum(item["effects"]["file_writes"] for item in scenarios)
+    evidence = sum(item["effects"]["evidence_count"] for item in scenarios)
+    duplicates = sum(
+        max(item["effects"]["file_writes"] - 1, 0)
+        for item in scenarios
+        if item["category"] == "idempotency"
+    )
+    verified = sum(
+        1
+        for item in scenarios
+        if item["effects"]["origin"] != "none"
+        and item["effects"]["integrity"] == "verified"
+    )
+    expected = {
+        "artifact_count": artifacts,
+        "file_write_count": writes,
+        "evidence_count": evidence,
+        "duplicate_side_effects": duplicates,
+    }
+    for name, value in expected.items():
+        if metrics.get(name) != value:
+            raise AcceptanceContractError(
+                f"metric {name} does not match case provenance"
+            )
+    audit = report.get("metric_audit", {}).get("evidence_integrity_rate")
+    if not isinstance(audit, dict):
+        raise AcceptanceContractError("missing evidence integrity audit")
+    if audit.get("numerator") != verified:
+        raise AcceptanceContractError(
+            "evidence integrity numerator does not match provenance"
+        )
+    if audit.get("denominator") != artifacts:
+        raise AcceptanceContractError(
+            "evidence integrity denominator does not match provenance"
+        )
+    if audit.get("value") != (verified / artifacts if artifacts else 0.0):
+        raise AcceptanceContractError(
+            "evidence integrity value does not match provenance"
+        )
+
+
 def run_acceptance() -> dict[str, Any]:
     scenarios: list[dict[str, Any]] = []
 
@@ -185,6 +286,16 @@ def run_acceptance() -> dict[str, Any]:
         )
         assert result.task is not None
         path = root / "artifacts" / result.task.task_id / "verified.txt"
+        tool_calls = _tool_starts(
+            conversations.task_service, result.task.task_id
+        )
+        effects, _ = _task_effects(
+            root,
+            result.task,
+            origin="written",
+            tool_calls=tool_calls,
+            file_writes=tool_calls,
+        )
         scenarios.append(
             _scenario(
                 "E2E-1",
@@ -192,12 +303,8 @@ def run_acceptance() -> dict[str, Any]:
                 "success",
                 TaskStatus.SUCCEEDED,
                 result.task.status,
+                effects=effects,
                 artifact=path,
-                evidence_complete=(
-                    result.task.artifact is not None
-                    and result.task.verification is not None
-                    and result.task.verification.passed
-                ),
                 exit_code=0 if result.outcome == "completed" else 1,
                 failure_class=None,
                 details={"message": "create verified file"},
@@ -221,8 +328,10 @@ def run_acceptance() -> dict[str, Any]:
                 "revision",
                 TaskStatus.QUEUED,
                 revised.status,
+                effects=_task_effects(
+                    Path(temp_dir), revised, origin="none"
+                )[0],
                 artifact=None,
-                evidence_complete=False,
                 exit_code=0,
                 failure_class=None,
                 details={
@@ -248,8 +357,10 @@ def run_acceptance() -> dict[str, Any]:
                 "cancellation",
                 TaskStatus.CANCELLED,
                 cancelled.status,
+                effects=_task_effects(
+                    Path(temp_dir), cancelled, origin="none"
+                )[0],
                 artifact=None,
-                evidence_complete=True,
                 exit_code=0,
                 failure_class=None,
                 details={"checkpoint": cancelled.phase},
@@ -277,6 +388,13 @@ def run_acceptance() -> dict[str, Any]:
         ).resume(task_id)
         self_calls = no_write.calls
         artifact = root / "artifacts" / task_id / "sigkill-proof.txt"
+        effects, _ = _task_effects(
+            root,
+            recovered,
+            origin="recovered",
+            tool_calls=self_calls,
+            file_writes=0,
+        )
         scenarios.append(
             _scenario(
                 "E2E-4",
@@ -284,11 +402,8 @@ def run_acceptance() -> dict[str, Any]:
                 "recovery",
                 TaskStatus.SUCCEEDED,
                 recovered.status,
+                effects=effects,
                 artifact=artifact,
-                evidence_complete=(
-                    recovered.verification is not None
-                    and recovered.verification.passed
-                ),
                 exit_code=0,
                 failure_class=None,
                 details={
@@ -333,6 +448,14 @@ def run_acceptance() -> dict[str, Any]:
             writer=no_write,
             clock=lambda: "2026-10-20T00:00:03.000+00:00",
         ).resume(task.task_id)
+        effects, _ = _task_effects(
+            root,
+            blocked,
+            origin="none",
+            integrity="unbacked",
+            tool_calls=no_write.calls,
+            file_writes=0,
+        )
         scenarios.append(
             _scenario(
                 "E2E-5",
@@ -340,8 +463,8 @@ def run_acceptance() -> dict[str, Any]:
                 "recovery_evidence_gap",
                 TaskStatus.BLOCKED,
                 blocked.status,
+                effects=effects,
                 artifact=artifact,
-                evidence_complete=False,
                 exit_code=4,
                 failure_class=None,
                 details={"writer_calls": no_write.calls},
@@ -352,6 +475,14 @@ def run_acceptance() -> dict[str, Any]:
         service = TaskService(Path(temp_dir), clock=lambda: NOW)
         service.verifier = RejectingVerifier()
         task = service.submit(_request())
+        tool_calls = _tool_starts(service, task.task_id)
+        effects, _ = _task_effects(
+            Path(temp_dir),
+            task,
+            origin="written" if task.artifact is not None else "none",
+            tool_calls=tool_calls,
+            file_writes=tool_calls if task.artifact is not None else 0,
+        )
         scenarios.append(
             _scenario(
                 "E2E-6",
@@ -359,8 +490,8 @@ def run_acceptance() -> dict[str, Any]:
                 "verification_veto",
                 TaskStatus.FAILED,
                 task.status,
+                effects=effects,
                 artifact=None,
-                evidence_complete=False,
                 exit_code=1,
                 failure_class="verification",
                 details={"error": task.error.code if task.error else None},
@@ -401,6 +532,13 @@ def run_acceptance() -> dict[str, Any]:
         completed = service.execute_task(task.task_id)
         service.execute_task(task.task_id)
         artifact = root / "artifacts" / task.task_id / "acceptance.txt"
+        effects, _ = _task_effects(
+            root,
+            completed,
+            origin="written",
+            tool_calls=writer.calls,
+            file_writes=writer.calls,
+        )
         scenarios.append(
             _scenario(
                 "E2E-7",
@@ -408,11 +546,8 @@ def run_acceptance() -> dict[str, Any]:
                 "idempotency",
                 TaskStatus.SUCCEEDED,
                 completed.status,
+                effects=effects,
                 artifact=artifact,
-                evidence_complete=(
-                    completed.verification is not None
-                    and completed.verification.passed
-                ),
                 exit_code=0,
                 failure_class=None,
                 details={
@@ -457,8 +592,10 @@ def run_acceptance() -> dict[str, Any]:
                 "budget_cancel_race",
                 TaskStatus.FAILED,
                 budget_failed.status,
+                effects=_task_effects(
+                    Path(temp_dir), budget_failed, origin="none"
+                )[0],
                 artifact=None,
-                evidence_complete=False,
                 exit_code=1,
                 failure_class="budget",
                 details={
@@ -487,6 +624,13 @@ def run_acceptance() -> dict[str, Any]:
             )
         except PlanRevisionConflict:
             revision_conflict = 1
+        effects, artifact = _task_effects(
+            root,
+            executed,
+            origin="written",
+            tool_calls=writer.calls,
+            file_writes=writer.calls,
+        )
         scenarios.append(
             _scenario(
                 "E2E-9",
@@ -494,8 +638,8 @@ def run_acceptance() -> dict[str, Any]:
                 "revision_execution_race",
                 TaskStatus.SUCCEEDED,
                 executed.status,
-                artifact=root / "artifacts" / executed.task_id / "acceptance.txt",
-                evidence_complete=True,
+                effects=effects,
+                artifact=artifact,
                 exit_code=0,
                 failure_class=None,
                 details={
@@ -521,6 +665,18 @@ def run_acceptance() -> dict[str, Any]:
             writer=no_write,
             clock=lambda: recovery_time,
         ).resume(task_id)
+        # Recovery re-reads the workspace and records fresh evidence for the
+        # corrupted bytes, so evidence and file still agree; the rejection
+        # comes from comparing content against the planned artifact.
+        has_evidence = corrupted.artifact is not None
+        effects, _ = _task_effects(
+            root,
+            corrupted,
+            origin="recovered" if has_evidence else "none",
+            integrity="verified" if has_evidence else "unbacked",
+            tool_calls=no_write.calls,
+            file_writes=0,
+        )
         scenarios.append(
             _scenario(
                 "E2E-10",
@@ -528,12 +684,13 @@ def run_acceptance() -> dict[str, Any]:
                 "evidence_corruption",
                 TaskStatus.FAILED,
                 corrupted.status,
+                effects=effects,
                 artifact=artifact,
-                evidence_complete=False,
                 exit_code=1,
                 failure_class="verification",
                 details={
                     "writer_calls": no_write.calls,
+                    "detection": "content_mismatch",
                     "reason": (
                         corrupted.verification.reason
                         if corrupted.verification is not None
@@ -553,6 +710,14 @@ def run_acceptance() -> dict[str, Any]:
         service = TaskService(Path(temp_dir), clock=lambda: NOW)
         service.verifier = RaisingVerifier()
         failed = service.submit(_request())
+        tool_calls = _tool_starts(service, failed.task_id)
+        effects, _ = _task_effects(
+            Path(temp_dir),
+            failed,
+            origin="written" if failed.artifact is not None else "none",
+            tool_calls=tool_calls,
+            file_writes=tool_calls if failed.artifact is not None else 0,
+        )
         scenarios.append(
             _scenario(
                 "E2E-11",
@@ -560,8 +725,8 @@ def run_acceptance() -> dict[str, Any]:
                 "verifier_exception",
                 TaskStatus.FAILED,
                 failed.status,
+                effects=effects,
                 artifact=None,
-                evidence_complete=False,
                 exit_code=1,
                 failure_class="verification",
                 details={
@@ -570,6 +735,74 @@ def run_acceptance() -> dict[str, Any]:
                         failed.verification.reason
                         if failed.verification is not None
                         else None
+                    ),
+                },
+            )
+        )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir) / "artifacts"
+        task_id = str(uuid4())
+        attempt_id = str(uuid4())
+        from zevorinth.artifact_tool import RealArtifactWriter
+        from zevorinth.verifier import ArtifactVerifier
+
+        written = RealArtifactWriter(root).write(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            artifact_path="provenance.txt",
+            content="original bytes\n",
+            started_at=NOW,
+            finished_at=NOW,
+            lease_token="lease",
+            claim_generation=1,
+            authorize=lambda _token, _generation: None,
+        )
+        artifact = root / task_id / "provenance.txt"
+        artifact.write_text("rewritten bytes\n")
+        verification = ArtifactVerifier(root).verify(
+            task_id=task_id,
+            artifact_path="provenance.txt",
+            expected_content="rewritten bytes\n",
+            tool_result=written,
+            checked_at=NOW,
+            expected_attempt_id=attempt_id,
+            require_provenance=True,
+            maximum_claim_generation=1,
+        )
+        effects = build_effect(
+            origin="written",
+            integrity="mismatch",
+            tool_calls=1,
+            file_writes=1,
+            evidence=written.artifact,
+            artifact_root=root,
+            task_id=task_id,
+        )
+        scenarios.append(
+            _scenario(
+                "E2E-12",
+                "recorded evidence hash does not match the file on disk",
+                "evidence_hash_mismatch",
+                TaskStatus.FAILED,
+                (
+                    TaskStatus.FAILED
+                    if not verification.passed
+                    else TaskStatus.SUCCEEDED
+                ),
+                effects=effects,
+                artifact=artifact,
+                exit_code=1,
+                failure_class="verification",
+                details={
+                    "reason": verification.reason,
+                    "file_sha256": effects["file_sha256"],
+                    "evidence_sha256": effects["evidence_sha256"],
+                },
+                checks={
+                    "evidence_mismatch_detected": not verification.passed,
+                    "reason_is_tool_evidence_mismatch": (
+                        verification.reason == "tool_evidence_mismatch"
                     ),
                 },
             )
@@ -584,7 +817,28 @@ def run_acceptance() -> dict[str, Any]:
     cancellation_scenario = next(
         item for item in scenarios if item["id"] == "E2E-3"
     )
-    metric_version = "1.0.0"
+    for scenario in scenarios:
+        validate_case_effects(scenario)
+    artifact_scenarios = [
+        item for item in scenarios if item["effects"]["origin"] != "none"
+    ]
+    verified_artifacts = [
+        item
+        for item in artifact_scenarios
+        if item["effects"]["integrity"] == "verified"
+    ]
+    file_write_count = sum(
+        item["effects"]["file_writes"] for item in scenarios
+    )
+    evidence_count = sum(
+        item["effects"]["evidence_count"] for item in scenarios
+    )
+    duplicate_effects = sum(
+        max(item["effects"]["file_writes"] - 1, 0)
+        for item in scenarios
+        if item["category"] == "idempotency"
+    )
+    metric_version = "1.1.0"
     metric_audit = {
         "success_rate": {
             "value": passed / len(scenarios),
@@ -623,12 +877,9 @@ def run_acceptance() -> dict[str, Any]:
         "duplicate_side_effects": {
             "value": max(
                 0,
-                idempotency_scenario["input"]["writer_calls"] - 1,
+                duplicate_effects,
             ),
-            "numerator": max(
-                0,
-                idempotency_scenario["input"]["writer_calls"] - 1,
-            ),
+            "numerator": duplicate_effects,
             "denominator": 1,
             "excluded_count": len(scenarios) - 1,
             "excluded_reason_counts": {
@@ -648,22 +899,72 @@ def run_acceptance() -> dict[str, Any]:
             "contributing_case_ids": [cancellation_scenario["id"]],
             "metric_definition_version": metric_version,
         },
-        "evidence_complete_rate": {
+        "evidence_integrity_rate": {
             "value": (
-                sum(1 for item in scenarios if item["evidence_complete"])
-                / len(scenarios)
+                len(verified_artifacts) / len(artifact_scenarios)
+                if artifact_scenarios
+                else 0.0
             ),
-            "numerator": sum(
-                1 for item in scenarios if item["evidence_complete"]
-            ),
+            "numerator": len(verified_artifacts),
+            "denominator": len(artifact_scenarios),
+            "excluded_count": len(scenarios) - len(artifact_scenarios),
+            "excluded_reason_counts": {
+                "no_artifact_case": len(scenarios) - len(artifact_scenarios)
+            },
+            "contributing_case_ids": [
+                item["id"] for item in artifact_scenarios
+            ],
+            "metric_definition_version": metric_version,
+        },
+        "file_write_count": {
+            "value": file_write_count,
+            "numerator": file_write_count,
             "denominator": len(scenarios),
-            "excluded_count": 0,
-            "excluded_reason_counts": {},
-            "contributing_case_ids": [item["id"] for item in scenarios],
+            "excluded_count": sum(
+                1 for item in scenarios if item["effects"]["file_writes"] == 0
+            ),
+            "excluded_reason_counts": {
+                "no_file_write": sum(
+                    1
+                    for item in scenarios
+                    if item["effects"]["file_writes"] == 0
+                )
+            },
+            "contributing_case_ids": [
+                item["id"]
+                for item in scenarios
+                if item["effects"]["file_writes"] > 0
+            ],
+            "metric_definition_version": metric_version,
+        },
+        "artifact_count": {
+            "value": len(artifact_scenarios),
+            "numerator": len(artifact_scenarios),
+            "denominator": len(scenarios),
+            "excluded_count": len(scenarios) - len(artifact_scenarios),
+            "excluded_reason_counts": {
+                "no_artifact_case": len(scenarios) - len(artifact_scenarios)
+            },
+            "contributing_case_ids": [
+                item["id"] for item in artifact_scenarios
+            ],
+            "metric_definition_version": metric_version,
+        },
+        "evidence_count": {
+            "value": evidence_count,
+            "numerator": evidence_count,
+            "denominator": len(scenarios),
+            "excluded_count": len(scenarios) - len(artifact_scenarios),
+            "excluded_reason_counts": {
+                "no_artifact_case": len(scenarios) - len(artifact_scenarios)
+            },
+            "contributing_case_ids": [
+                item["id"] for item in artifact_scenarios
+            ],
             "metric_definition_version": metric_version,
         },
     }
-    return {
+    report = {
         "generated_at": datetime.now().astimezone().isoformat(
             timespec="seconds"
         ),
@@ -682,13 +983,17 @@ def run_acceptance() -> dict[str, Any]:
             ),
             "duplicate_side_effects": max(
                 0,
-                idempotency_scenario["input"]["writer_calls"] - 1,
+                duplicate_effects,
             ),
             "cancellation_handled": scenarios[2]["passed"],
-            "evidence_complete_rate": (
-                sum(1 for item in scenarios if item["evidence_complete"])
-                / len(scenarios)
+            "evidence_integrity_rate": (
+                len(verified_artifacts) / len(artifact_scenarios)
+                if artifact_scenarios
+                else 0.0
             ),
+            "artifact_count": len(artifact_scenarios),
+            "file_write_count": file_write_count,
+            "evidence_count": evidence_count,
             "correctly_blocked": sum(
                 1
                 for item in scenarios
@@ -731,6 +1036,8 @@ def run_acceptance() -> dict[str, Any]:
         "metric_definition_version": metric_version,
         "metric_audit": metric_audit,
     }
+    validate_acceptance_report(report)
+    return report
 
 
 def main() -> int:

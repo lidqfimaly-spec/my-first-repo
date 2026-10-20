@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,7 +13,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.eval_compare import compare_reports  # noqa: E402
+from tests.e2e_acceptance_runner import run_acceptance  # noqa: E402
+from tests.eval_compare import (  # noqa: E402
+    compare_acceptance_reports,
+    compare_reports,
+    detect_report_kind,
+)
 from zevorinth.safety_gate import run_safety_gate  # noqa: E402
 
 
@@ -93,6 +101,67 @@ class EvalCompareTests(unittest.TestCase):
         result = compare_reports(self.report, candidate)
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("skipped_count_increased", result["regressions"])
+
+    def test_report_kind_is_detected(self) -> None:
+        self.assertEqual(detect_report_kind(self.report), "safety_gate")
+        acceptance = run_acceptance()
+        self.assertEqual(detect_report_kind(acceptance), "acceptance")
+
+    def test_acceptance_reports_compare_within_same_contract(self) -> None:
+        acceptance = run_acceptance()
+        result = compare_acceptance_reports(
+            acceptance, copy.deepcopy(acceptance)
+        )
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["removed_scenarios"], [])
+
+    def test_acceptance_contract_change_is_not_comparable(self) -> None:
+        acceptance = run_acceptance()
+        legacy = copy.deepcopy(acceptance)
+        legacy["metric_definition_version"] = "1.0.0"
+        result = compare_acceptance_reports(legacy, acceptance)
+        self.assertEqual(result["status"], "NOT_COMPARABLE")
+        self.assertIn(
+            "metric_definition_version_changed:1.0.0->1.1.0",
+            result["reasons"],
+        )
+
+    def test_removed_acceptance_scenario_is_reported(self) -> None:
+        acceptance = run_acceptance()
+        candidate = copy.deepcopy(acceptance)
+        candidate["scenarios"] = candidate["scenarios"][:-1]
+        result = compare_acceptance_reports(acceptance, candidate)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(result["removed_scenarios"], ["E2E-12"])
+
+    def test_cli_auto_detects_gate_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            baseline = Path(temp_dir) / "baseline.json"
+            candidate = Path(temp_dir) / "candidate.json"
+            baseline.write_text(json.dumps(self.report), encoding="utf-8")
+            candidate.write_text(json.dumps(self.report), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "tests.eval_compare",
+                    str(baseline),
+                    str(candidate),
+                ],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                env={
+                    **dict(__import__("os").environ),
+                    "PYTHONPATH": f"{PROJECT_ROOT / 'src'}:{PROJECT_ROOT}",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+                timeout=120,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "PASS")
+        self.assertEqual(payload["kind"], "gate")
 
 
 if __name__ == "__main__":

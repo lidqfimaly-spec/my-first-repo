@@ -16,6 +16,64 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = PROJECT_ROOT / "tests" / "mutation_cases.json"
+PROBE_NAME = "_mutation_probe.py"
+PROBE_SOURCE = '''\
+"""Trace executed lines while running unittest, then report them."""
+import atexit
+import json
+import os
+import sys
+import threading
+import unittest
+
+_trace_file = os.environ["MUTATION_TRACE_FILE"]
+_seen = set()
+
+
+def _tracer(frame, event, _arg):
+    if event == "line":
+        _seen.add("%s:%d" % (frame.f_code.co_filename, frame.f_lineno))
+    return _tracer
+
+
+def _dump():
+    with open(_trace_file, "w", encoding="utf-8") as handle:
+        json.dump(sorted(_seen), handle)
+
+
+atexit.register(_dump)
+sys.settrace(_tracer)
+threading.settrace(_tracer)
+
+_program = unittest.main(
+    module=None,
+    argv=["probe", *sys.argv[1:]],
+    exit=False,
+)
+sys.exit(0 if _program.result.wasSuccessful() else 1)
+'''
+
+
+def _normalize_patches(case: dict[str, Any]) -> list[dict[str, str]]:
+    if "patches" in case:
+        patches = case["patches"]
+        if not isinstance(patches, list) or not patches:
+            raise ValueError(f"mutation {case.get('id')} has empty patches")
+        return [
+            {
+                "path": str(patch["path"]),
+                "old": str(patch["old"]),
+                "new": str(patch["new"]),
+            }
+            for patch in patches
+        ]
+    return [
+        {
+            "path": str(case["path"]),
+            "old": str(case["old"]),
+            "new": str(case["new"]),
+        }
+    ]
 
 
 def _copy_project(target: Path) -> None:
@@ -24,20 +82,29 @@ def _copy_project(target: Path) -> None:
     shutil.copytree(PROJECT_ROOT / "tests", target / "tests")
 
 
-def _run(command: list[str], *, cwd: Path, timeout: int = 60) -> dict[str, Any]:
+def _run(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: int = 60,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     try:
+        environment = {
+            **os.environ,
+            "PYTHONPATH": "src",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        if extra_env:
+            environment.update(extra_env)
         completed = subprocess.run(
             command,
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={
-                **os.environ,
-                "PYTHONPATH": "src",
-                "PYTHONDONTWRITEBYTECODE": "1",
-            },
+            env=environment,
         )
         code = completed.returncode
         stdout = completed.stdout
@@ -52,6 +119,39 @@ def _run(command: list[str], *, cwd: Path, timeout: int = 60) -> dict[str, Any]:
         "stdout": stdout,
         "stderr": stderr,
         "duration_ms": (time.perf_counter() - started) * 1000,
+    }
+
+
+def _executed_mutated_lines(
+    trace_path: Path,
+    root: Path,
+    segments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Check whether the patched lines were actually executed by the tests."""
+    if not trace_path.is_file():
+        return {"executed": False, "segments": [], "trace_missing": True}
+    executed: set[tuple[str, int]] = set()
+    for entry in json.loads(trace_path.read_text(encoding="utf-8")):
+        name, _, line = entry.rpartition(":")
+        executed.add((str(Path(name).resolve()), int(line)))
+    resolved: list[dict[str, Any]] = []
+    for segment in segments:
+        target = str((root / segment["path"]).resolve())
+        resolved.append(
+            {
+                **segment,
+                "hit": any(
+                    (target, line) in executed
+                    for line in range(
+                        segment["start_line"], segment["end_line"] + 1
+                    )
+                ),
+            }
+        )
+    return {
+        "executed": all(item["hit"] for item in resolved),
+        "segments": resolved,
+        "trace_missing": False,
     }
 
 
@@ -88,23 +188,45 @@ def _evaluate_mutation(
     *,
     command_override: list[str] | None = None,
 ) -> dict[str, Any]:
+    patches = _normalize_patches(case)
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _copy_project(root)
-        path = root / str(case["path"])
-        original = path.read_text(encoding="utf-8")
-        old = str(case["old"])
-        occurrences = original.count(old)
-        if occurrences != 1:
-            return {
-                "id": case["id"],
-                "result": "invalid",
-                "reason": f"patch target count is {occurrences}",
-            }
-        mutated = original.replace(old, str(case["new"]), 1)
-        path.write_text(mutated, encoding="utf-8")
+        mutated_lines: list[dict[str, Any]] = []
+        contents: dict[Path, str] = {}
+        for patch in patches:
+            path = root / patch["path"]
+            original = contents.get(path) or path.read_text(encoding="utf-8")
+            occurrences = original.count(patch["old"])
+            if occurrences != 1:
+                return {
+                    "id": case["id"],
+                    "result": "invalid",
+                    "reason": (
+                        f"patch target count is {occurrences} "
+                        f"for {patch['path']}"
+                    ),
+                }
+            index = original.index(patch["old"])
+            start_line = original[:index].count("\n") + 1
+            mutated = original.replace(patch["old"], patch["new"], 1)
+            contents[path] = mutated
+            mutated_lines.append(
+                {
+                    "path": patch["path"],
+                    "start_line": start_line,
+                    "end_line": start_line + patch["new"].count("\n"),
+                }
+            )
+        for path, mutated in contents.items():
+            path.write_text(mutated, encoding="utf-8")
         compile_result = _run(
-            [sys.executable, "-m", "py_compile", str(path)],
+            [
+                sys.executable,
+                "-m",
+                "py_compile",
+                *[str(path) for path in contents],
+            ],
             cwd=root,
         )
         if compile_result["exit_code"] != 0:
@@ -114,23 +236,37 @@ def _evaluate_mutation(
                 "reason": "mutated file does not compile",
                 "compile": compile_result,
             }
-        command = command_override or [
-            sys.executable,
-            "-m",
-            "unittest",
-            "-q",
-            *[str(test) for test in case["tests"]],
-        ]
-        test_result = _run(command, cwd=root)
+        trace_path = root / ".mutation-trace.json"
+        if command_override:
+            command = command_override
+        else:
+            (root / PROBE_NAME).write_text(PROBE_SOURCE, encoding="utf-8")
+            command = [
+                sys.executable,
+                PROBE_NAME,
+                "-q",
+                *[str(test) for test in case["tests"]],
+            ]
+        test_result = _run(
+            command,
+            cwd=root,
+            extra_env={"MUTATION_TRACE_FILE": str(trace_path)},
+        )
+        executed = _executed_mutated_lines(
+            trace_path, root, mutated_lines
+        )
         result, reason = _classify_result(test_result, list(case["tests"]))
         return {
             "id": case["id"],
             "property": case.get("property"),
-            "path": case["path"],
+            "path": patches[0]["path"],
+            "patches": mutated_lines,
+            "patch_count": len(patches),
             "tests": list(case["tests"]),
             "expected": case.get("expected", "killed"),
             "result": result,
             "reason": reason,
+            "mutated_lines_executed": executed,
             "test": test_result,
         }
 

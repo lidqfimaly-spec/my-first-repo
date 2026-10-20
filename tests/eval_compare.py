@@ -34,6 +34,12 @@ REQUIRED_METRIC_FIELDS = (
     "contributing_case_ids",
     "value",
 )
+ACCEPTANCE_REQUIRED_FIELDS = (
+    "metric_definition_version",
+    "scenarios",
+    "metrics",
+    "metric_audit",
+)
 HIGHER_IS_BETTER = frozenset(
     {
         "classification_accuracy",
@@ -174,6 +180,92 @@ def compare_reports(
     }
 
 
+def detect_report_kind(report: Mapping[str, Any]) -> str:
+    if "scenarios" in report:
+        return "acceptance"
+    if "cases" in report:
+        return "safety_gate"
+    return "unknown"
+
+
+def compare_acceptance_reports(
+    baseline: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare two E2E acceptance reports under the same rules."""
+    missing = [
+        field
+        for report, label in ((baseline, "baseline"), (candidate, "candidate"))
+        for field in ACCEPTANCE_REQUIRED_FIELDS
+        if field not in report
+    ]
+    if missing:
+        return {
+            "status": "NOT_COMPARABLE",
+            "comparable": False,
+            "kind": "acceptance",
+            "reasons": [f"missing:{name}" for name in missing],
+            "regressions": [],
+        }
+    if (
+        baseline["metric_definition_version"]
+        != candidate["metric_definition_version"]
+    ):
+        return {
+            "status": "NOT_COMPARABLE",
+            "comparable": False,
+            "kind": "acceptance",
+            "reasons": [
+                "metric_definition_version_changed:"
+                f"{baseline['metric_definition_version']}"
+                f"->{candidate['metric_definition_version']}"
+            ],
+            "regressions": [],
+        }
+    before = {
+        str(item["id"]): bool(item.get("passed"))
+        for item in baseline["scenarios"]
+    }
+    after = {
+        str(item["id"]): bool(item.get("passed"))
+        for item in candidate["scenarios"]
+    }
+    regressions: list[str] = []
+    removed = sorted(set(before) - set(after))
+    added = sorted(set(after) - set(before))
+    for scenario_id in removed:
+        regressions.append(f"scenario_removed:{scenario_id}")
+    for scenario_id in sorted(set(before) & set(after)):
+        if before[scenario_id] and not after[scenario_id]:
+            regressions.append(f"scenario_regressed:{scenario_id}")
+    for scenario_id in added:
+        if not after[scenario_id]:
+            regressions.append(f"new_scenario_failing:{scenario_id}")
+    denominator_changes: dict[str, dict[str, int]] = {}
+    for name, detail in candidate["metric_audit"].items():
+        previous = baseline["metric_audit"].get(name)
+        if not isinstance(previous, dict):
+            regressions.append(f"metric_missing_in_baseline:{name}")
+            continue
+        if previous.get("denominator") != detail.get("denominator"):
+            denominator_changes[name] = {
+                "baseline": previous.get("denominator"),
+                "candidate": detail.get("denominator"),
+            }
+            if (detail.get("denominator") or 0) < (previous.get("denominator") or 0):
+                regressions.append(f"denominator_shrunk:{name}")
+    return {
+        "status": "PASS" if not regressions else "FAIL",
+        "comparable": True,
+        "kind": "acceptance",
+        "reasons": [],
+        "removed_scenarios": removed,
+        "added_scenarios": added,
+        "denominator_changes": denominator_changes,
+        "regressions": regressions,
+    }
+
+
 def _load(path: Path) -> tuple[dict[str, Any], str]:
     payload = path.read_bytes()
     return json.loads(payload.decode("utf-8")), hashlib.sha256(
@@ -186,10 +278,33 @@ def main() -> int:
     parser.add_argument("baseline", type=Path)
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--kind",
+        choices=("auto", "gate", "acceptance"),
+        default="auto",
+    )
     args = parser.parse_args()
     baseline, baseline_sha = _load(args.baseline)
     candidate, candidate_sha = _load(args.candidate)
-    result = compare_reports(baseline, candidate)
+    kind = args.kind
+    if kind == "auto":
+        kind = detect_report_kind(baseline)
+        if detect_report_kind(candidate) != kind:
+            kind = "unknown"
+    if kind == "acceptance":
+        result = compare_acceptance_reports(baseline, candidate)
+    elif kind in {"gate", "safety_gate"}:
+        if kind == "safety_gate":
+            kind = "gate"
+        result = compare_reports(baseline, candidate)
+    else:
+        result = {
+            "status": "NOT_COMPARABLE",
+            "comparable": False,
+            "reasons": ["unknown_or_mismatched_report_kind"],
+            "regressions": [],
+        }
+    result["kind"] = kind
     result["baseline"] = {
         "path": str(args.baseline),
         "sha256": baseline_sha,

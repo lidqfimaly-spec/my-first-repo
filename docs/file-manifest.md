@@ -155,6 +155,33 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.13 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.13-e2e-provenance-compound-mutation-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_e2e_provenance.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/safety_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/e2e_acceptance_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/eval_compare.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_acceptance_metrics.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_eval_compare.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_execution_budget.py`
+
+运行产物不纳入源码提交；Schema 版本保持 v4。
+
+---
+
 # 第 3.12 阶段新增与修改
 
 ## 新增

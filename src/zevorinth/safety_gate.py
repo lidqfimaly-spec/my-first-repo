@@ -159,11 +159,18 @@ def _tool_count(service: TaskService, task_id: str) -> int:
 
 
 ARTIFACT_ORIGINS = {"written", "recovered", "none"}
+EVIDENCE_INTEGRITY = {
+    "verified",       # artifact present, evidence hash matches the file
+    "mismatch",       # artifact present, evidence hash disagrees (negative case)
+    "unbacked",       # file exists on disk but the system claimed no evidence
+    "not_applicable", # no artifact and no file
+}
 
 
 def _neutral_effect() -> dict[str, Any]:
     return {
         "origin": "none",
+        "integrity": "not_applicable",
         "relative_path": None,
         "file_sha256": None,
         "evidence_sha256": None,
@@ -175,11 +182,12 @@ def _neutral_effect() -> dict[str, Any]:
     }
 
 
-def _effect(
+def build_effect(
     *,
     origin: str,
     tool_calls: int,
     file_writes: int,
+    integrity: str | None = None,
     evidence: ArtifactEvidence | None = None,
     artifact_root: Path | None = None,
     task_id: str | None = None,
@@ -194,6 +202,12 @@ def _effect(
     """
     if origin not in ARTIFACT_ORIGINS:
         raise SafetyGateConfigurationError(f"unknown artifact origin: {origin}")
+    if integrity is None:
+        integrity = "not_applicable" if origin == "none" else "verified"
+    if integrity not in EVIDENCE_INTEGRITY:
+        raise SafetyGateConfigurationError(
+            f"unknown evidence integrity: {integrity}"
+        )
     file_sha256: str | None = None
     relative_path: str | None = None
     if evidence is not None:
@@ -206,6 +220,7 @@ def _effect(
                 ).hexdigest()
     return {
         "origin": origin,
+        "integrity": integrity,
         "relative_path": relative_path,
         "file_sha256": file_sha256,
         "evidence_sha256": evidence.sha256 if evidence is not None else None,
@@ -247,6 +262,11 @@ def validate_case_effects(case: Mapping[str, Any]) -> None:
         raise SafetyGateConfigurationError(
             f"case has invalid artifact origin: {case_id}"
         )
+    integrity = effects.get("integrity", "verified")
+    if integrity not in EVIDENCE_INTEGRITY:
+        raise SafetyGateConfigurationError(
+            f"case has invalid evidence integrity: {case_id}"
+        )
     file_writes = effects.get("file_writes")
     tool_calls = effects.get("tool_calls")
     evidence_count = effects.get("evidence_count")
@@ -260,6 +280,10 @@ def validate_case_effects(case: Mapping[str, Any]) -> None:
                 f"case has invalid {name}: {case_id}"
             )
     if origin == "none":
+        if integrity not in {"unbacked", "not_applicable"}:
+            raise SafetyGateConfigurationError(
+                f"case without artifact claims integrity: {case_id}"
+            )
         if file_writes != 0 or evidence_count != 0:
             raise SafetyGateConfigurationError(
                 f"case without artifact reports effects: {case_id}"
@@ -289,9 +313,19 @@ def validate_case_effects(case: Mapping[str, Any]) -> None:
         raise SafetyGateConfigurationError(
             f"artifact case has no hashes: {case_id}"
         )
-    if file_sha != evidence_sha:
+    if integrity == "mismatch":
+        if file_sha == evidence_sha:
+            raise SafetyGateConfigurationError(
+                f"declared hash mismatch but hashes agree: {case_id}"
+            )
+    elif integrity == "verified":
+        if file_sha != evidence_sha:
+            raise SafetyGateConfigurationError(
+                f"artifact evidence hash mismatch: {case_id}"
+            )
+    else:
         raise SafetyGateConfigurationError(
-            f"artifact evidence hash mismatch: {case_id}"
+            f"artifact case has integrity {integrity}: {case_id}"
         )
     if origin == "written":
         if file_writes < 1 or tool_calls < 1:
@@ -315,7 +349,7 @@ def _local_policy_block(case: Mapping[str, Any]) -> dict[str, Any]:
             "tool_calls": tool_calls,
             "artifact_created": task.artifact is not None,
             "error_code": task.error.code if task.error else None,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="none", tool_calls=tool_calls, file_writes=0
             ),
         }
@@ -346,7 +380,7 @@ def _local_unsupported_tool(case: Mapping[str, Any]) -> dict[str, Any]:
         "policy_allowed": decision.allowed,
         "error_code": decision.code,
         "tool_calls": 0,
-        "effects": _effect(origin="none", tool_calls=0, file_writes=0),
+        "effects": build_effect(origin="none", tool_calls=0, file_writes=0),
     }
 
 
@@ -372,7 +406,7 @@ def _local_clarification(case: Mapping[str, Any]) -> dict[str, Any]:
                 result.task and result.task.artifact is not None
             ),
             "new_tasks": 1 if result.task else 0,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="none", tool_calls=tool_calls, file_writes=0
             ),
         }
@@ -428,7 +462,7 @@ def _local_status_query(case: Mapping[str, Any]) -> dict[str, Any]:
             "tool_calls": tool_calls,
             "artifact_created": False,
             "new_tasks": after - before,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="none", tool_calls=tool_calls, file_writes=0
             ),
         }
@@ -449,7 +483,7 @@ def _local_cancellation(case: Mapping[str, Any]) -> dict[str, Any]:
             "status": cancelled.status.value,
             "tool_calls": tool_calls,
             "artifact_created": cancelled.artifact is not None,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="none", tool_calls=tool_calls, file_writes=0
             ),
         }
@@ -487,7 +521,7 @@ def _local_budget(case: Mapping[str, Any]) -> dict[str, Any]:
             "error_code": failed.error.code if failed.error else None,
             "tool_calls": tool_calls,
             "artifact_created": failed.artifact is not None,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="none", tool_calls=tool_calls, file_writes=0
             ),
         }
@@ -525,7 +559,7 @@ def _local_message_idempotency(case: Mapping[str, Any]) -> dict[str, Any]:
             "turns": turns,
             "same_message": first[1].message_id == second[1].message_id,
             "tool_calls": 0,
-            "effects": _effect(origin="none", tool_calls=0, file_writes=0),
+            "effects": build_effect(origin="none", tool_calls=0, file_writes=0),
         }
 
 
@@ -548,7 +582,7 @@ def _local_duplicate_execution(case: Mapping[str, Any]) -> dict[str, Any]:
             "task_succeeded_events": event_types.count(
                 EventType.TASK_SUCCEEDED.value
             ),
-            "effects": _effect(
+            "effects": build_effect(
                 origin="written" if task.artifact is not None else "none",
                 tool_calls=writer.calls,
                 file_writes=writer.calls,
@@ -603,7 +637,7 @@ def _local_recovery(case: Mapping[str, Any]) -> dict[str, Any]:
                 EventType.TOOL_STARTED.value
             ),
             "artifact_created": recovered.artifact is not None,
-            "effects": _effect(
+            "effects": build_effect(
                 origin=(
                     "recovered"
                     if recovered.artifact is not None
@@ -649,7 +683,7 @@ def _local_verification(case: Mapping[str, Any]) -> dict[str, Any]:
             "reason": verification.reason,
             "tool_calls": 1,
             "artifact_created": True,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="written",
                 tool_calls=1,
                 file_writes=1,
@@ -680,7 +714,7 @@ def _local_verifier_exception(case: Mapping[str, Any]) -> dict[str, Any]:
             ),
             "tool_calls": tool_calls,
             "artifact_created": task.artifact is not None,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="written" if task.artifact is not None else "none",
                 tool_calls=tool_calls,
                 file_writes=1 if task.artifact is not None else 0,
@@ -711,7 +745,7 @@ def _local_plan_snapshot(case: Mapping[str, Any]) -> dict[str, Any]:
             "error_code": task.error.code if task.error else None,
             "tool_calls": 1,
             "artifact_created": task.artifact is not None,
-            "effects": _effect(
+            "effects": build_effect(
                 origin="written" if task.artifact is not None else "none",
                 tool_calls=1,
                 file_writes=1 if task.artifact is not None else 0,
@@ -1000,6 +1034,11 @@ def run_safety_gate(
                         "written"
                         if planner_case["artifact_created"]
                         else "none"
+                    ),
+                    "integrity": (
+                        "verified"
+                        if planner_case["artifact_created"]
+                        else "not_applicable"
                     ),
                     "relative_path": planner_case.get(
                         "artifact_relative_path"

@@ -992,3 +992,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"storage or execution-claim error: {exc}", file=sys.stderr)
         return 6
     raise AssertionError(f"unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    # Keep ``python -m zevorinth.cli`` consistent with the ``zevorinth``
+    # console script and ``python -m zevorinth``.  This block only runs when
+    # the module is executed directly, so imports and the entry point are
+    # unaffected.
+    raise SystemExit(main())
