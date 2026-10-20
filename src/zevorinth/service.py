@@ -63,6 +63,9 @@ from .workspace_snapshot import (
 )
 from .workspace_effects import build_workspace_effects, validate_workspace_effects
 from .workspace_cleanup import (
+    CleanupDecision,
+    CleanupError,
+    _normalize_relative,
     execute_cleanup,
     plan_cleanup,
     reconcile_cleanup,
@@ -382,6 +385,215 @@ class TaskService:
 
     def get_task(self, task_id: str) -> Task | None:
         return self.store.get_task(task_id)
+
+    def cleanup_provisioning_artifact(
+        self,
+        task_id: str,
+        relative_path: str,
+        *,
+        enabled: bool = False,
+        authorized: bool = False,
+        checkpoint: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Clean only a provisioning-owned file recorded by the final plan."""
+        task = self.store.require_task(task_id)
+        base: dict[str, Any] = {
+            "task_id": task_id,
+            "relative_path": relative_path,
+            "source": "provisioning",
+            "removed": False,
+        }
+
+        def reject(code: str, reason: str) -> dict[str, Any]:
+            record = {
+                **base,
+                "status": "rejected",
+                "code": code,
+                "reason": reason,
+            }
+            self._record_cleanup_event(task, record)
+            return record
+
+        if task.lease_token is not None:
+            return reject("active_lease", "task still has an active lease")
+        snapshot = task.execution_plan_snapshot
+        if not isinstance(snapshot, Mapping) or snapshot.get("kind") != "run_tests":
+            return reject(
+                "no_final_execution_plan",
+                "historical task has no final execution plan",
+            )
+        if (
+            snapshot.get("task_id") != task.task_id
+            or snapshot.get("attempt_id") != task.attempt_id
+            or int(snapshot.get("claim_generation", -1))
+            != task.claim_generation
+        ):
+            return reject(
+                "plan_identity_mismatch",
+                "final execution plan does not match the task",
+            )
+        try:
+            parts = _normalize_relative(relative_path)
+        except CleanupError as exc:
+            return reject(exc.code, exc.message)
+        normalized = "/".join(parts)
+        artifacts = list(snapshot.get("provisioning_artifacts") or [])
+        record = next(
+            (
+                item
+                for item in artifacts
+                if item.get("path") == normalized
+                and item.get("ownership") == "provisioning"
+            ),
+            None,
+        )
+        if record is None:
+            return reject(
+                "not_owned",
+                "no provisioning ownership record for this path",
+            )
+        if record.get("cleanup") != "deferred_to_controlled_cleanup":
+            return reject(
+                "cleanup_not_deferred",
+                "artifact is not marked for controlled cleanup",
+            )
+        if not enabled:
+            return reject("cleanup_disabled", "cleanup is off")
+        if not authorized:
+            return reject(
+                "cleanup_unauthorized",
+                "cleanup needs explicit authorization",
+            )
+
+        events = self.store.list_events(task_id)
+        if any(
+            event.event_type == "cleanup_completed"
+            and event.payload.get("relative_path") == normalized
+            for event in events
+        ):
+            return reject(
+                "already_cleaned", "this provisioning file is already cleaned"
+            )
+
+        workspace = resolve_workspace(
+            self.project_root, str(snapshot.get("workspace"))
+        )
+        target = workspace.joinpath(*parts)
+        if target.is_symlink() or not target.is_file():
+            return reject("missing_target", "target does not exist")
+        expected_sha256 = str(record.get("sha256") or "")
+        try:
+            actual_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError:
+            return reject("target_unreadable", "target could not be hashed")
+        if not expected_sha256 or actual_sha256 != expected_sha256:
+            return reject(
+                "target_modified",
+                "target content no longer matches the provisioning record",
+            )
+
+        operation_id = str(uuid4())
+        intent = {
+            "operation_id": operation_id,
+            "task_id": task_id,
+            "attempt_id": task.attempt_id,
+            "claim_generation": task.claim_generation,
+            "relative_path": normalized,
+            "expected_sha256": expected_sha256,
+            "source": "provisioning",
+        }
+        result = {
+            **base,
+            "relative_path": normalized,
+            "operation_id": operation_id,
+            "decision": {
+                "allowed": True,
+                "code": "allowed",
+                "reason": "provisioning-owned artifact",
+                "relative_path": normalized,
+                "expected_sha256": expected_sha256,
+            },
+            "intent_persisted": self._record_cleanup_intent(task, intent),
+        }
+        if not result["intent_persisted"]:
+            persisted = self._intent_exists(task_id, operation_id)
+            result["intent_reconciled"] = persisted
+            if persisted is not True:
+                result.update(
+                    status="unverified",
+                    code="intent_not_persisted",
+                    reason="cleanup intent could not be persisted",
+                    removed=False,
+                )
+                self._record_cleanup_event(task, result)
+                return result
+        decision = CleanupDecision(
+            True,
+            "allowed",
+            "provisioning-owned artifact",
+            normalized,
+            expected_sha256,
+            None,
+            parts,
+        )
+        result.update(
+            execute_cleanup(
+                decision,
+                workspace_root=workspace,
+                checkpoint=checkpoint,
+                operation_id=operation_id,
+            )
+        )
+        self._record_cleanup_event(task, result)
+        return result
+
+    def reconcile_provisioning_cleanup(
+        self, task_id: str, operation_id: str
+    ) -> dict[str, Any]:
+        """Read-only reconciliation for one provisioning cleanup operation."""
+        task = self.store.require_task(task_id)
+        snapshot = task.execution_plan_snapshot
+        if not isinstance(snapshot, Mapping) or snapshot.get("kind") != "run_tests":
+            return {
+                "operation_id": operation_id,
+                "state": "reconciled_unverified",
+                "reason": "no final execution plan",
+            }
+        events = self.store.list_events(task_id)
+        intent = next(
+            (
+                event
+                for event in events
+                if event.event_type == "cleanup_intent"
+                and event.payload.get("operation_id") == operation_id
+                and event.payload.get("source") == "provisioning"
+            ),
+            None,
+        )
+        if intent is None:
+            return {
+                "operation_id": operation_id,
+                "state": "reconciled_unverified",
+                "reason": "no persisted cleanup intent",
+            }
+        completed = any(
+            event.event_type == "cleanup_completed"
+            and event.payload.get("operation_id") == operation_id
+            for event in events
+        )
+        workspace = resolve_workspace(
+            self.project_root, str(snapshot.get("workspace"))
+        )
+        return reconcile_cleanup(
+            workspace_root=workspace,
+            relative_path=str(intent.payload.get("relative_path")),
+            operation_id=operation_id,
+            expected_sha256=str(intent.payload.get("expected_sha256")),
+            intent_persisted=True,
+            completed_event=completed,
+            current_generation=task.claim_generation,
+            record_generation=int(intent.payload.get("claim_generation", -1)),
+        )
 
     def cleanup_workspace_file(
         self,

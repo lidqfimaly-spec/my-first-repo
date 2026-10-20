@@ -11,6 +11,7 @@ import time
 import unittest
 import unittest.mock
 from pathlib import Path
+from uuid import uuid4
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +27,7 @@ from zevorinth.isolation import (  # noqa: E402
 from zevorinth.local_test_runner import _terminate  # noqa: E402
 
 
-MARKER = "ZV-ORPHAN-MARKER-3-23"
+MARKER = f"ZV-ORPHAN-MARKER-3-23-{os.getpid()}-{uuid4().hex[:8]}"
 
 
 def _marker_pids() -> list[int]:

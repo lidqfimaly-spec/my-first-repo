@@ -960,6 +960,47 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.50 阶段执行记录
+
+## 实现
+
+- 容器终止未知后恢复保持失败，不重跑；
+- 执行后重新验证 evidence，撤销/过期/复核失败拒绝成功；
+- 新增受控 provisioning 清理 API 与只读 reconciliation；
+- 清理必须来自最终计划、ownership=provisioning、显式授权、intent 先持久化；
+- `inside.txt` 所有权不明确，继续保留；
+- 历史任务没有最终计划时拒绝清理，不补造迁移。
+
+## 真实资源验证
+
+伪候选 + 真实 provisioning + 真实容器后：
+
+- `probe-written.txt` 完成 quarantine + unlink；
+- `inside.txt` 保留；
+- 重复清理返回 `already_cleaned`；
+- reconcile 返回 `reconciled_completed`；
+- 原任务状态保持 `succeeded`。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 恢复/清理矩阵 | 19/19 |
+| 系统 Python 全量 | 610/610 |
+| `.venv` 全量 | 610/610 |
+| Mutation runner | 69 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 真实模型 API 请求：0；
+- 清理为显式调用，不自动执行；
+- 历史任务继续 fail-closed；
+- 详见 `docs/phase-3.50-recovery-resource-lifecycle-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现

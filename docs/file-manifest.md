@@ -249,6 +249,33 @@
 
 ---
 
+# 第 3.50 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_provisioning_cleanup.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.50-recovery-resource-lifecycle-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_container_timeout_cancel.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_trusted_test_parameters.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_read_confinement_and_lifecycle.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.50/cleanup-e2e.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.50/recovery-cleanup-matrix.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.50/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.50/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增

@@ -388,6 +388,15 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         self.assertEqual(
             result.error.code, "container_termination_unverified"
         )
+        resumed = service.resume(result.task_id)
+        self.assertEqual(resumed.status, TaskStatus.FAILED)
+        self.assertEqual(
+            [
+                event.event_type
+                for event in service.events(result.task_id)
+            ].count("tool_started"),
+            1,
+        )
         _remove_containers_for(queued.task_id)
 
     def test_repeated_cancel_is_idempotent(self) -> None:

@@ -772,6 +772,39 @@
         "tests.test_container_timeout_cancel.ContainerTimeoutCancelTests.test_container_start_failure_is_explicit"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "provisioning_cleanup_ownership_bypassed",
+      "property": "only provisioning-owned files are eligible for cleanup",
+      "path": "src/zevorinth/service.py",
+      "old": "                and item.get(\"ownership\") == \"provisioning\"\n",
+      "new": "                and True\n",
+      "tests": [
+        "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_ambiguous_inside_ownership_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "provisioning_cleanup_hash_ignored",
+      "property": "provisioning cleanup verifies the recorded hash",
+      "path": "src/zevorinth/service.py",
+      "old": "        if not expected_sha256 or actual_sha256 != expected_sha256:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_modified_or_missing_target_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "provisioning_cleanup_intent_ignored",
+      "property": "cleanup intent must persist before quarantine",
+      "path": "src/zevorinth/service.py",
+      "old": "        if not result[\"intent_persisted\"]:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_intent_write_failure_blocks_quarantine"
+      ],
+      "expected": "killed"
     }
   ]
 }

@@ -355,5 +355,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.47 阶段执行计划可追溯性与恢复加固](docs/phase-3.47-execution-plan-traceability-audit.md)
 - [第 3.48 阶段真实模型最终执行计划验证](docs/phase-3.48-real-model-final-plan-verification.md)
 - [第 3.49 阶段执行失败与恢复可靠性审计](docs/phase-3.49-failure-recovery-audit.md)
+- [第 3.50 阶段恢复边界与资源生命周期审计](docs/phase-3.50-recovery-resource-lifecycle-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)
