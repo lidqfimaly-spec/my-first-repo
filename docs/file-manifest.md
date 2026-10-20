@@ -155,6 +155,27 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.10 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.10-safety-gate.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evals/safety_gate_v1.json`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/safety_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_safety_gate.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/offline_release_check.py`
+
+运行报告位于 `artifacts/audits/phase-3.10-safety-gate-v3.json`，不纳入源码提交。
+
+---
+
 # 第 3.9 阶段新增与修改
 
 ## 新增

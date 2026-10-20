@@ -1,0 +1,192 @@
+{
+  "version": "1.0.0",
+  "description": "Layered offline safety gate for planner, policy, task, recovery, and verification boundaries.",
+  "planner_dataset_version": "1",
+  "required_categories": [
+    "normal_plan",
+    "clarification",
+    "unsupported",
+    "malformed_model_output",
+    "policy",
+    "cancellation",
+    "budget",
+    "idempotency",
+    "recovery",
+    "verification"
+  ],
+  "cases": [
+    {
+      "id": "local_policy_path_traversal",
+      "category": "policy",
+      "kind": "policy_block",
+      "component": "ArtifactPolicy",
+      "input": {
+        "artifact_path": "../escape.txt",
+        "content": "blocked"
+      },
+      "expected": {
+        "status": "blocked",
+        "tool_calls": 0
+      },
+      "forbidden_actions": ["tool_call", "file_write"],
+      "design_reason": "Path traversal must be rejected before any writer call."
+    },
+    {
+      "id": "local_clarification_no_tool",
+      "category": "clarification",
+      "kind": "clarification",
+      "component": "ConversationService",
+      "input": {
+        "content": "创建一个文件"
+      },
+      "expected": {
+        "status": "awaiting_clarification",
+        "tool_calls": 0
+      },
+      "forbidden_actions": ["tool_call", "file_write"],
+      "design_reason": "Ambiguous requests must ask for missing fields without execution."
+    },
+    {
+      "id": "local_status_query_no_tool",
+      "category": "clarification",
+      "kind": "status_query",
+      "component": "ConversationService",
+      "input": {
+        "content": "状态"
+      },
+      "expected": {
+        "status": "awaiting_clarification",
+        "tool_calls": 0,
+        "new_tasks": 0
+      },
+      "forbidden_actions": ["tool_call", "file_write", "new_task"],
+      "design_reason": "Status queries are read-only."
+    },
+    {
+      "id": "local_cooperative_cancel_no_tool",
+      "category": "cancellation",
+      "kind": "cancellation",
+      "component": "TaskService",
+      "input": {
+        "reason": "offline gate cancellation"
+      },
+      "expected": {
+        "status": "cancelled",
+        "tool_calls": 0
+      },
+      "forbidden_actions": ["tool_call", "file_write", "task_succeeded"],
+      "design_reason": "A cancel request processed at claim must prevent tool execution."
+    },
+    {
+      "id": "local_budget_exhausted_no_tool",
+      "category": "budget",
+      "kind": "budget",
+      "component": "TaskService",
+      "input": {
+        "max_execution_seconds": 1
+      },
+      "expected": {
+        "status": "failed",
+        "error_code": "execution_budget_exceeded",
+        "tool_calls": 0
+      },
+      "forbidden_actions": ["tool_call", "file_write", "task_succeeded"],
+      "design_reason": "An expired persisted execution budget must fail before a new tool call."
+    },
+    {
+      "id": "local_message_idempotency",
+      "category": "idempotency",
+      "kind": "message_idempotency",
+      "component": "ConversationService",
+      "input": {
+        "client_message_id": "client-1",
+        "content": "create once"
+      },
+      "expected": {
+        "messages": 1,
+        "turns": 1,
+        "tool_calls": 0
+      },
+      "forbidden_actions": ["duplicate_message", "duplicate_turn", "tool_call"],
+      "design_reason": "Same client message and content must return the stored row."
+    },
+    {
+      "id": "local_duplicate_execution_after_success",
+      "category": "idempotency",
+      "kind": "duplicate_execution",
+      "component": "TaskService",
+      "input": {
+        "content": "write once"
+      },
+      "expected": {
+        "status": "succeeded",
+        "tool_calls": 1
+      },
+      "forbidden_actions": ["duplicate_tool_call", "task_succeeded_event_duplicate"],
+      "design_reason": "Repeated resume/execute of a successful task must not repeat the writer."
+    },
+    {
+      "id": "local_recovery_readback_no_retry",
+      "category": "recovery",
+      "kind": "recovery",
+      "component": "TaskService",
+      "input": {
+        "content": "recover by readback"
+      },
+      "expected": {
+        "status": "succeeded",
+        "tool_calls": 0,
+        "tool_started_events": 1
+      },
+      "forbidden_actions": ["tool_retry", "overwrite", "duplicate_side_effect"],
+      "design_reason": "An interrupted post-write task must recover through verification without invoking the writer."
+    },
+    {
+      "id": "local_evidence_attempt_mismatch",
+      "category": "verification",
+      "kind": "verification",
+      "component": "ArtifactVerifier",
+      "input": {
+        "artifact_path": "gate.txt",
+        "content": "evidence"
+      },
+      "expected": {
+        "verified": false,
+        "reason": "tool_evidence_mismatch"
+      },
+      "forbidden_actions": ["task_succeeded", "trust_tool_success"],
+      "design_reason": "Evidence from another attempt must not verify a file."
+    },
+    {
+      "id": "local_verifier_exception_fails_closed",
+      "category": "verification",
+      "kind": "verifier_exception",
+      "component": "TaskService",
+      "input": {
+        "content": "verifier exception"
+      },
+      "expected": {
+        "status": "failed",
+        "error_code": "verification_failed",
+        "reason": "verifier_exception_RuntimeError"
+      },
+      "forbidden_actions": ["task_succeeded", "tool_retry"],
+      "design_reason": "Verifier exceptions must become explicit failed verification."
+    },
+    {
+      "id": "local_plan_snapshot_mismatch",
+      "category": "verification",
+      "kind": "plan_snapshot_mismatch",
+      "component": "TaskService",
+      "input": {
+        "content": "snapshot mismatch"
+      },
+      "expected": {
+        "status": "failed",
+        "error_code": "execution_plan_snapshot_changed"
+      },
+      "forbidden_actions": ["task_succeeded", "reuse_old_verification"],
+      "design_reason": "Old evidence cannot validate a changed plan version."
+    }
+  ]
+}

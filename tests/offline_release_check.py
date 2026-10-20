@@ -111,6 +111,7 @@ def _wheel_resource_check(wheel: Path) -> dict[str, Any]:
         "evals/planner_cases.json",
         "evals/online_pilot_v1.json",
         "evals/online_retest_v1.json",
+        "evals/safety_gate_v1.json",
     }
     present = {
         name.split("zevorinth/", 1)[1]
@@ -131,6 +132,7 @@ def _sdist_resource_check(sdist: Path) -> dict[str, Any]:
         "planner_cases.json",
         "online_pilot_v1.json",
         "online_retest_v1.json",
+        "safety_gate_v1.json",
     }
     present = {
         Path(name).name
@@ -292,7 +294,8 @@ def run_release_check(
                 (
                     "from importlib.resources import files;"
                     "p=files('zevorinth.evals').joinpath('planner_cases.json');"
-                    "print(p.is_file())"
+                    "s=files('zevorinth.evals').joinpath('safety_gate_v1.json');"
+                    "print(p.is_file() and s.is_file())"
                 ),
             ],
             cwd=root,

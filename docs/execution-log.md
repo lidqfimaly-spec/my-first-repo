@@ -598,6 +598,39 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.10 阶段执行记录
+
+## 实现
+
+- 新增 versioned safety gate：28 个 planner + 11 个本地边界案例；
+- 报告包含 Git/Python/SDK、fake client、责任层、分母明确的指标和失败分类；
+- 数据集字段、唯一 ID、kind、required categories 均 fail closed；
+- 新增 CLI `eval-safety-gate --offline --output`；
+- 增加 gate PASS、无效数据集和不一致报告测试；
+- safety gate JSON 纳入 wheel/sdist 资源检查。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 223/223，exit 0 |
+| 隔离环境完整 unittest | 223/223，exit 0 |
+| safety gate 重复 | 20/20 轮 0 失败 |
+| E2E acceptance | 10/10 轮 0 失败 |
+| safety gate cases | 39/39 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- planner 使用 ScriptedPlannerClient；
+- 无真实 API 请求；
+- coverage/mutation framework：NOT RUN；
+- 详见 `docs/phase-3.10-safety-gate.md`；
+- 未推送。
+
+---
+
 # 第 3.9 阶段执行记录
 
 ## 授权试点

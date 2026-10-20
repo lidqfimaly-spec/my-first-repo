@@ -36,6 +36,10 @@ from .models import PlannerMode, Task, TaskRequest, TaskStatus
 from .planner import WRITE_TEXT_ARTIFACT
 from .planner import DeterministicPlanner
 from .service import TaskService
+from .safety_gate import (
+    SafetyGateConfigurationError,
+    run_safety_gate,
+)
 
 
 STATUS_EXIT_CODES = {
@@ -448,6 +452,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluation.add_argument("--json", action="store_true")
 
+    safety_gate = subparsers.add_parser(
+        "eval-safety-gate",
+        help="run the versioned offline planner and local-boundary gate",
+    )
+    safety_gate.add_argument(
+        "--offline",
+        action="store_true",
+        required=True,
+    )
+    safety_gate.add_argument("--output", type=Path, required=True)
+    safety_gate.add_argument("--json", action="store_true")
+
     run = subparsers.add_parser(
         "run",
         help="submit and execute one structured artifact task",
@@ -818,6 +834,49 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"model_call_attempts="
                         f"{baseline_metrics.get('model_call_attempts')}"
                     )
+        return 0 if report["all_passed"] else 1
+    if args.command == "eval-safety-gate":
+        try:
+            if args.output.exists():
+                raise SafetyGateConfigurationError(
+                    "safety gate report path already exists"
+                )
+            report = run_safety_gate()
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except SafetyGateConfigurationError as exc:
+            print(f"safety gate configuration error: {exc}", file=sys.stderr)
+            return 7
+        if args.json:
+            print(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            metrics = report["metrics"]
+            print(
+                f"Safety gate: {report['status']} "
+                f"({report['case_count']} cases)"
+            )
+            print(
+                f"classification_accuracy="
+                f"{metrics['classification_accuracy']} "
+                f"status_accuracy={metrics['status_accuracy']} "
+                f"duplicate_side_effects={metrics['duplicate_side_effects']}"
+            )
         return 0 if report["all_passed"] else 1
 
     try:
