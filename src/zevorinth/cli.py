@@ -503,6 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     test_run.add_argument("--evidence-id", default=None)
     test_run.add_argument("--image", default=None)
+    test_run.add_argument(
+        "--allow-host",
+        action="store_true",
+        help="authorize the non-isolated host backend (local maintenance)",
+    )
     test_run.add_argument("--json", action="store_true")
 
     cleanup_cmd = subparsers.add_parser(
@@ -942,6 +947,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                             else {}
                         ),
                         **({"image": args.image} if args.image else {}),
+                        **(
+                            {"host_authorization": "local-maintenance"}
+                            if args.allow_host
+                            else {}
+                        ),
                     },
                 )
             )

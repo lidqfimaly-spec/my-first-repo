@@ -71,6 +71,7 @@ def _request(target: str = "test_demo", **extra: Any) -> TaskRequest:
         "target": target,
         "workspace": "demo",
         "execution_backend": "host",
+        "host_authorization": "local-maintenance",
     }
     parameters.update(extra)
     return TaskRequest(
@@ -235,6 +236,7 @@ def run_audit() -> dict[str, Any]:
                 "test_demo",
                 "--backend",
                 "host",
+                "--allow-host",
                 "--json",
             ],
             cwd=PROJECT_ROOT,

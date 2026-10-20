@@ -37,6 +37,8 @@ def _request(**extra) -> TaskRequest:
         "target": "test_marker",
         "workspace": "demo",
     }
+    if extra.get("execution_backend") == "host":
+        parameters.setdefault("host_authorization", "local-maintenance")
     parameters.update(extra)
     return TaskRequest(goal="run", operation=RUN_TESTS, parameters=parameters)
 

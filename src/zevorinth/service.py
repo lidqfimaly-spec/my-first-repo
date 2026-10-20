@@ -1792,6 +1792,16 @@ class TaskService:
         import time as _time
 
         started = _time.time()
+        container_name = (
+            "zv-" + task.task_id.replace("-", "")[:12] + "-"
+            + uuid4().hex[:8]
+        )
+        container_command = [
+            *container_command[:2],
+            "--name",
+            container_name,
+            *container_command[2:],
+        ]
         try:
             completed = _subprocess.run(
                 container_command,
@@ -1800,6 +1810,13 @@ class TaskService:
                 timeout=timeout,
             )
         except _subprocess.TimeoutExpired as exc:
+            terminated = self._terminate_container(container_name)
+            if terminated is not True:
+                raise TestExecutionError(
+                    "container_termination_unverified",
+                    "container may still be running after timeout",
+                )
+            artifacts = self._collect_test_artifacts(workspace, limit)
             return {
                 "runner": "unittest",
                 "target": target,
@@ -1808,10 +1825,10 @@ class TaskService:
                 "timed_out": True,
                 "cancelled": False,
                 "terminated_confirmed": True,
+                "container_name": container_name,
+                "artifacts": artifacts,
                 "truncated": True,
-                "stdout": (exc.stdout or b"")[:limit]
-                if isinstance(exc.stdout, bytes)
-                else str(exc.stdout or "")[:limit].encode(),
+                "stdout": b"",
                 "stderr": b"",
                 "stdout_bytes": 0,
                 "stderr_bytes": 0,
@@ -1846,7 +1863,81 @@ class TaskService:
             "config_digest": config_digest,
             "command_digest": command_digest,
             "evidence_id": str(evidence_id),
+            "container_name": container_name,
+            "artifacts": self._collect_test_artifacts(workspace, limit),
         }
+
+    def _terminate_container(self, name: str) -> bool:
+        """Kill the named container and confirm it is gone."""
+        import shutil as _shutil
+        import subprocess as _subprocess
+
+        docker = _shutil.which("docker")
+        if docker is None:
+            return False
+        import time as _time
+
+        _subprocess.run(
+            [docker, "kill", name], capture_output=True, text=True
+        )
+        # "Terminated" means *not running*; a stopped container that has not
+        # been removed yet still satisfies that.  Poll briefly for the kill
+        # to take effect instead of trusting the signal.
+        deadline = _time.monotonic() + 5.0
+        while True:
+            listed = _subprocess.run(
+                [
+                    docker,
+                    "ps",
+                    "--filter",
+                    f"name={name}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if listed.returncode != 0:
+                return False
+            if not listed.stdout.strip():
+                return True
+            if _time.monotonic() >= deadline:
+                return False
+            _time.sleep(0.05)
+
+    def _collect_test_artifacts(
+        self, workspace: Path, limit: int
+    ) -> list[dict[str, Any]]:
+        """Collect bounded, hashed files from the task's artifact directory."""
+        import hashlib as _hashlib
+
+        root = workspace / "artifacts"
+        if not root.is_dir():
+            return []
+        collected: list[dict[str, Any]] = []
+        total = 0
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError:
+                continue
+            if root.resolve() not in resolved.parents:
+                continue
+            size = resolved.stat().st_size
+            if size > limit or total + size > limit:
+                break
+            data = resolved.read_bytes()
+            total += size
+            collected.append(
+                {
+                    "relative_path": str(resolved.relative_to(root.resolve())),
+                    "bytes": size,
+                    "sha256": _hashlib.sha256(data).hexdigest(),
+                }
+            )
+        return collected
 
     def _blocked_container_execution(
         self, task: Task, lease_token: str, parameters: dict[str, Any]

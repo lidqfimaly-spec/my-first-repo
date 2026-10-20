@@ -334,5 +334,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.28 阶段隔离证据持久化与完整性保护](docs/phase-3.28-isolation-evidence-persistence-audit.md)
 - [第 3.29 阶段 run_tests 容器化迁移审计](docs/phase-3.29-run-tests-container-migration-audit.md)
 - [第 3.30 阶段 run_tests 容器执行链验收](docs/phase-3.30-run-tests-container-execution-audit.md)
+- [第 3.31 阶段容器生命周期、产物回收与 host 授权](docs/phase-3.31-container-lifecycle-artifat-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

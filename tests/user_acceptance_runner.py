@@ -501,6 +501,7 @@ def run_acceptance() -> dict[str, Any]:
             "test_demo",
             "--backend",
             "host",
+            "--allow-host",
             "--json",
         )
         task = run["json"] or {}

@@ -598,7 +598,36 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.30 阶段执行记录
+# 第 3.31 阶段执行记录
+
+## 实现
+
+- 容器执行使用固定容器名，超时后 `docker kill` 并轮询 `docker ps` 确认不再运行；无法确认即失败关闭；
+- 新增测试产物回收：仅 `<workspace>/artifacts`、跳过符号链接与越界、受输出上限约束、记录哈希；
+- policy 强制 host 后端授权令牌，CLI 增加 `--allow-host`。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 523/523，exit 0 |
+| 生命周期/授权/产物专项 | 8/8 |
+| 真实容器终止 | 1/1 |
+| Mutation runner | 56 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 容器内超时组合未端到端验证；
+- 产物无"部分失败"语义；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.31-container-lifecycle-artifat-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

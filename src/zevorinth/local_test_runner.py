@@ -59,6 +59,7 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         "image",
         "config_digest",
         "command_digest",
+        "host_authorization",
     }
     if unknown:
         raise TestExecutionError(

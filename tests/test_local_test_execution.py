@@ -75,6 +75,7 @@ def _request(
         "target": target,
         "workspace": workspace,
         "execution_backend": "host",
+        "host_authorization": "local-maintenance",
     }
     parameters.update(extra)
     return TaskRequest(
@@ -172,6 +173,7 @@ class LocalTestExecutionTests(unittest.TestCase):
                     "test_demo",
                     "--backend",
                     "host",
+                    "--allow-host",
                     "--json",
                 ],
                 cwd=PROJECT_ROOT,
@@ -447,6 +449,7 @@ class TestVerifierBoundaryTests(unittest.TestCase):
             "target": "test_demo",
             "workspace": "demo",
             "execution_backend": "host",
+        "host_authorization": "local-maintenance",
         }
         expected.update(params)
         return TestResultVerifier().verify(

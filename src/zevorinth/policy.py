@@ -21,6 +21,9 @@ from .local_test_runner import (
 
 SUPPORTED_OPERATIONS = frozenset({WRITE_TEXT_ARTIFACT, RUN_TESTS_TOOL})
 
+#: Exact token a caller must present to use the non-isolated host backend.
+HOST_AUTHORIZATION_TOKEN = "local-maintenance"
+
 
 def missing_required_fields(request: TaskRequest) -> list[str]:
     missing: list[str] = []
@@ -158,6 +161,16 @@ class ArtifactPolicy:
             )
         try:
             parameters = validate_parameters(dict(request.parameters))
+            if parameters.get("execution_backend") == "host" and (
+                request.parameters.get("host_authorization")
+                != HOST_AUTHORIZATION_TOKEN
+            ):
+                return PolicyDecision(
+                    False,
+                    "host_execution_not_authorized",
+                    "host execution requires explicit local-maintenance "
+                    "authorization",
+                )
             workspace = resolve_workspace(
                 artifacts_root.parent, parameters["workspace"]
             )

@@ -155,7 +155,34 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
-# 第 3.30 阶段新增与修改
+# 第 3.31 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.31-container-lifecycle-artifat-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_run_tests_lifecycle.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/local_test_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/policy.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/execution_audit_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_local_test_execution.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_run_tests_container.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/user_acceptance_runner.py`
+
+运行产物不纳入源码提交；Schema 版本保持 v4。
+
+---
+
+
 
 ## 新增
 

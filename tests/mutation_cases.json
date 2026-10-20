@@ -621,6 +621,37 @@
         "tests.test_run_tests_container.ContainerBackendGateTests.test_invalid_backend_is_blocked"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "host_without_authorization_accepted",
+      "property": "host backend requires explicit authorization",
+      "path": "src/zevorinth/policy.py",
+      "old": "            if parameters.get(\"execution_backend\") == \"host\" and (\n",
+      "new": "            if False and (\n",
+      "tests": [
+        "tests.test_run_tests_lifecycle.HostAuthorizationTests.test_host_without_authorization_is_blocked"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "artifact_symlink_escape_collected",
+      "property": "artifact collection skips escaping symlinks",
+      "tests": [
+        "tests.test_run_tests_lifecycle.ArtifactCollectionTests.test_symlink_escape_is_skipped"
+      ],
+      "expected": "killed",
+      "patches": [
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "            if not path.is_file() or path.is_symlink():\n",
+          "new": "            if not path.is_file():\n"
+        },
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "            if root.resolve() not in resolved.parents:\n",
+          "new": "            if False:\n"
+        }
+      ]
     }
   ]
 }
