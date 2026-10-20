@@ -566,6 +566,39 @@
         "tests.test_evidence_lifecycle.EvidenceLifecycleTests.test_replay_from_another_request_is_rejected"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "corrupt_evidence_accepted",
+      "property": "corrupt stored evidence is rejected",
+      "path": "src/zevorinth/evidence_store.py",
+      "old": "        if evidence_digest(record) != record.get(\"digest\"):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_evidence_store.EvidenceStoreTests.test_digest_mismatch_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_conflict_overwritten",
+      "property": "a different record never overwrites an id",
+      "path": "src/zevorinth/evidence_store.py",
+      "old": "        if target.exists():\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_evidence_store.EvidenceStoreTests.test_conflicting_content_under_same_id_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "invalidation_ignored",
+      "property": "invalidated evidence is not usable",
+      "path": "src/zevorinth/evidence_store.py",
+      "old": "        if record.get(\"invalidated\"):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_evidence_store.EvidenceStoreTests.test_invalidation_blocks_verification"
+      ],
+      "expected": "killed"
     }
   ]
 }

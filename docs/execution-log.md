@@ -598,7 +598,36 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.27 阶段执行记录
+# 第 3.28 阶段执行记录
+
+## 实现
+
+- 新增 `evidence_store.py`：原子写入（tmp+fsync+replace+reload 校验）、结构/摘要校验、失效标记、只读列表；
+- `verify_stored_evidence` 在加载后强制执行 Phase 3.27 的 TTL/请求/命令/实时身份重验；
+- 失败语义细化：incomplete / digest_mismatch / conflict / write_failed / missing / corrupt；
+- 新增 3 条变异覆盖损坏接受、冲突覆盖、失效忽略。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 509/509，exit 0 |
+| 证据存储专项 | 17/17 |
+| Mutation runner | 52 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 无来源认证/防同权限篡改；
+- 未做掉电一致性实验；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.28-isolation-evidence-persistence-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 
