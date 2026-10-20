@@ -1217,6 +1217,40 @@ evidence。
 
 ---
 
+# 第 3.58 阶段执行记录
+
+## 实现
+
+- 审计结果增加版本、检查时间、scope、evidence_state 和 task_recovery；
+- `safe_to_retry` 对任务执行始终 false；未知/中断状态要求 manual_review；
+- 覆盖缺失/重复终态、孤立 cleanup terminal、非法时间戳和失效 evidence；
+- 审计前后任务/事件快照保持不变；
+- 历史任务无最终计划继续 fail-closed。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 审计覆盖矩阵 | 8/8 |
+| 系统 Python 全量 | 633/633 |
+| `.venv` 全量 | 633/633 |
+| Mutation runner | 73 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 审计只检查已定义不变量，不是安全认证；
+- 自动清理与历史迁移未实现；
+- 详见 `docs/phase-3.58-lifecycle-audit-coverage-recovery-integrity.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 
 
 ## 实现

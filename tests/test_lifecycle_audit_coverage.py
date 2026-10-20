@@ -1,0 +1,164 @@
+"""Phase 3.58: lifecycle audit coverage and recovery decisions."""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from zevorinth.models import Event, TaskRequest  # noqa: E402
+from zevorinth.service import TaskService  # noqa: E402
+from zevorinth.task_lifecycle import audit_task_lifecycle  # noqa: E402
+
+
+NOW = "2026-10-20T00:00:00.000+00:00"
+
+
+def _host_test_task() -> tuple[TaskService, object, list[Event]]:
+    root = Path(tempfile.mkdtemp(prefix="zv-audit-"))
+    workspace = root / "workspaces" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "test_ok.py").write_text(
+        "import unittest\nclass T(unittest.TestCase):\n"
+        "    def test_ok(self):\n        self.assertTrue(True)\n",
+        encoding="utf-8",
+    )
+    service = TaskService(root)
+    task = service.submit(
+        TaskRequest(
+            goal="run test_ok",
+            operation="run_tests",
+            parameters={
+                "runner": "unittest",
+                "target": "test_ok",
+                "workspace": "demo",
+                "execution_backend": "host",
+                "host_authorization": "local-maintenance",
+            },
+        )
+    )
+    return service, task, service.store.list_events(task.task_id)
+
+
+class LifecycleAuditCoverageTests(unittest.TestCase):
+    def test_success_is_consistent_and_not_retryable(self) -> None:
+        service, task, _ = _host_test_task()
+        report = service.audit_lifecycle(task.task_id)
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertFalse(report["task_recovery"]["safe_to_retry"])
+        self.assertEqual(report["task_recovery"]["recommendation"], "none")
+        self.assertEqual(report["auditor_version"], "lifecycle-audit-v1")
+        self.assertFalse(report["security_certification"])
+
+    def test_audit_is_read_only(self) -> None:
+        service, task, events = _host_test_task()
+        before_task = task.to_dict()
+        before_events = [event.to_dict() for event in events]
+        service.audit_lifecycle(task.task_id, now=NOW)
+        self.assertEqual(task.to_dict(), before_task)
+        self.assertEqual(
+            [event.to_dict() for event in service.store.list_events(task.task_id)],
+            before_events,
+        )
+
+    def test_missing_terminal_event_is_detected(self) -> None:
+        service, task, events = _host_test_task()
+        filtered = [
+            event for event in events if event.event_type != "task_succeeded"
+        ]
+        report = audit_task_lifecycle(task, filtered)
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "succeeded_without_task_event",
+            [item["code"] for item in report["issues"]],
+        )
+
+    def test_duplicate_terminal_event_is_detected(self) -> None:
+        service, task, events = _host_test_task()
+        duplicate = Event.new(task.task_id, "task_succeeded", NOW)
+        report = audit_task_lifecycle(task, [*events, duplicate])
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "duplicate_terminal_event",
+            [item["code"] for item in report["issues"]],
+        )
+
+    def test_orphan_cleanup_terminal_is_detected(self) -> None:
+        service, task, events = _host_test_task()
+        orphan = Event.new(
+            task.task_id,
+            "cleanup_completed",
+            NOW,
+            {"operation_id": "orphan", "relative_path": "probe-written.txt"},
+        )
+        report = audit_task_lifecycle(task, [*events, orphan])
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "cleanup_terminal_without_intent",
+            [item["code"] for item in report["issues"]],
+        )
+
+    def test_invalid_cleanup_timestamp_is_detected(self) -> None:
+        service, task, events = _host_test_task()
+        invalid = Event.new(
+            task.task_id,
+            "cleanup_intent",
+            "not-a-time",
+            {
+                "operation_id": "bad-time",
+                "relative_path": "probe-written.txt",
+                "source": "provisioning",
+            },
+        )
+        report = audit_task_lifecycle(task, [*events, invalid])
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "invalid_cleanup_timestamp",
+            [item["code"] for item in report["issues"]],
+        )
+        self.assertTrue(report["cleanup_operations"][0]["manual_intervention"])
+
+    def test_succeeded_run_tests_with_invalid_evidence_is_detected(self) -> None:
+        service, task, events = _host_test_task()
+        report = audit_task_lifecycle(
+            task,
+            events,
+            evidence_state={"state": "invalidated", "reasons": ["test"]},
+        )
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "succeeded_with_unverified_evidence",
+            [item["code"] for item in report["issues"]],
+        )
+
+    def test_interrupted_task_requires_manual_review(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="zv-audit-queued-"))
+        service = TaskService(root)
+        task = service.enqueue(
+            TaskRequest(
+                goal="write",
+                operation="write_text_artifact",
+                parameters={"artifact_path": "a.txt", "content": "x"},
+            )
+        )
+        data = task.to_dict()
+        data["status"] = "interrupted"
+        data["phase"] = "lease_expired"
+        interrupted = type(task).from_dict(data)
+        report = audit_task_lifecycle(
+            interrupted, service.store.list_events(task.task_id)
+        )
+        self.assertTrue(report["task_recovery"]["manual_intervention"])
+        self.assertFalse(report["task_recovery"]["safe_to_retry"])
+        self.assertEqual(
+            report["task_recovery"]["recommendation"], "manual_review"
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

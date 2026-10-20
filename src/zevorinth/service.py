@@ -393,8 +393,44 @@ class TaskService:
     ) -> dict[str, Any]:
         """Read-only audit of task, evidence and cleanup consistency."""
         task = self.store.require_task(task_id)
+        evidence_state = None
+        evidence = (
+            task.tool_result.test_evidence
+            if task.tool_result is not None
+            else None
+        )
+        snapshot = task.execution_plan_snapshot
+        if (
+            evidence is not None
+            and evidence.evidence_id
+            and isinstance(snapshot, Mapping)
+            and snapshot.get("kind") == RUN_TESTS_TOOL
+        ):
+            from .evidence_store import EvidenceStore, EvidenceStoreError
+            from .isolation import _live_image_digest, _live_runtime_identity
+
+            image = str(snapshot.get("image") or "python:3.13-alpine")
+            try:
+                evidence_state = EvidenceStore(
+                    self.project_root
+                ).verify_stored_evidence(
+                    evidence.evidence_id,
+                    expected_runtime=_live_runtime_identity(),
+                    expected_image_digest=_live_image_digest(image),
+                    expected_config_digest=evidence.config_digest or "",
+                    expected_request_id=task.task_id,
+                    expected_command_digest=evidence.command_digest or "",
+                )
+            except EvidenceStoreError as exc:
+                evidence_state = {
+                    "state": "unverified",
+                    "reasons": [exc.code],
+                }
         return audit_task_lifecycle(
-            task, self.store.list_events(task_id), now=now
+            task,
+            self.store.list_events(task_id),
+            now=now,
+            evidence_state=evidence_state,
         )
 
     def cleanup_provisioning_artifact(
