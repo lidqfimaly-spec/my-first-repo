@@ -155,7 +155,28 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
-# 第 3.38 阶段新增与修改
+# 第 3.39 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.39-run-tests-protocol-extension-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/isolation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/planning_validation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_llm_run_tests_capability.py`
+
+运行产物不纳入源码提交；Schema 版本保持 v4。
+
+---
+
+
 
 ## 新增
 

@@ -598,7 +598,34 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.38 阶段执行记录
+# 第 3.39 阶段执行记录
+
+## 实现
+
+- LLM 候选 schema 增加 `operation=run_tests` 与 `test_target`；
+- 校验器 `_plan_test`：仅接受受限 target，workspace/runner/镜像/后端/证据全部取自可信请求；
+- 写路径保持"缺字段"诊断语义；
+- `_live_image_digest` 增加 digest 列表回退，修复容器测试偶发跳过。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 547/547，exit 0 |
+| 能力审计专项 | 10/10 |
+| Mutation runner | 60 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 真实模型 API 请求：0；
+- 模型驱动容器执行仍属"协议就绪、行为未验证"；
+- 详见 `docs/phase-3.39-run-tests-protocol-extension-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 结论
 

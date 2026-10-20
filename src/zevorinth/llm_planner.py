@@ -68,7 +68,10 @@ CANDIDATE_JSON_SCHEMA: dict[str, Any] = {
         },
         "operation": {
             "anyOf": [
-                {"type": "string", "enum": ["write_text_artifact"]},
+                {
+                    "type": "string",
+                    "enum": ["write_text_artifact", "run_tests"],
+                },
                 {"type": "null"},
             ]
         },
@@ -81,6 +84,12 @@ CANDIDATE_JSON_SCHEMA: dict[str, Any] = {
         "content": {
             "anyOf": [
                 {"type": "string", "maxLength": 65536},
+                {"type": "null"},
+            ]
+        },
+        "test_target": {
+            "anyOf": [
+                {"type": "string", "maxLength": 200},
                 {"type": "null"},
             ]
         },
@@ -109,6 +118,7 @@ CANDIDATE_JSON_SCHEMA: dict[str, Any] = {
         "operation",
         "artifact_path",
         "content",
+        "test_target",
         "missing_fields",
         "clarification_questions",
         "reason",

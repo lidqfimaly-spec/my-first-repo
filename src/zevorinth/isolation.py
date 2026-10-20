@@ -653,7 +653,21 @@ def _live_image_digest(image: str) -> str:
         text=True,
         timeout=10,
     )
-    return completed.stdout.strip() or "missing"
+    digest = completed.stdout.strip()
+    if digest:
+        return digest
+    # Docker Desktop occasionally loses the tag->image mapping while the
+    # image is still listed; fall back to the digests listing.
+    listed = subprocess.run(
+        [binary, "images", "--digests", image, "--format", "{{.Repository}}@{{.Digest}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    for line in listed.stdout.splitlines():
+        if "@sha256:" in line and "none" not in line.lower():
+            return line.strip()
+    return "missing"
 
 
 def run_protected_container(

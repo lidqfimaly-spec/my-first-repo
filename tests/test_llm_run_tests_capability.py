@@ -28,30 +28,29 @@ def _candidate(**overrides) -> dict:
         "missing_fields": [],
         "clarification_questions": [],
         "reason": None,
+        "test_target": None,
     }
     base.update(overrides)
     return base
 
 
 class CandidateSchemaTests(unittest.TestCase):
-    def test_schema_operation_enum_excludes_run_tests(self) -> None:
+    def test_schema_operation_enum_includes_run_tests(self) -> None:
         for schema in (CANDIDATE_JSON_SCHEMA, DEEPSEEK_CANDIDATE_JSON_SCHEMA):
-            operation = schema["properties"]["operation"]
-            self.assertEqual(
-                operation["anyOf"][0]["enum"], ["write_text_artifact"]
-            )
-            self.assertNotIn("run_tests", str(operation))
+            enum = schema["properties"]["operation"]["anyOf"][0]["enum"]
+            self.assertEqual(enum, ["write_text_artifact", "run_tests"])
+            self.assertIn("test_target", schema["properties"])
 
-    def test_schema_has_no_test_execution_fields(self) -> None:
+    def test_schema_has_no_trusted_test_fields(self) -> None:
         keys = set(CANDIDATE_JSON_SCHEMA["properties"])
         for forbidden in (
-            "target",
             "workspace",
             "evidence_id",
             "execution_backend",
             "image",
             "command_digest",
             "host_authorization",
+            "runner",
         ):
             self.assertNotIn(forbidden, keys)
 
@@ -70,13 +69,46 @@ class ValidatorTests(unittest.TestCase):
         )
         self.assertEqual(result.classification.value, "planned")
 
-    def test_run_tests_candidate_is_unsupported(self) -> None:
+    def test_run_tests_candidate_requires_a_target(self) -> None:
         result = self.validator.validate(
             _candidate(operation="run_tests"), base_request=self.request
         )
-        self.assertEqual(result.classification.value, "unsupported")
-        self.assertEqual(result.error_code, "unsupported_operation")
-        self.assertIsNone(result.plan)
+        self.assertEqual(result.classification.value, "failed")
+        self.assertEqual(result.error_code, "invalid_test_target")
+
+    def test_run_tests_candidate_plans_with_trusted_workspace(self) -> None:
+        request = TaskRequest(
+            goal="run tests", operation=None, parameters={"workspace": "demo"}
+        )
+        result = self.validator.validate(
+            _candidate(operation="run_tests", test_target="tests.test_x"),
+            base_request=request,
+        )
+        self.assertEqual(result.classification.value, "planned")
+        step = result.plan.steps[0]
+        self.assertEqual(step.tool_name, "run_tests")
+        self.assertEqual(step.parameters["target"], "tests.test_x")
+        self.assertEqual(step.parameters["workspace"], "demo")
+        self.assertEqual(step.parameters["execution_backend"], "container")
+        self.assertIsNone(step.parameters.get("evidence_id"))
+
+    def test_run_tests_candidate_rejects_shell_target(self) -> None:
+        for bad in ("rm -rf /", "../x", "/etc/passwd", "a;b"):
+            result = self.validator.validate(
+                _candidate(operation="run_tests", test_target=bad),
+                base_request=self.request,
+            )
+            self.assertEqual(result.error_code, "invalid_test_target", bad)
+
+    def test_run_tests_without_workspace_needs_clarification(self) -> None:
+        result = self.validator.validate(
+            _candidate(operation="run_tests", test_target="tests.test_x"),
+            base_request=self.request,
+        )
+        self.assertEqual(
+            result.classification.value, "clarification"
+        )
+        self.assertIn("workspace", result.missing_fields)
 
     def test_model_cannot_supply_evidence_or_identity(self) -> None:
         for field in ("evidence_id", "task_id", "execution_id"):

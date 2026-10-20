@@ -12,12 +12,21 @@ from .models import (
     PlanningOutcome,
     TaskRequest,
 )
-from .planner import WRITE_TEXT_ARTIFACT, PlanningError, build_artifact_plan
+from .local_test_runner import TARGET_PATTERN, TestExecutionError, validate_parameters
+from .planner import (
+    RUN_TESTS,
+    WRITE_TEXT_ARTIFACT,
+    PlanningError,
+    build_artifact_plan,
+    build_test_plan,
+)
 
 
 MAX_MODEL_RESPONSE_BYTES = 96 * 1024
 MAX_CLARIFICATION_QUESTIONS = 5
-ALLOWED_MISSING_FIELDS = frozenset({"goal", "operation", "artifact_path", "content"})
+ALLOWED_MISSING_FIELDS = frozenset(
+    {"goal", "operation", "artifact_path", "content", "workspace", "test_target"}
+)
 CANDIDATE_FIELDS = frozenset(
     {
         "classification",
@@ -27,16 +36,18 @@ CANDIDATE_FIELDS = frozenset(
         "missing_fields",
         "clarification_questions",
         "reason",
+        "test_target",
     }
 )
 _SAFE_FIELD_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 REQUIRED_FIELDS_BY_CLASSIFICATION = {
-    "plan": ("operation", "artifact_path", "content"),
+    "plan": ("operation",),
     "clarification": ("missing_fields", "clarification_questions"),
     "unsupported": ("reason",),
 }
 _DEFAULTS = {
     "operation": None,
+    "test_target": None,
     "artifact_path": None,
     "content": None,
     "missing_fields": [],
@@ -145,6 +156,8 @@ class PlanningCandidateValidator:
         metadata: dict[str, Any],
     ) -> PlanningOutcome:
         operation = candidate.get("operation")
+        if operation == RUN_TESTS:
+            return self._plan_test(candidate, base_request, metadata)
         if operation != WRITE_TEXT_ARTIFACT:
             return PlanningOutcome(
                 classification=PlanningClassification.UNSUPPORTED,
@@ -155,6 +168,21 @@ class PlanningCandidateValidator:
                     **metadata,
                     "candidate_validation": "rejected",
                     "validation_error_code": "unsupported_operation",
+                },
+            )
+        missing = [
+            field
+            for field in ("artifact_path", "content")
+            if candidate.get(field) is None
+        ]
+        if missing:
+            return self._failed(
+                "missing_candidate_fields",
+                "planner candidate is missing category-specific fields",
+                {
+                    **metadata,
+                    "candidate_classification": "plan",
+                    "candidate_missing_fields": missing,
                 },
             )
         try:
@@ -199,15 +227,80 @@ class PlanningCandidateValidator:
                 deterministic=False,
             )
         except PlanningError as exc:
-            return self._failed(exc.code, exc.message, metadata)
+            return self._failed(
+                exc.code,
+                exc.message,
+                {**metadata, "validation_error_code": exc.code},
+            )
         return PlanningOutcome(
             classification=PlanningClassification.PLANNED,
             request=request,
             plan=plan,
-            metadata={
-                **metadata,
-                "candidate_validation": "passed",
-            },
+            metadata={**metadata, "candidate_validation": "passed"},
+        )
+
+    def _plan_test(
+        self,
+        candidate: Mapping[str, Any],
+        base_request: TaskRequest,
+        metadata: dict[str, Any],
+    ) -> PlanningOutcome:
+        """Accept only a bounded ``test_target`` from the model.
+
+        Workspace, runner, image and evidence are taken from the trusted task
+        request; the model cannot supply them.
+        """
+        target = candidate.get("test_target")
+        if not isinstance(target, str) or not TARGET_PATTERN.fullmatch(target):
+            return self._failed(
+                "invalid_test_target",
+                "test_target must be a dotted identifier",
+                {**metadata, "validation_error_code": "invalid_test_target"},
+            )
+        parameters = dict(base_request.parameters)
+        if not parameters.get("workspace"):
+            return self._clarification(
+                {
+                    "missing_fields": ["workspace"],
+                    "clarification_questions": ["请提供已注册的工作区。"],
+                },
+                base_request,
+                metadata,
+            )
+        parameters["target"] = target
+        parameters.setdefault("runner", "unittest")
+        request = TaskRequest(
+            goal=base_request.goal, operation=RUN_TESTS, parameters=parameters
+        )
+        try:
+            normalized = validate_parameters(dict(request.parameters))
+            plan = build_test_plan(
+                TaskRequest(
+                    goal=request.goal,
+                    operation=RUN_TESTS,
+                    parameters=normalized,
+                ),
+                planner_name=self.planner_name,
+            )
+        except (TestExecutionError, PlanningError) as exc:
+            code = getattr(exc, "code", "invalid_test_plan")
+            message = getattr(exc, "message", str(exc))
+            return PlanningOutcome(
+                classification=PlanningClassification.UNSUPPORTED,
+                request=base_request,
+                error_code=code,
+                error_message=message,
+                metadata={
+                    **metadata,
+                    "candidate_validation": "rejected",
+                    "validation_error_code": code,
+                },
+            )
+        return PlanningOutcome(
+            classification=PlanningClassification.PLANNED,
+            request=request,
+            plan=plan,
+            metadata={**metadata, "candidate_validation": "passed"},
         )
 
     def _clarification(

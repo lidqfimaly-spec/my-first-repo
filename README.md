@@ -342,5 +342,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.36 阶段真实模型驱动的执行闭环](docs/phase-3.36-real-model-execution-audit.md)
 - [第 3.37 阶段隔离证据自动准备](docs/phase-3.37-isolation-evidence-provisioning-audit.md)
 - [第 3.38 阶段 LLM Planner 的 run_tests 能力审计](docs/phase-3.38-llm-planner-run-tests-capability-audit.md)
+- [第 3.39 阶段 run_tests 协议扩展（离线）](docs/phase-3.39-run-tests-protocol-extension-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

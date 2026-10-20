@@ -674,6 +674,28 @@
         "tests.test_container_timeout_cancel.ContainerTimeoutCancelTests.test_unconfirmed_termination_fails_closed"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "llm_run_tests_target_unchecked",
+      "property": "model-supplied test target is validated",
+      "path": "src/zevorinth/planning_validation.py",
+      "old": "        if not isinstance(target, str) or not TARGET_PATTERN.fullmatch(target):\n",
+      "new": "        if not isinstance(target, str):\n",
+      "tests": [
+        "tests.test_llm_run_tests_capability.ValidatorTests.test_run_tests_candidate_rejects_shell_target"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "llm_run_tests_trusted_workspace_ignored",
+      "property": "workspace comes from the trusted request",
+      "path": "src/zevorinth/planning_validation.py",
+      "old": "        if not parameters.get(\"workspace\"):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_llm_run_tests_capability.ValidatorTests.test_run_tests_without_workspace_needs_clarification"
+      ],
+      "expected": "killed"
     }
   ]
 }
