@@ -426,6 +426,11 @@ class TaskService:
                     "state": "unverified",
                     "reasons": [exc.code],
                 }
+            except Exception as exc:
+                evidence_state = {
+                    "state": "unverified",
+                    "reasons": [type(exc).__name__],
+                }
         return audit_task_lifecycle(
             task,
             self.store.list_events(task_id),

@@ -5,7 +5,9 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -57,14 +59,19 @@ class LifecycleAuditCoverageTests(unittest.TestCase):
 
     def test_audit_is_read_only(self) -> None:
         service, task, events = _host_test_task()
+        workspace = service.project_root / "workspaces" / "demo"
+        probe = workspace / "probe-written.txt"
+        probe.write_text("keep\n", encoding="utf-8")
         before_task = task.to_dict()
         before_events = [event.to_dict() for event in events]
+        before_probe = probe.read_bytes()
         service.audit_lifecycle(task.task_id, now=NOW)
         self.assertEqual(task.to_dict(), before_task)
         self.assertEqual(
             [event.to_dict() for event in service.store.list_events(task.task_id)],
             before_events,
         )
+        self.assertEqual(probe.read_bytes(), before_probe)
 
     def test_missing_terminal_event_is_detected(self) -> None:
         service, task, events = _host_test_task()
@@ -157,6 +164,64 @@ class LifecycleAuditCoverageTests(unittest.TestCase):
         self.assertFalse(report["task_recovery"]["safe_to_retry"])
         self.assertEqual(
             report["task_recovery"]["recommendation"], "manual_review"
+        )
+
+    def test_blocked_unknown_execution_requires_manual_review(self) -> None:
+        service, task, events = _host_test_task()
+        data = task.to_dict()
+        data["status"] = "blocked"
+        data["phase"] = "blocked_test_unknown"
+        data["error"] = {
+            "code": "test_execution_unknown",
+            "message": "unknown execution state",
+        }
+        blocked = type(task).from_dict(data)
+        filtered = [
+            event for event in events if event.event_type != "task_succeeded"
+        ]
+        report = audit_task_lifecycle(blocked, filtered)
+        self.assertTrue(report["task_recovery"]["manual_intervention"])
+        self.assertFalse(report["task_recovery"]["safe_to_retry"])
+        self.assertEqual(
+            report["task_recovery"]["recommendation"], "manual_review"
+        )
+
+    def test_evidence_read_failure_is_reported_without_audit_crash(self) -> None:
+        service, task, _ = _host_test_task()
+        evidence = replace(
+            task.tool_result.test_evidence,
+            evidence_id="auto-test",
+            config_digest="a" * 64,
+            command_digest="b" * 64,
+        )
+        tool_result = replace(task.tool_result, test_evidence=evidence)
+        snapshot = dict(task.execution_plan_snapshot)
+        snapshot.update(
+            {
+                "evidence_id": "auto-test",
+                "config_digest": "a" * 64,
+                "command_digest": "b" * 64,
+            }
+        )
+        service.store.record_event_and_update(
+            task.task_id,
+            "evidence_fixture",
+            NOW,
+            updates={
+                "tool_result": tool_result,
+                "execution_plan_version": task.plan_version,
+                "execution_plan_snapshot": snapshot,
+            },
+        )
+        with patch(
+            "zevorinth.evidence_store.EvidenceStore.verify_stored_evidence",
+            side_effect=OSError("unreadable"),
+        ):
+            report = service.audit_lifecycle(task.task_id)
+        self.assertEqual(report["evidence_state"]["state"], "unverified")
+        self.assertIn(
+            "succeeded_with_unverified_evidence",
+            [item["code"] for item in report["issues"]],
         )
 
 

@@ -263,6 +263,14 @@ def audit_task_lifecycle(
         TaskStatus.RUNNING,
         TaskStatus.VERIFYING,
         TaskStatus.INTERRUPTED,
+        TaskStatus.BLOCKED,
+        TaskStatus.AWAITING_CLARIFICATION,
+    }:
+        manual = True
+    if task.error is not None and task.error.code in {
+        "test_execution_unknown",
+        "container_termination_unverified",
+        "isolation_unverified",
     }:
         manual = True
     return {

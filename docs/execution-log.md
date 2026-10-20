@@ -1217,6 +1217,40 @@ evidence。
 
 ---
 
+# 第 3.59 阶段执行记录
+
+## 实现
+
+- BLOCKED/AWAITING/INTERRUPTED/RUNNING/VERIFYING 强制人工复核，不自动重试；
+- `test_execution_unknown`、终止未知和隔离未验证强制人工复核；
+- evidence 读取异常降级为 `unverified`，成功任务产生证据不一致问题；
+- 审计继续报告缺失/重复终态、孤立 cleanup terminal 和非法时间戳；
+- 只读审计覆盖任务、事件和 workspace 文件。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 持久化/恢复矩阵 | 11/11 |
+| 系统 Python 全量 | 635/635 |
+| `.venv` 全量 | 635/635 |
+| Mutation runner | 73 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 审计只检查已定义不变量，不是安全认证；
+- 自动恢复/清理队列和历史迁移未实现；
+- 详见 `docs/phase-3.59-persistence-fault-recovery-decisions.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 # 第 3.58 阶段执行记录
 
 ## 实现
