@@ -500,6 +500,39 @@
         "tests.test_container_backend.ContainerCommandTests.test_unsafe_variants_are_refused"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "evidence_tamper_accepted",
+      "property": "tampered evidence is rejected",
+      "path": "src/zevorinth/isolation_evidence.py",
+      "old": "    if evidence_digest(evidence) != evidence.get(\"digest\"):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_isolation_evidence.EvidenceVerifierTests.test_tampered_evidence_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "not_executed_counted_as_pass",
+      "property": "NOT_EXECUTED never counts as PASS",
+      "path": "src/zevorinth/isolation_evidence.py",
+      "old": "        if status == \"NOT_EXECUTED\":\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_isolation_evidence.EvidenceVerifierTests.test_not_executed_probe_blocks"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_identity_mismatch_ignored",
+      "property": "image/config mismatch blocks verification",
+      "path": "src/zevorinth/isolation_evidence.py",
+      "old": "        if evidence.get(name) != expected:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_isolation_evidence.EvidenceVerifierTests.test_image_or_config_mismatch_is_blocked"
+      ],
+      "expected": "killed"
     }
   ]
 }

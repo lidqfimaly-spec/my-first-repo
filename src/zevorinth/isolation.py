@@ -586,8 +586,34 @@ def run_protected_container(
     image: str,
     boundary_result: dict[str, Any],
     timeout: float = 60.0,
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Start a containerised process only after boundary verification."""
+    """Start a containerised process only after boundary verification.
+
+    When ``evidence`` is supplied it must independently verify; the caller's
+    ``boundary_result`` alone is never sufficient.
+    """
+    if evidence is not None:
+        from .isolation_evidence import verify_evidence
+
+        verdict = verify_evidence(
+            evidence,
+            expected_runtime=str(evidence.get("runtime_identity", "")),
+            expected_image_digest=str(evidence.get("image_digest", "")),
+            expected_config_digest=str(
+                evidence.get("container_config_digest", "")
+            ),
+        )
+        if verdict["state"] != "verified":
+            return {
+                "isolation_backend": "container",
+                "isolation_state": verdict["state"],
+                "profile_applied": False,
+                "process_started": False,
+                "exit_code": None,
+                "blocked_reason": "; ".join(verdict["reasons"]),
+                "argv": list(argv),
+            }
     if boundary_result.get("state") != "verified":
         return {
             "isolation_backend": "container",

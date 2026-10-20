@@ -598,6 +598,36 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.26 阶段执行记录
+
+## 实现
+
+- 新增 `isolation_evidence.py`：证据契约、规范化摘要与独立验证器；
+- 验证器拒绝缺失/部分/篡改/身份不符/版本不兼容/NOT_EXECUTED 证据；
+- `run_protected_container` 在提供证据时必须先通过独立验证；
+- 新增 3 条变异覆盖证据篡改、NOT_EXECUTED、身份失配。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 473/473，exit 0 |
+| 证据验证器专项 | 13/13 |
+| Mutation runner | 46 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| 容器真实探针 | NOT_EXECUTED（无 daemon） |
+
+## 边界
+
+- 容器边界 BLOCKED；
+- 无镜像 digest 证据；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.26-container-isolation-verification-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.25 阶段执行记录
 
 ## 实现
