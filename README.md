@@ -360,5 +360,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.52 阶段清理恢复、并发与真实异常路径审计](docs/phase-3.52-cleanup-recovery-concurrency-audit.md)
 - [第 3.53 阶段任务生命周期与进程级恢复审计](docs/phase-3.53-task-lifecycle-process-recovery-audit.md)
 - [第 3.54 阶段真实模型取消路径验证](docs/phase-3.54-real-model-cancel-verification.md)
+- [第 3.55 阶段真实模型验证器拒绝路径](docs/phase-3.55-real-model-verifier-rejection.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

@@ -388,6 +388,34 @@
 
 ---
 
+# 第 3.55 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.55-real-model-verifier-rejection.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 真实调用结果
+
+- 真实模型 API 请求：1（授权上限 1）；
+- 候选：`run_tests` / `test_ok`，校验通过；
+- 容器：`zv-22883fdea736-68972669`，退出码 0；
+- evidence 撤销后 verifier 返回 `evidence_invalidated`；
+- 任务：`failed / evidence_invalidated`；
+- 无 `task_succeeded`，无宿主机回退。
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.55/real-verifier-rejection-pilot.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.55/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增

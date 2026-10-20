@@ -1125,6 +1125,36 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.55 阶段执行记录
+
+## 真实调用
+
+1 次真实模型请求，0 重试；真实 `run_tests` 容器退出码 0 后，在独立验证前撤销
+evidence。
+
+- 候选通过严格校验：`run_tests` / `test_ok`；
+- 容器 `zv-22883fdea736-68972669` 退出码 0；
+- 测试退出码 0，tool result success=true；
+- verifier 返回 `evidence_invalidated`，passed=false；
+- evidence 独立重验 `blocked / evidence_invalidated`；
+- 任务失败 `evidence_invalidated`；
+- 无 `task_succeeded`，无宿主机回退；
+- 最终计划与证据身份一致（`plan_mismatch=None`）。
+
+## 测试
+
+- 预检专项 36/36；
+- Phase 3.53 全量 619/619（系统 Python 与 `.venv`）；
+- Mutation runner 71 killed / 0 survived；
+- 本阶段无代码变更。
+
+## 结论
+
+**PASS**。详见
+`docs/phase-3.55-real-model-verifier-rejection.md`；未推送。
+
+---
+
 
 
 ## 实现
