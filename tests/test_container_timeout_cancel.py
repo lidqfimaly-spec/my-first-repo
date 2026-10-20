@@ -47,6 +47,16 @@ NOISY = (
 )
 
 
+def _cleanup_containers() -> None:
+    listed = subprocess.run(
+        ["docker", "ps", "--filter", "name=zv-", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+    )
+    for name in listed.stdout.split():
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
 def _ready() -> bool:
     try:
         return _live_image_digest(IMAGE).startswith("python@")
@@ -119,6 +129,10 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _ready():
             self.skipTest("python:3.13-alpine not available")
+        _cleanup_containers()
+
+    def tearDown(self) -> None:
+        _cleanup_containers()
 
     def _run(self, module: str, content: str, *, timeout: float = 60, cancel_after=None, **extra):
         root = Path(tempfile.mkdtemp())
@@ -178,6 +192,81 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         )
         self.assertEqual(leftovers.stdout.strip(), "")
 
+    def test_disk_quota_blocks_oversized_writes(self) -> None:
+        big = (
+            "import pathlib, unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_big(self):\n"
+            "        pathlib.Path('big.bin').write_bytes(b'x' * 5_000_000)\n"
+        )
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_big.py").write_text(big, encoding="utf-8")
+        service = TaskService(root)
+        queued = service.enqueue(
+            _request("test_big", disk_limit_bytes=1024 * 1024)
+        )
+        evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
+        _bind_evidence(evidence, workspace, "test_big", queued.task_id)
+        EvidenceStore(root).save_evidence(evidence)
+        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
+        service.store.record_event_and_update(
+            queued.task_id, "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+        result = service.execute_task(queued.task_id)
+        # The tmpfs cap makes the write fail inside the container.
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertNotEqual(
+            getattr(result.error, "code", None), "success"
+        )
+
+    def test_unconfirmed_termination_fails_closed(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_slow.py").write_text(SLOW, encoding="utf-8")
+        service = TaskService(root)
+        queued = service.enqueue(_request("test_slow", timeout_seconds=2))
+        evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
+        _bind_evidence(evidence, workspace, "test_slow", queued.task_id)
+        EvidenceStore(root).save_evidence(evidence)
+        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
+        service.store.record_event_and_update(
+            queued.task_id, "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+        service.container_terminator = lambda name: False
+        result = service.execute_task(queued.task_id)
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(
+            result.error.code, "container_termination_unverified"
+        )
+        _cleanup_containers()
+
+    def test_repeated_cancel_is_idempotent(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / "test_ok.py").write_text(
+            "import unittest\nclass T(unittest.TestCase):\n"
+            "    def test_ok(self):\n        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        service = TaskService(root)
+        task = service.enqueue(_request("test_ok", execution_backend="host",
+                                        host_authorization="local-maintenance"))
+        first = service.request_cancel(task.task_id, requested_by="t", reason="a")
+        second = service.request_cancel(task.task_id, requested_by="t", reason="b")
+        self.assertEqual(first.cancel_requested_at, second.cancel_requested_at)
+        result = service.execute_task(task.task_id)
+        self.assertEqual(result.status, TaskStatus.CANCELLED)
+        again = service.request_cancel(task.task_id, requested_by="t", reason="c")
+        self.assertEqual(again.status, TaskStatus.CANCELLED)
+
     def test_missing_required_artifact_fails_collection(self) -> None:
         root, service, result, events = self._run(
             "test_slow_ok",
@@ -205,6 +294,15 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
 
 
 class ArtifactManifestUnitTests(unittest.TestCase):
+    def test_collection_status_helper(self) -> None:
+        from zevorinth.service import _collection_status
+
+        self.assertEqual(_collection_status([], []), "complete")
+        self.assertEqual(
+            _collection_status(["a"], [{"relative_path": "a"}]), "complete"
+        )
+        self.assertEqual(_collection_status(["b"], []), "failed")
+
     def test_required_artifact_missing_fails_collection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "ws"

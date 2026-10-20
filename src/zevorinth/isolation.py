@@ -468,6 +468,7 @@ def build_container_command(
     memory: str = "256m",
     pids_limit: int = 64,
     cpus: str = "0.5",
+    disk_limit_bytes: int | None = None,
 ) -> list[str]:
     """Hardened ``docker run`` argv: no network, no host mounts, no caps."""
     if not image or ":" not in image and "@" not in image:
@@ -477,6 +478,44 @@ def build_container_command(
     resolved = str(workspace.resolve())
     if not resolved:
         raise IsolationError("invalid_workspace", "workspace is required")
+    if disk_limit_bytes:
+        # Hard-capped tmpfs workspace; inputs are mounted read-only so the
+        # host directory can never grow.
+        capped = int(disk_limit_bytes)
+        if capped < 1024 * 1024:
+            raise IsolationError(
+                "invalid_disk_limit", "disk limit must be at least 1 MiB"
+            )
+        return [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--user",
+            "65534:65534",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            str(pids_limit),
+            "--memory",
+            memory,
+            "--cpus",
+            cpus,
+            "--tmpfs",
+            f"/workspace:rw,noexec,nosuid,size={capped}",
+            "--mount",
+            f"type=bind,src={resolved},dst=/input,readonly",
+            "--workdir",
+            "/workspace",
+            image,
+            "/bin/sh",
+            "-c",
+            "cp -a /input/. /workspace/ && cd /workspace && exec " + " ".join(argv),
+        ]
     return [
         "docker",
         "run",
@@ -527,7 +566,9 @@ def assert_container_command_safe(command: list[str]) -> None:
             if item == "--mount"
         ]
         for mount in mounts:
-            if "dst=/workspace" not in mount:
+            if "dst=/workspace" not in mount and not (
+                "dst=/input" in mount and "readonly" in mount
+            ):
                 raise IsolationError(
                     "unsafe_container_mount",
                     f"unexpected mount: {mount}",

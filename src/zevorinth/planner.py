@@ -125,6 +125,7 @@ def build_test_plan(
                     "required_artifacts": list(
                         validation.get("required_artifacts") or []
                     ),
+                    "disk_limit_bytes": validation.get("disk_limit_bytes"),
                 },
             )
         ],

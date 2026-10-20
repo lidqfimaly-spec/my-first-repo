@@ -652,6 +652,28 @@
           "new": "            if False:\n"
         }
       ]
+    },
+    {
+      "id": "collection_failure_ignored",
+      "property": "missing required artifacts are reported as failed",
+      "path": "src/zevorinth/service.py",
+      "old": "    return \"failed\" if any(str(item) not in present for item in required) else \"complete\"\n",
+      "new": "    return \"complete\"\n",
+      "tests": [
+        "tests.test_container_timeout_cancel.ArtifactManifestUnitTests.test_collection_status_helper"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "termination_failure_reported_success",
+      "property": "unconfirmed termination fails closed",
+      "path": "src/zevorinth/service.py",
+      "old": "            if terminated is not True:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_container_timeout_cancel.ContainerTimeoutCancelTests.test_unconfirmed_termination_fails_closed"
+      ],
+      "expected": "killed"
     }
   ]
 }

@@ -598,7 +598,36 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.32 阶段执行记录
+# 第 3.33 阶段执行记录
+
+## 实现
+
+- 新增 `disk_limit_bytes`：tmpfs 工作区硬配额 + 只读输入挂载，宿主目录不可被撑大；
+- `container_terminator` 可注入，终止失败即 `container_termination_unverified` 失败关闭；
+- `_collection_status` 纯函数，缺失必需产物即 `collection_failed`；
+- 重复取消幂等；重新纳入并捕获 `collection_failure_ignored` 变异。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 533/533，exit 0 |
+| 资源/生命周期专项 | 10/10（真实容器） |
+| Mutation runner | 58 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 配额仅在显式设置时生效；
+- 容器内 stdout 未限；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.33-resource-limits-failure-recovery-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

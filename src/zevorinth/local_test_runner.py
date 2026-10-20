@@ -61,6 +61,7 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         "command_digest",
         "host_authorization",
         "required_artifacts",
+        "disk_limit_bytes",
     }
     if unknown:
         raise TestExecutionError(

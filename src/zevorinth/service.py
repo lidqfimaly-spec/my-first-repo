@@ -84,6 +84,14 @@ class CancellationRequested(Exception):
     pass
 
 
+def _collection_status(
+    required: list[Any], artifacts: list[dict[str, Any]]
+) -> str:
+    """``failed`` when any required artifact is missing from the collection."""
+    present = {item["relative_path"] for item in artifacts}
+    return "failed" if any(str(item) not in present for item in required) else "complete"
+
+
 class TaskService:
     """Single-host coordinator using SQLite transactions for task ownership."""
 
@@ -155,6 +163,7 @@ class TaskService:
         self.verifier = ArtifactVerifier(self.artifacts_root)
         self.test_verifier = TestResultVerifier()
         self.test_runner = run_unittest
+        self.container_terminator = None
         self.store = EventStore(
             self.database_path,
             busy_timeout_ms=busy_timeout_ms,
@@ -1759,8 +1768,12 @@ class TaskService:
         # ``-B`` keeps ``__pycache__`` out of the bind-mounted workspace so the
         # side-effect audit does not see bytecode as an unexpected change.
         argv = ["python", "-B", "-m", "unittest", "-q", target]
+        disk_limit = parameters.get("disk_limit_bytes")
         container_command = build_container_command(
-            image=image, workspace=workspace, argv=argv
+            image=image,
+            workspace=workspace,
+            argv=argv,
+            disk_limit_bytes=int(disk_limit) if disk_limit else None,
         )
         config_digest = _hashlib.sha256(
             " ".join(container_command).encode("utf-8")
@@ -1878,10 +1891,9 @@ class TaskService:
             container_command, process.returncode, stdout_raw, stderr_raw
         )
         artifacts = self._collect_test_artifacts(workspace, limit)
-        required = [str(item) for item in (parameters.get("required_artifacts") or [])]
-        present = {item["relative_path"] for item in artifacts}
-        missing = [item for item in required if item not in present]
-        collection_status = "failed" if missing else "complete"
+        collection_status = _collection_status(
+            parameters.get("required_artifacts") or [], artifacts
+        )
         stdout = completed.stdout.encode("utf-8", "replace")
         stderr = completed.stderr.encode("utf-8", "replace")
         truncated = len(stdout) > limit or len(stderr) > limit
@@ -1914,6 +1926,8 @@ class TaskService:
 
     def _terminate_container(self, name: str) -> bool:
         """Kill the named container and confirm it is gone."""
+        if self.container_terminator is not None:
+            return bool(self.container_terminator(name))
         import shutil as _shutil
         import subprocess as _subprocess
 
@@ -2048,6 +2062,7 @@ class TaskService:
             "required_artifacts": list(
                 plan_step.parameters.get("required_artifacts") or []
             ),
+            "disk_limit_bytes": plan_step.parameters.get("disk_limit_bytes"),
             "allowed_side_effects": list(
                 plan_step.parameters.get("allowed_side_effects") or []
             ),
