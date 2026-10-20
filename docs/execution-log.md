@@ -598,7 +598,34 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.34 阶段执行记录
+# 第 3.35 阶段执行记录
+
+## 实现
+
+- 复用 Phase 3.9 试点装置，在用户全面授权下复跑两个合成案例；
+- 发现系统 Python 的 openai 为 2.45.0（不兼容），改用项目 `.venv`（3.35.1），未安装依赖；
+- 边界：2 请求、0 重试、30s、1500 tokens。
+
+## 结果
+
+| 案例 | 分类 | 状态 | 工具 | 产物 |
+| --- | --- | --- | --- | --- |
+| clarify_ambiguous_goal | clarification | awaiting_clarification | 无 | 无 |
+| unsupported_shell | unsupported | blocked | 无 | 无 |
+
+真实 API 请求：2；重试：0；文件副作用：0。
+
+## 边界
+
+- 样本仅 2 例，不代表通用能力；
+- 未与容器执行组合验证；
+- 真实模型 API 请求：2（经授权）；
+- 详见 `docs/phase-3.35-real-model-pilot-rerun.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 
