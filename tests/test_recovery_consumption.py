@@ -468,6 +468,86 @@ class RecoveryConsumptionTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(path.read_bytes(), before)
 
+    def test_execution_intent_is_immutable_and_fail_closed(self) -> None:
+        _, _, preview, _, store, approval = self._fixture()
+        premature = replace(
+            approval,
+            execution_intent={"operation": "premature"},
+            intent_recorded_at=CLAIMED_AT,
+        )
+        premature = replace(
+            premature, record_digest=approval_record_digest(premature)
+        )
+        with self.assertRaises(ApprovalStoreError) as raised:
+            store.save(premature)
+        self.assertEqual(raised.exception.code, "approval_state_invalid")
+
+        base_intent = {
+            "execution_attempt_id": "not-claimed",
+            "action": approval.action,
+            "target": approval.target,
+            "action_digest": approval.action_digest,
+        }
+        before_claim = store.record_intent(
+            approval.approval_id,
+            execution_attempt_id="not-claimed",
+            intent=base_intent,
+            now=CLAIMED_AT,
+        )
+        self.assertEqual(before_claim["status"], "denied")
+        self.assertEqual(before_claim["approval_status"], "approved")
+
+        claimed = self._claim(store, preview, approval)
+        intent = {
+            **base_intent,
+            "execution_attempt_id": claimed["execution_attempt_id"],
+            "operation": "inspection_only",
+        }
+        with mock.patch.object(
+            store,
+            "_write_record",
+            side_effect=ApprovalStoreError(
+                "approval_store_write_failed", "injected"
+            ),
+        ):
+            with self.assertRaises(ApprovalStoreError):
+                store.record_intent(
+                    approval.approval_id,
+                    execution_attempt_id=claimed["execution_attempt_id"],
+                    intent=intent,
+                    now=CLAIMED_AT,
+                )
+        self.assertIsNone(
+            store.load(approval.approval_id).execution_intent
+        )
+
+        recorded = store.record_intent(
+            approval.approval_id,
+            execution_attempt_id=claimed["execution_attempt_id"],
+            intent=intent,
+            now=CLAIMED_AT,
+        )
+        self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(
+            store.record_intent(
+                approval.approval_id,
+                execution_attempt_id=claimed["execution_attempt_id"],
+                intent=intent,
+                now=CLAIMED_AT,
+            )["status"],
+            "unchanged",
+        )
+        conflict = store.record_intent(
+            approval.approval_id,
+            execution_attempt_id=claimed["execution_attempt_id"],
+            intent={**intent, "operation": "changed"},
+            now=CLAIMED_AT,
+        )
+        self.assertEqual(conflict["status"], "denied")
+        self.assertEqual(
+            conflict["reason"], "execution_intent_conflict"
+        )
+
     def test_claim_and_completion_write_failures_fail_closed(self) -> None:
         _, _, preview, _, store, approval = self._fixture()
         with mock.patch.object(

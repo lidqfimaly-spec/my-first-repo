@@ -148,6 +148,8 @@ class RecoveryApproval:
     action_digest: str | None = None
     execution_attempt_id: str | None = None
     claimed_at: str | None = None
+    execution_intent: dict[str, Any] | None = None
+    intent_recorded_at: str | None = None
     completed_at: str | None = None
     result: dict[str, Any] | None = None
     verification_result: str | None = None
@@ -176,6 +178,8 @@ class RecoveryApproval:
             "action_digest": self.action_digest,
             "execution_attempt_id": self.execution_attempt_id,
             "claimed_at": self.claimed_at,
+            "execution_intent": self.execution_intent,
+            "intent_recorded_at": self.intent_recorded_at,
             "completed_at": self.completed_at,
             "result": self.result,
             "verification_result": self.verification_result,
@@ -242,6 +246,16 @@ class RecoveryApproval:
             claimed_at=(
                 str(data["claimed_at"])
                 if data.get("claimed_at") is not None
+                else None
+            ),
+            execution_intent=(
+                dict(data["execution_intent"])
+                if data.get("execution_intent") is not None
+                else None
+            ),
+            intent_recorded_at=(
+                str(data["intent_recorded_at"])
+                if data.get("intent_recorded_at") is not None
                 else None
             ),
             completed_at=(
@@ -324,12 +338,27 @@ def _validate_persisted_approval_state(
                 "approval_action_binding_missing",
                 "approved records require a complete action binding",
             )
+    if (
+        approval.execution_intent is not None
+        or approval.intent_recorded_at is not None
+    ) and approval.status not in {"consuming", "consumed", "failed"}:
+        raise ApprovalStoreError(
+            "approval_state_invalid",
+            "execution intent requires a claimed approval state",
+        )
     if approval.status not in {"consuming", "consumed", "failed"}:
         return
     if not approval.execution_attempt_id or not approval.claimed_at:
         raise ApprovalStoreError(
             "approval_state_invalid",
             "claimed approval state requires an attempt and claim time",
+        )
+    if (approval.execution_intent is None) != (
+        approval.intent_recorded_at is None
+    ):
+        raise ApprovalStoreError(
+            "approval_state_invalid",
+            "execution intent and recorded time must appear together",
         )
     if approval.status not in {"consumed", "failed"}:
         return
@@ -683,6 +712,81 @@ class RecoveryApprovalStore:
                 "safe_to_retry": False,
             }
 
+    def record_intent(
+        self,
+        approval_id: str,
+        *,
+        execution_attempt_id: str,
+        intent: dict[str, Any],
+        now: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist an immutable execution intent before any side effect."""
+        with self._approval_lock(approval_id):
+            current = self.load(approval_id)
+            if current.status != "consuming":
+                return self._denied(
+                    approval_id,
+                    f"approval_status_{current.status}",
+                    state=current.status,
+                )
+            if execution_attempt_id != current.execution_attempt_id:
+                return self._denied(
+                    approval_id,
+                    "execution_attempt_mismatch",
+                    state="consuming",
+                )
+            if not intent:
+                return self._denied(
+                    approval_id,
+                    "execution_intent_required",
+                    state="consuming",
+                )
+            identity = {
+                "execution_attempt_id": current.execution_attempt_id,
+                "action": current.action,
+                "target": current.target,
+                "action_digest": current.action_digest,
+            }
+            if any(intent.get(key) != value for key, value in identity.items()):
+                return self._denied(
+                    approval_id,
+                    "execution_intent_identity_mismatch",
+                    state="consuming",
+                )
+            if current.execution_intent is not None:
+                if current.execution_intent == intent:
+                    return {
+                        "status": "unchanged",
+                        "approval_id": approval_id,
+                        "approval_status": current.status,
+                        "execution_attempt_id": current.execution_attempt_id,
+                        "execution_supported": False,
+                    }
+                return self._denied(
+                    approval_id,
+                    "execution_intent_conflict",
+                    state="consuming",
+                )
+            recorded = replace(
+                current,
+                execution_intent=dict(intent),
+                intent_recorded_at=_now(now).isoformat(
+                    timespec="milliseconds"
+                ),
+            )
+            recorded = replace(
+                recorded,
+                record_digest=approval_record_digest(recorded),
+            )
+            self._write_record(recorded)
+            return {
+                "status": "recorded",
+                "approval_id": approval_id,
+                "approval_status": recorded.status,
+                "execution_attempt_id": recorded.execution_attempt_id,
+                "execution_supported": False,
+            }
+
     def reconcile(self, approval_id: str) -> dict[str, Any]:
         """Classify persisted consumption state without changing it."""
         current = self.load(approval_id)
@@ -701,6 +805,7 @@ class RecoveryApprovalStore:
                 "manual_review": True,
                 "reason": "claimed_attempt_has_no_verified_result",
                 "execution_attempt_id": current.execution_attempt_id,
+                "intent_recorded": current.execution_intent is not None,
                 "safe_to_retry": False,
                 "execution_supported": False,
             }

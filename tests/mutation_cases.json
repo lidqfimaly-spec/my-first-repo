@@ -1029,8 +1029,8 @@
       "id": "approval_claim_crash_allows_retry",
       "property": "an unverified consuming state cannot be retried",
       "path": "src/zevorinth/recovery_preview.py",
-      "old": "                \"reason\": \"claimed_attempt_has_no_verified_result\",\n                \"execution_attempt_id\": current.execution_attempt_id,\n                \"safe_to_retry\": False,\n",
-      "new": "                \"reason\": \"claimed_attempt_has_no_verified_result\",\n                \"execution_attempt_id\": current.execution_attempt_id,\n                \"safe_to_retry\": True,\n",
+      "old": "                \"reason\": \"claimed_attempt_has_no_verified_result\",\n                \"execution_attempt_id\": current.execution_attempt_id,\n                \"intent_recorded\": current.execution_intent is not None,\n                \"safe_to_retry\": False,\n",
+      "new": "                \"reason\": \"claimed_attempt_has_no_verified_result\",\n                \"execution_attempt_id\": current.execution_attempt_id,\n                \"intent_recorded\": current.execution_intent is not None,\n                \"safe_to_retry\": True,\n",
       "tests": [
         "tests.test_recovery_consumption.RecoveryConsumptionTests.test_claim_crash_is_unverified_and_not_retried"
       ],
@@ -1055,6 +1055,164 @@
       "new": "    if False:\n",
       "tests": [
         "tests.test_recovery_consumption.RecoveryConsumptionTests.test_terminal_status_must_match_verification_result"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_action_target_binding_bypass",
+      "property": "controlled executor requires the exact approved target",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if (\n        approval.action != CONTROLLED_RESTORE_ACTION\n        or approval.target != target\n    ):\n        return {\n            \"status\": \"denied\",\n            \"code\": \"controlled_action_binding_mismatch\",\n",
+      "new": "    if False:\n        return {\n            \"status\": \"denied\",\n            \"code\": \"controlled_action_binding_mismatch\",\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_target_must_match_bound_workspace"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_precondition_bypass",
+      "property": "controlled executor requires an absent target before intent",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if before[\"state\"] != \"target_absent\":\n        return _completion_failure(\n",
+      "new": "    if False:\n        return _completion_failure(\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_existing_target_is_not_overwritten"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_intent_skipped_before_side_effect",
+      "property": "execution intent is persisted before the side effect",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        recorded = store.record_intent(\n",
+      "new": "        recorded = {\"status\": \"recorded\"}\n        if False: recorded = store.record_intent(\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_intent_persistence_failure_prevents_side_effect"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_claim_failure_continues_to_side_effect",
+      "property": "claim persistence failure prevents the controlled side effect",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    except ApprovalStoreError as exc:\n        return {\n            \"status\": \"unverified\",\n            \"code\": \"claim_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_supported\": False,\n            \"general_recovery_supported\": False,\n        }\n",
+      "new": "    except ApprovalStoreError as exc:\n        claim = {\"status\": \"claimed\", \"execution_attempt_id\": \"unsafe\"}\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_claim_persistence_failure_prevents_side_effect"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_intent_identity_bypass",
+      "property": "execution intent must match the claimed action identity",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            if any(intent.get(key) != value for key, value in identity.items()):\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_intent_identity_mismatch_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_intent_allowed_before_claim",
+      "property": "execution intent requires a claimed approval state",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "    if (\n        approval.execution_intent is not None\n        or approval.intent_recorded_at is not None\n    ) and approval.status not in {\"consuming\", \"consumed\", \"failed\"}:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_execution_intent_is_immutable_and_fail_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "approval_intent_write_failure_reported_recorded",
+      "property": "intent persistence failure is not reported as recorded",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            self._write_record(recorded)\n",
+      "new": "            pass\n",
+      "tests": [
+        "tests.test_recovery_consumption.RecoveryConsumptionTests.test_execution_intent_is_immutable_and_fail_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_execution_trusts_writer_result",
+      "property": "controlled success requires independent verification",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if not verification[\"verified\"]:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_independent_verifier_rejects_tampered_result"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_verifier_accepts_wrong_digest",
+      "property": "controlled verifier checks real file digest",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "            or digest != CONTROLLED_RESTORE_SHA256\n",
+      "new": "            or False\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_independent_verifier_rejects_tampered_result"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_verifier_follows_target_symlink",
+      "property": "controlled verifier never follows target symlinks",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "patches": [
+        {
+          "path": "src/zevorinth/controlled_recovery.py",
+          "old": "        if stat.S_ISLNK(entry.st_mode):\n",
+          "new": "        if False:\n"
+        },
+        {
+          "path": "src/zevorinth/controlled_recovery.py",
+          "old": "        if not stat.S_ISREG(entry.st_mode):\n",
+          "new": "        if False:\n"
+        },
+        {
+          "path": "src/zevorinth/controlled_recovery.py",
+          "old": "        file_flags = os.O_RDONLY\n        if hasattr(os, \"O_NOFOLLOW\"):\n            file_flags |= os.O_NOFOLLOW\n",
+          "new": "        file_flags = os.O_RDONLY\n"
+        }
+      ],
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_symlink_target_and_parent_are_refused"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_completion_failure_reported_success",
+      "property": "completion persistence failure remains unverified",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    except ApprovalStoreError as exc:\n        return {\n            \"status\": \"unverified\",\n            \"code\": \"completion_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_attempt_id\": attempt_id,\n            \"observation\": verification,\n",
+      "new": "    except ApprovalStoreError as exc:\n        return {\n            \"status\": \"succeeded\",\n            \"code\": \"completion_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_attempt_id\": attempt_id,\n            \"observation\": verification,\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_completion_write_failure_leaves_verified_side_effect_unverified"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_crash_reconcile_manual_review_bypass",
+      "property": "claimed controlled operations require manual review",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": True,\n",
+      "new": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": False,\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_crash_after_side_effect_is_not_marked_completed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_crash_reconcile_allows_retry",
+      "property": "claimed controlled operations are never auto-retryable",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n",
+      "new": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": True,\n            \"safe_to_retry\": True,\n",
+      "tests": [
+        "tests.test_controlled_recovery.ControlledRecoveryTests.test_crash_before_side_effect_is_manual_review_only"
       ],
       "expected": "killed"
     }
