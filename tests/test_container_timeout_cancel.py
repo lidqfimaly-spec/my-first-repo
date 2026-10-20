@@ -281,15 +281,18 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         self.assertEqual(result.status, TaskStatus.FAILED)
         self.assertEqual(result.error.code, "container_start_failed")
         self.assertEqual(result.tool_result.tool_name, "run_tests")
+        self.assertIsNone(result.tool_result.test_evidence)
+        self.assertIsNone(result.verification)
         self.assertEqual(
             result.execution_plan_snapshot["evidence_id"],
             evidence["evidence_id"],
         )
         self.assertEqual(_container_names(result.task_id), [])
-        self.assertNotIn(
-            "task_succeeded",
-            [event.event_type for event in service.events(result.task_id)],
-        )
+        event_types = [
+            event.event_type for event in service.events(result.task_id)
+        ]
+        self.assertNotIn("task_succeeded", event_types)
+        self.assertIn("task_failed", event_types)
 
     def test_evidence_invalidated_after_real_test_blocks_success(self) -> None:
         root = Path(tempfile.mkdtemp())

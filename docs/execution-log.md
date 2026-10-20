@@ -1155,6 +1155,33 @@ evidence。
 
 ---
 
+# 第 3.56 阶段执行记录
+
+## 真实调用
+
+1 次真实模型请求，0 重试；provisioning 正常完成，容器启动原语注入 `OSError`。
+
+- 候选通过严格校验：`run_tests` / `test_ok`；
+- 任务失败 `container_start_failed`，tool_name=`run_tests`；
+- 无容器、无 test_evidence、无 verification、无 `task_succeeded`；
+- 最终计划/evidence 身份一致，evidence 独立复核 `verified`；
+- `probe-written.txt` 受控清理 completed；
+- `inside.txt` 保留，任务状态仍为 `failed`。
+
+## 测试
+
+- 启动失败专项增强断言通过；
+- 预检专项 36/36；
+- Phase 3.53 全量 619/619（系统 Python 与 `.venv`）；
+- Mutation runner 71 killed / 0 survived。
+
+## 结论
+
+**PASS**。详见
+`docs/phase-3.56-real-model-startup-failure.md`；未推送。
+
+---
+
 
 
 ## 实现

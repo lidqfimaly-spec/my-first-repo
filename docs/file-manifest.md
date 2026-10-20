@@ -416,6 +416,36 @@
 
 ---
 
+# 第 3.56 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.56-real-model-startup-failure.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_container_timeout_cancel.py`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 真实调用结果
+
+- 真实模型 API 请求：1（授权上限 1）；
+- 候选：`run_tests` / `test_ok`，校验通过；
+- 启动失败：`container_start_failed`；
+- 无容器、无 test_evidence、无 verification；
+- `probe-written.txt` 受控清理完成；
+- `inside.txt` 保留；
+- 任务状态：`failed`。
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.56/real-startup-failure-pilot.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.56/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增
