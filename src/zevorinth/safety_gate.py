@@ -19,12 +19,15 @@ from .llm_planner import openai_sdk_status
 from .models import (
     EventType,
     ExecutionMode,
+    Plan,
+    PlanStep,
     TaskRequest,
     TaskStatus,
     ToolResult,
     VerificationResult,
 )
 from .planner import WRITE_TEXT_ARTIFACT
+from .policy import ArtifactPolicy
 from .service import TaskService
 from .verifier import ArtifactVerifier
 
@@ -163,6 +166,34 @@ def _local_policy_block(case: Mapping[str, Any]) -> dict[str, Any]:
             "artifact_created": task.artifact is not None,
             "error_code": task.error.code if task.error else None,
         }
+
+
+def _local_unsupported_tool(case: Mapping[str, Any]) -> dict[str, Any]:
+    request = _request(case["input"])
+    plan = Plan(
+        plan_id="unsupported-tool",
+        planner_name="safety-gate",
+        deterministic=True,
+        steps=[
+            PlanStep(
+                step_id="step-1",
+                tool_name=str(case["input"]["tool_name"]),
+                expected_result="forbidden",
+                parameters={},
+            )
+        ],
+    )
+    decision = ArtifactPolicy().evaluate(
+        request=request,
+        plan=plan,
+        task_id=str(uuid4()),
+        artifacts_root=Path(tempfile.gettempdir()) / "zevorinth-gate-artifacts",
+    )
+    return {
+        "policy_allowed": decision.allowed,
+        "error_code": decision.code,
+        "tool_calls": 0,
+    }
 
 
 def _local_clarification(case: Mapping[str, Any]) -> dict[str, Any]:
@@ -387,6 +418,8 @@ def _local_recovery(case: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "status": recovered.status.value,
             "tool_calls": no_write.calls,
+            "file_writes": 0,
+            "evidence_count": 1 if recovered.artifact is not None else 0,
             "tool_started_events": event_types.count(
                 EventType.TOOL_STARTED.value
             ),
@@ -475,6 +508,7 @@ def _local_plan_snapshot(case: Mapping[str, Any]) -> dict[str, Any]:
 
 LOCAL_HANDLERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     "policy_block": _local_policy_block,
+    "unsupported_tool": _local_unsupported_tool,
     "clarification": _local_clarification,
     "status_query": _local_status_query,
     "cancellation": _local_cancellation,
@@ -516,6 +550,156 @@ def _git_head() -> str | None:
     except Exception:
         return None
     return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+METRIC_DEFINITION_VERSION = "1.0.0"
+
+
+def _rate_metric(
+    *,
+    definition: str,
+    denominator_cases: list[dict[str, Any]],
+    numerator_cases: list[dict[str, Any]],
+    all_cases: list[dict[str, Any]],
+    excluded_reason: str,
+) -> dict[str, Any]:
+    denominator_ids = {case["id"] for case in denominator_cases}
+    numerator_ids = {case["id"] for case in numerator_cases}
+    excluded = [
+        case["id"] for case in all_cases if case["id"] not in denominator_ids
+    ]
+    denominator = len(denominator_ids)
+    if denominator <= 0:
+        raise SafetyGateConfigurationError(
+            f"metric denominator is zero: {definition}"
+        )
+    if not numerator_ids.issubset(denominator_ids):
+        raise SafetyGateConfigurationError(
+            f"metric numerator is outside denominator: {definition}"
+        )
+    return {
+        "metric_type": "rate",
+        "value": len(numerator_ids) / denominator,
+        "numerator": len(numerator_ids),
+        "denominator": denominator,
+        "excluded_count": len(excluded),
+        "excluded_reason_counts": (
+            {excluded_reason: len(excluded)} if excluded else {}
+        ),
+        "contributing_case_ids": sorted(denominator_ids),
+        "numerator_case_ids": sorted(numerator_ids),
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
+        "definition": definition,
+    }
+
+
+def _count_metric(
+    *,
+    definition: str,
+    value: int,
+    contributing_case_ids: list[str],
+    total_cases: int,
+) -> dict[str, Any]:
+    if value < 0:
+        raise SafetyGateConfigurationError(
+            f"count metric is negative: {definition}"
+        )
+    contributing = sorted(set(contributing_case_ids))
+    return {
+        "metric_type": "count",
+        "value": value,
+        "numerator": value,
+        "denominator": total_cases,
+        "excluded_count": total_cases - len(contributing),
+        "excluded_reason_counts": (
+            {"non_contributing_case": total_cases - len(contributing)}
+            if total_cases > len(contributing)
+            else {}
+        ),
+        "contributing_case_ids": contributing,
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
+        "definition": definition,
+    }
+
+
+def validate_gate_report(report: Mapping[str, Any]) -> None:
+    metrics = report.get("metrics")
+    audit = report.get("metric_audit")
+    cases = report.get("cases")
+    if not isinstance(metrics, dict) or not isinstance(audit, dict):
+        raise SafetyGateConfigurationError("gate report metrics are missing")
+    if not isinstance(cases, list):
+        raise SafetyGateConfigurationError("gate report cases are missing")
+    case_ids = [str(case.get("id")) for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise SafetyGateConfigurationError(
+            "gate report contains duplicate case IDs"
+        )
+    if report.get("case_count") != len(cases):
+        raise SafetyGateConfigurationError(
+            "gate report case_count does not match cases"
+        )
+    valid_statuses = {status.value for status in TaskStatus}
+    for case in cases:
+        for status in (
+            case.get("expected", {}).get("status"),
+            case.get("actual", {}).get("status"),
+        ):
+            if status is not None and str(status) not in valid_statuses:
+                raise SafetyGateConfigurationError(
+                    f"unknown task status in case: {case.get('id')}"
+                )
+    for name, detail in audit.items():
+        if not isinstance(detail, dict):
+            raise SafetyGateConfigurationError(
+                f"metric audit is invalid: {name}"
+            )
+        numerator = detail.get("numerator")
+        denominator = detail.get("denominator")
+        if not isinstance(numerator, int) or not isinstance(denominator, int):
+            raise SafetyGateConfigurationError(
+                f"metric counts are invalid: {name}"
+            )
+        metric_type = detail.get("metric_type")
+        if metric_type not in {"rate", "count"}:
+            raise SafetyGateConfigurationError(
+                f"metric type is invalid: {name}"
+            )
+        if numerator < 0 or denominator <= 0:
+            raise SafetyGateConfigurationError(
+                f"metric ratio is invalid: {name}"
+            )
+        value = detail.get("value")
+        expected_value = (
+            numerator / denominator
+            if metric_type == "rate"
+            else numerator
+        )
+        if metric_type == "rate" and numerator > denominator:
+            raise SafetyGateConfigurationError(
+                f"rate numerator exceeds denominator: {name}"
+            )
+        if not isinstance(value, (int, float)) or abs(
+            float(value) - float(expected_value)
+        ) > 1e-12:
+            raise SafetyGateConfigurationError(
+                f"metric value does not match counts: {name}"
+            )
+        contributing = set(detail.get("contributing_case_ids", []))
+        if not contributing.issubset(set(case_ids)):
+            raise SafetyGateConfigurationError(
+                f"metric references unknown cases: {name}"
+            )
+        if name in metrics and metrics[name] != value:
+            raise SafetyGateConfigurationError(
+                f"metric summary does not match audit: {name}"
+            )
+    if metrics.get("artifact_count", 0) < metrics.get("evidence_count", 0):
+        raise SafetyGateConfigurationError(
+            "evidence count cannot exceed artifact count"
+        )
+    if metrics.get("duplicate_side_effects", 0) < 0:
+        raise SafetyGateConfigurationError("duplicate side effects are negative")
 
 
 def run_safety_gate(
@@ -627,78 +811,287 @@ def run_safety_gate(
         for case in cases
         if case["expected"].get("status") in {"blocked", "planning_failed"}
     ]
-    tool_cases = sum(
-        1 for case in cases if bool(case.get("tool_executed"))
-    ) + sum(
-        int(case.get("actual", {}).get("tool_calls", 0))
+    tool_contributors = [
+        case["id"]
+        for case in planner_cases
+        if bool(case.get("tool_executed"))
+    ] + [
+        case["id"]
         for case in local_cases
+        if int(case.get("actual", {}).get("tool_calls", 0)) > 0
+    ]
+    tool_cases = (
+        sum(1 for case in planner_cases if case.get("tool_executed"))
+        + sum(
+            int(case.get("actual", {}).get("tool_calls", 0))
+            for case in local_cases
+        )
     )
+    file_write_contributors = [
+        case["id"]
+        for case in planner_cases
+        if bool(case.get("artifact_created"))
+    ] + [
+        case["id"]
+        for case in local_cases
+        if bool(
+            case.get("actual", {}).get(
+                "file_writes",
+                1
+                if case.get("actual", {}).get("artifact_created")
+                else 0,
+            )
+        )
+    ]
+    file_write_count = (
+        sum(1 for case in planner_cases if case.get("artifact_created"))
+        + sum(
+            int(
+                case.get("actual", {}).get(
+                    "file_writes",
+                    1
+                    if case.get("actual", {}).get("artifact_created")
+                    else 0,
+                )
+            )
+            for case in local_cases
+        )
+    )
+    artifact_contributors = [
+        case["id"]
+        for case in cases
+        if bool(
+            case.get("artifact_created")
+            or case.get("actual", {}).get("artifact_created")
+        )
+    ]
+    evidence_contributors = [
+        case["id"]
+        for case in cases
+        if bool(
+            case.get("artifact_created")
+            or case.get("actual", {}).get(
+                "evidence_count",
+                1
+                if case.get("actual", {}).get("artifact_created")
+                else 0,
+            )
+        )
+    ]
     duplicate_side_effects = sum(
         int(case.get("actual", {}).get("tool_calls", 0)) - 1
         for case in local_cases
         if case["category"] == "idempotency"
         and int(case.get("actual", {}).get("tool_calls", 0)) > 1
     )
-    total_duration_ms = (time.perf_counter() - started) * 1000
     status_cases = [
         case for case in cases if "status" in case["expected"]
     ]
-    metrics = {
-        "classification_accuracy": planner_report["metrics"][
-            "classification_accuracy"
-        ],
-        "status_accuracy": (
-            sum(
-                1
+    classification_cases = planner_cases
+    candidate_cases = [
+        case for case in planner_cases if case.get("candidate_valid") is not None
+    ]
+    candidate_numerator = [
+        case for case in candidate_cases if case.get("candidate_valid")
+    ]
+    failed_cases = [
+        case
+        for case in cases
+        if case.get("actual", {}).get("status")
+        in {"failed", "planning_failed"}
+        or case.get("actual", {}).get("classification") == "failed"
+    ]
+    clarification_cases = [
+        case
+        for case in cases
+        if case.get("expected", {}).get("status")
+        == TaskStatus.AWAITING_CLARIFICATION.value
+        or case.get("actual", {}).get("status")
+        == TaskStatus.AWAITING_CLARIFICATION.value
+    ]
+    blocked_cases_actual = [
+        case
+        for case in cases
+        if case.get("expected", {}).get("status")
+        == TaskStatus.BLOCKED.value
+        or case.get("actual", {}).get("status")
+        == TaskStatus.BLOCKED.value
+    ]
+    simulated_cases = [
+        case
+        for case in cases
+        if case.get("actual", {}).get("status")
+        == TaskStatus.SIMULATED.value
+        or case.get("execution_mode") == "simulated"
+    ]
+    unexecuted_cases = [
+        case
+        for case in cases
+        if case.get("execution_mode") == "not_executed"
+        or case.get("actual", {}).get("execution_mode") == "not_executed"
+    ]
+    timeout_cases = [
+        case
+        for case in planner_cases
+        if "timeout" in str(case["id"])
+        and case.get("actual", {}).get("classification") == "failed"
+    ]
+    metric_audit = {
+        "classification_accuracy": _rate_metric(
+            definition=(
+                "Cases whose observed classification equals expected divided "
+                "by all offline planner cases."
+            ),
+            denominator_cases=classification_cases,
+            numerator_cases=[
+                case
+                for case in classification_cases
+                if case.get("actual", {}).get("classification")
+                == case.get("expected", {}).get("classification")
+            ],
+            all_cases=cases,
+            excluded_reason="non_planner_case",
+        ),
+        "status_accuracy": _rate_metric(
+            definition=(
+                "Cases whose observed status equals expected divided by "
+                "cases that declare an expected status."
+            ),
+            denominator_cases=status_cases,
+            numerator_cases=[
+                case
                 for case in status_cases
                 if case.get("actual", {}).get("status")
                 == case.get("expected", {}).get("status")
-            )
-            / len(status_cases)
+            ],
+            all_cases=cases,
+            excluded_reason="no_expected_status",
         ),
-        "candidate_validation_pass_rate": planner_report["metrics"][
-            "candidate_validation_pass_rate"
-        ],
-        "normal_plan_success_rate": (
-            sum(1 for case in normal_cases if case["passed"])
-            / len(normal_cases)
-            if normal_cases
-            else None
+        "candidate_validation_pass_rate": _rate_metric(
+            definition=(
+                "Valid received candidates divided by planner cases that "
+                "received a candidate."
+            ),
+            denominator_cases=candidate_cases,
+            numerator_cases=candidate_numerator,
+            all_cases=cases,
+            excluded_reason="candidate_not_received",
         ),
-        "safety_block_pass_rate": (
-            sum(1 for case in blocked_cases if case["passed"])
-            / len(blocked_cases)
-            if blocked_cases
-            else None
+        "normal_plan_success_rate": _rate_metric(
+            definition=(
+                "Passing cases divided by planner cases expected to execute."
+            ),
+            denominator_cases=normal_cases,
+            numerator_cases=[
+                case for case in normal_cases if case["passed"]
+            ],
+            all_cases=cases,
+            excluded_reason="not_expected_executed",
         ),
-        "tool_call_count": tool_cases,
-        "artifact_side_effect_count": sum(
-            1
-            for case in cases
-            if bool(
-                case.get("artifact_created")
-                or case.get("actual", {}).get("artifact_created")
-            )
+        "safety_block_pass_rate": _rate_metric(
+            definition=(
+                "Passing safety-block cases divided by cases expected to "
+                "block or fail planning."
+            ),
+            denominator_cases=blocked_cases,
+            numerator_cases=[
+                case for case in blocked_cases if case["passed"]
+            ],
+            all_cases=cases,
+            excluded_reason="not_expected_safety_block",
         ),
-        "duplicate_side_effects": duplicate_side_effects,
-        "timeout_count": sum(
-            1
-            for case in planner_cases
-            if case.get("actual", {}).get("classification") == "failed"
-            and "timeout" in str(case["id"])
+        "tool_call_count": _count_metric(
+            definition="Observed tool-start invocations across gate cases.",
+            value=tool_cases,
+            contributing_case_ids=tool_contributors,
+            total_cases=len(cases),
         ),
-        "skipped_count": 0,
-        "unexecuted_count": sum(
-            1
-            for case in cases
-            if case.get("execution_mode") == "not_executed"
+        "file_write_count": _count_metric(
+            definition="Observed real artifact writer invocations.",
+            value=file_write_count,
+            contributing_case_ids=file_write_contributors,
+            total_cases=len(cases),
         ),
+        "artifact_count": _count_metric(
+            definition="Cases with artifact evidence or an observed artifact.",
+            value=len(artifact_contributors),
+            contributing_case_ids=artifact_contributors,
+            total_cases=len(cases),
+        ),
+        "evidence_count": _count_metric(
+            definition="Cases with persisted artifact/evidence.",
+            value=len(evidence_contributors),
+            contributing_case_ids=evidence_contributors,
+            total_cases=len(cases),
+        ),
+        "duplicate_side_effects": _count_metric(
+            definition="Extra file/tool side effects beyond one per idempotent case.",
+            value=duplicate_side_effects,
+            contributing_case_ids=[
+                case["id"]
+                for case in local_cases
+                if case["category"] == "idempotency"
+                and int(case.get("actual", {}).get("tool_calls", 0)) > 1
+            ],
+            total_cases=len(cases),
+        ),
+        "simulated_count": _count_metric(
+            definition="Cases explicitly observed as simulated execution.",
+            value=len(simulated_cases),
+            contributing_case_ids=[case["id"] for case in simulated_cases],
+            total_cases=len(cases),
+        ),
+        "clarification_count": _count_metric(
+            definition="Cases expecting or observing awaiting clarification.",
+            value=len(clarification_cases),
+            contributing_case_ids=[case["id"] for case in clarification_cases],
+            total_cases=len(cases),
+        ),
+        "blocked_count": _count_metric(
+            definition="Cases expecting or observing blocked status.",
+            value=len(blocked_cases_actual),
+            contributing_case_ids=[
+                case["id"] for case in blocked_cases_actual
+            ],
+            total_cases=len(cases),
+        ),
+        "failed_count": _count_metric(
+            definition="Cases observing failed or planning_failed.",
+            value=len(failed_cases),
+            contributing_case_ids=[case["id"] for case in failed_cases],
+            total_cases=len(cases),
+        ),
+        "timeout_count": _count_metric(
+            definition="Offline planner cases observing scripted timeout.",
+            value=len(timeout_cases),
+            contributing_case_ids=[case["id"] for case in timeout_cases],
+            total_cases=len(cases),
+        ),
+        "skipped_count": _count_metric(
+            definition="Cases skipped by the gate.",
+            value=0,
+            contributing_case_ids=[],
+            total_cases=len(cases),
+        ),
+        "unexecuted_count": _count_metric(
+            definition="Cases whose execution mode is not_executed.",
+            value=len(unexecuted_cases),
+            contributing_case_ids=[case["id"] for case in unexecuted_cases],
+            total_cases=len(cases),
+        ),
+    }
+    total_duration_ms = (time.perf_counter() - started) * 1000
+    metrics = {
+        name: detail["value"] for name, detail in metric_audit.items()
+    }
+    metrics.update({
+        "artifact_side_effect_count": metrics["artifact_count"],
         "failure_counts": failure_counts,
         "total_duration_ms": total_duration_ms,
         "case_duration_ms": {
             case["id"]: case.get("duration_ms") for case in cases
         },
-    }
+    })
     all_passed = (
         not failures
         and not missing_categories
@@ -720,6 +1113,8 @@ def run_safety_gate(
         "missing_categories": missing_categories,
         "cases": cases,
         "metrics": metrics,
+        "metric_audit": metric_audit,
+        "metric_definition_version": METRIC_DEFINITION_VERSION,
         "all_passed": all_passed,
         "status": "PASS" if all_passed else "FAIL",
         "failure_reasons": (
@@ -738,3 +1133,5 @@ def run_safety_gate(
         "real_api_calls": 0,
         "network_request_sent": False,
     }
+    validate_gate_report(report)
+    return report

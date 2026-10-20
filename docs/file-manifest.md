@@ -155,6 +155,32 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.11 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.11-metric-coverage-mutation-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/coverage_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_acceptance_metrics.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_coverage_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_mutation_runner.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evals/safety_gate_v1.json`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/safety_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/e2e_acceptance_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_safety_gate.py`
+
+运行产物和 coverage 数据不纳入源码提交。
+
+---
+
 # 第 3.10 阶段新增与修改
 
 ## 新增

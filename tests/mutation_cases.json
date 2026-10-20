@@ -1,0 +1,104 @@
+{
+  "version": "1.0.0",
+  "cases": [
+    {
+      "id": "artifact_path_validation",
+      "property": "artifact path validation",
+      "path": "src/zevorinth/artifact_tool.py",
+      "old": "def validate_artifact_name(value: object) -> str:\n",
+      "new": "def validate_artifact_name(value: object) -> str:\n    return str(value)\n",
+      "tests": [
+        "tests.test_artifact_tool.ArtifactToolTests.test_invalid_and_unsafe_names_are_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lease_fencing",
+      "property": "lease token fencing",
+      "path": "src/zevorinth/event_store.py",
+      "old": "if lease_token is not None and task.lease_token != lease_token:",
+      "new": "if False:",
+      "tests": [
+        "tests.test_event_store.EventStoreTests.test_sqlite_claim_is_exclusive_and_fenced"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cooperative_cancellation",
+      "property": "cooperative cancellation before tool",
+      "path": "src/zevorinth/service.py",
+      "old": "        if cancelled is not None:\n            return cancelled\n        if task.status is TaskStatus.QUEUED:",
+      "new": "        if False:\n            return cancelled\n        if task.status is TaskStatus.QUEUED:",
+      "tests": [
+        "tests.test_cooperative_cancellation.CooperativeCancellationTests.test_request_is_idempotent_and_executor_cancels_at_claim"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_attempt_match",
+      "property": "artifact evidence attempt provenance",
+      "path": "src/zevorinth/verifier.py",
+      "old": "and reported.attempt_id == actual_evidence.attempt_id",
+      "new": "and True",
+      "tests": [
+        "tests.test_safety_gate.SafetyGateTests.test_gate_passes_with_layered_cases_and_bounded_metrics"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "unsupported_tool",
+      "property": "local tool allowlist",
+      "path": "src/zevorinth/policy.py",
+      "old": "if step.tool_name != WRITE_TEXT_ARTIFACT:",
+      "new": "if False:",
+      "tests": [
+        "tests.test_safety_gate.SafetyGateTests.test_gate_passes_with_layered_cases_and_bounded_metrics"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "verifier_failure_success",
+      "property": "verifier failure cannot become success",
+      "path": "src/zevorinth/service.py",
+      "old": "if verification.passed:",
+      "new": "if True:",
+      "tests": [
+        "tests.test_safety_gate.SafetyGateTests.test_gate_passes_with_layered_cases_and_bounded_metrics"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "duplicate_file_side_effect",
+      "property": "published artifact overwrite protection",
+      "path": "src/zevorinth/artifact_tool.py",
+      "old": "            try:\n                os.link(\n                    staging_name,",
+      "new": "            try:\n                try:\n                    os.unlink(name, dir_fd=directory_fd)\n                except FileNotFoundError:\n                    pass\n                os.link(\n                    staging_name,",
+      "tests": [
+        "tests.test_artifact_tool.ArtifactToolTests.test_writer_refuses_overwrite"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "invalid_candidate_tool",
+      "property": "unknown candidate fields cannot gain capability",
+      "path": "src/zevorinth/planning_validation.py",
+      "old": "        if unknown_fields:",
+      "new": "        if False:",
+      "tests": [
+        "tests.test_safety_gate.SafetyGateTests.test_gate_passes_with_layered_cases_and_bounded_metrics"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "status_query_classification",
+      "property": "status query classification stays read-only",
+      "path": "src/zevorinth/intent.py",
+      "old": "    {\"status\", \"状态\", \"进度\", \"现在怎么样\", \"完成了吗\"}\n",
+      "new": "    set()\n",
+      "tests": [
+        "tests.test_intent.IntentClassifierTests.test_status_query_and_empty_message"
+      ],
+      "expected": "killed"
+    }
+  ]
+}

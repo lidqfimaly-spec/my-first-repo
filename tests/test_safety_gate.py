@@ -16,6 +16,7 @@ from zevorinth.safety_gate import (  # noqa: E402
     SafetyGateConfigurationError,
     load_gate_dataset,
     run_safety_gate,
+    validate_gate_report,
 )
 
 
@@ -26,8 +27,8 @@ class SafetyGateTests(unittest.TestCase):
         self.assertEqual(report["status"], "PASS")
         self.assertTrue(report["all_passed"])
         self.assertEqual(report["planner_case_count"], 28)
-        self.assertEqual(report["local_case_count"], 11)
-        self.assertEqual(report["case_count"], 39)
+        self.assertEqual(report["local_case_count"], 12)
+        self.assertEqual(report["case_count"], 40)
         self.assertEqual(report["real_api_calls"], 0)
         self.assertFalse(report["network_request_sent"])
         self.assertEqual(report["metrics"]["duplicate_side_effects"], 0)
@@ -40,6 +41,18 @@ class SafetyGateTests(unittest.TestCase):
         ):
             self.assertGreaterEqual(report["metrics"][metric], 0.0)
             self.assertLessEqual(report["metrics"][metric], 1.0)
+        for name, detail in report["metric_audit"].items():
+            self.assertEqual(
+                detail["metric_definition_version"],
+                report["metric_definition_version"],
+            )
+            self.assertIn("numerator", detail)
+            self.assertIn("denominator", detail)
+            self.assertIn("excluded_count", detail)
+            self.assertIn("excluded_reason_counts", detail)
+            self.assertIn("contributing_case_ids", detail)
+            self.assertGreater(detail["denominator"], 0)
+            self.assertEqual(report["metrics"][name], detail["value"])
 
     def test_invalid_dataset_shapes_fail_closed(self) -> None:
         invalid_payloads = [
@@ -128,6 +141,13 @@ class SafetyGateTests(unittest.TestCase):
         self.assertEqual(report["status"], "FAIL")
         self.assertFalse(report["all_passed"])
         self.assertIn("missing_categories", " ".join(report["failure_reasons"]))
+
+    def test_report_metrics_corruption_fails_closed(self) -> None:
+        report = run_safety_gate()
+        corrupt = json.loads(json.dumps(report))
+        corrupt["metric_audit"]["status_accuracy"]["numerator"] = 999
+        with self.assertRaises(SafetyGateConfigurationError):
+            validate_gate_report(corrupt)
 
     def test_cli_refuses_to_overwrite_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -598,6 +598,41 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.11 阶段执行记录
+
+## 实现
+
+- 所有 gate 指标增加 numerator/denominator/排除原因/案例 ID/定义版本；
+- 增加指标与报告一致性 fail-closed 校验；
+- E2E runner 增加 metric audit；
+- 增加安全模块 branch coverage 门禁；
+- 增加可区分 killed/survived/invalid/error 的固定 mutation runner；
+- 9 个安全 mutation 全部被捕获；
+- 新增 unsupported-tool 本地策略案例。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 229/229，exit 0 |
+| 隔离环境完整 unittest | 229/229，exit 0 |
+| E2E acceptance | 10/10 轮通过 |
+| 指标/覆盖率/变异专项 | 10/10 轮通过 |
+| Coverage gate | PASS |
+| Mutation runner | 9 killed / 0 survived / 0 invalid / 0 error |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Coverage 使用本机已有 coverage 7.16.1 / Python 3.12；
+- Mutation runner 为固定补丁集合，不是完整框架；
+- 无真实 API 请求；
+- 详见 `docs/phase-3.11-metric-coverage-mutation-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.10 阶段执行记录
 
 ## 实现

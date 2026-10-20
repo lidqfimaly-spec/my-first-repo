@@ -314,5 +314,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.7 阶段发布准备与 Provider 边界](docs/phase-3.7-release-readiness.md)
 - [第 3.9 阶段受限真实模型定向试点](docs/phase-3.9-real-model-pilot.md)
 - [第 3.10 阶段离线模型评测与安全门禁](docs/phase-3.10-safety-gate.md)
+- [第 3.11 阶段指标、覆盖率与变异审计](docs/phase-3.11-metric-coverage-mutation-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

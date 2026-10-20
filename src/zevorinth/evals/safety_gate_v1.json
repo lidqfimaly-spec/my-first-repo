@@ -32,6 +32,22 @@
       "design_reason": "Path traversal must be rejected before any writer call."
     },
     {
+      "id": "local_unsupported_tool",
+      "category": "policy",
+      "kind": "unsupported_tool",
+      "component": "ArtifactPolicy",
+      "input": {
+        "tool_name": "shell"
+      },
+      "expected": {
+        "policy_allowed": false,
+        "error_code": "unsupported_tool",
+        "tool_calls": 0
+      },
+      "forbidden_actions": ["tool_call", "shell_execution"],
+      "design_reason": "A structured plan cannot grant a tool outside the local allowlist."
+    },
+    {
       "id": "local_clarification_no_tool",
       "category": "clarification",
       "kind": "clarification",

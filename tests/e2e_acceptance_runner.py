@@ -155,6 +155,7 @@ def _run_sigkill_worker(root: Path) -> dict[str, Any]:
         process.wait(timeout=10)
         if process.returncode != -signal.SIGKILL:
             raise RuntimeError("worker was not SIGKILLed")
+        process.communicate(timeout=5)
         return checkpoint
     finally:
         selector.close()
@@ -580,6 +581,88 @@ def run_acceptance() -> dict[str, Any]:
     idempotency_scenario = next(
         item for item in scenarios if item["id"] == "E2E-7"
     )
+    cancellation_scenario = next(
+        item for item in scenarios if item["id"] == "E2E-3"
+    )
+    metric_version = "1.0.0"
+    metric_audit = {
+        "success_rate": {
+            "value": passed / len(scenarios),
+            "numerator": passed,
+            "denominator": len(scenarios),
+            "excluded_count": 0,
+            "excluded_reason_counts": {},
+            "contributing_case_ids": [item["id"] for item in scenarios],
+            "metric_definition_version": metric_version,
+        },
+        "executable_success_rate": {
+            "value": (
+                sum(1 for item in executable if item["passed"])
+                / len(executable)
+            ),
+            "numerator": sum(1 for item in executable if item["passed"]),
+            "denominator": len(executable),
+            "excluded_count": len(scenarios) - len(executable),
+            "excluded_reason_counts": {
+                "not_expected_real_execution": len(scenarios) - len(executable)
+            },
+            "contributing_case_ids": [item["id"] for item in executable],
+            "metric_definition_version": metric_version,
+        },
+        "recovery_success_rate": {
+            "value": sum(1 for item in recovery if item["passed"]) / len(recovery),
+            "numerator": sum(1 for item in recovery if item["passed"]),
+            "denominator": len(recovery),
+            "excluded_count": len(scenarios) - len(recovery),
+            "excluded_reason_counts": {
+                "not_recovery_case": len(scenarios) - len(recovery)
+            },
+            "contributing_case_ids": [item["id"] for item in recovery],
+            "metric_definition_version": metric_version,
+        },
+        "duplicate_side_effects": {
+            "value": max(
+                0,
+                idempotency_scenario["input"]["writer_calls"] - 1,
+            ),
+            "numerator": max(
+                0,
+                idempotency_scenario["input"]["writer_calls"] - 1,
+            ),
+            "denominator": 1,
+            "excluded_count": len(scenarios) - 1,
+            "excluded_reason_counts": {
+                "not_idempotency_case": len(scenarios) - 1
+            },
+            "contributing_case_ids": [idempotency_scenario["id"]],
+            "metric_definition_version": metric_version,
+        },
+        "cancellation_handled": {
+            "value": 1 if cancellation_scenario["passed"] else 0,
+            "numerator": 1 if cancellation_scenario["passed"] else 0,
+            "denominator": 1,
+            "excluded_count": len(scenarios) - 1,
+            "excluded_reason_counts": {
+                "not_cancellation_case": len(scenarios) - 1
+            },
+            "contributing_case_ids": [cancellation_scenario["id"]],
+            "metric_definition_version": metric_version,
+        },
+        "evidence_complete_rate": {
+            "value": (
+                sum(1 for item in scenarios if item["evidence_complete"])
+                / len(scenarios)
+            ),
+            "numerator": sum(
+                1 for item in scenarios if item["evidence_complete"]
+            ),
+            "denominator": len(scenarios),
+            "excluded_count": 0,
+            "excluded_reason_counts": {},
+            "contributing_case_ids": [item["id"] for item in scenarios],
+            "metric_definition_version": metric_version,
+        },
+    }
     return {
         "generated_at": datetime.now().astimezone().isoformat(
             timespec="seconds"
@@ -645,6 +728,8 @@ def run_acceptance() -> dict[str, Any]:
                 )
             },
         },
+        "metric_definition_version": metric_version,
+        "metric_audit": metric_audit,
     }
 
 
