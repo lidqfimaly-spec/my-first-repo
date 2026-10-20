@@ -80,14 +80,17 @@
 | not_executed | — | 0 |
 | simulated | — | 0 |
 | artifact_count（正向） | — | 6 |
-| negative_control_count | — | 1 |
+| file_write_count（正向） | — | 5 |
+| evidence_count（正向） | — | 6 |
+| negative_control_count | 产物 / 写入 / 证据 | 1 / 1 / 1 |
 | verifier_pass_rate | 6/6 | 1.0 |
 | artifact_integrity_rate | 6/6 | 1.0 |
 | recovery_success_rate | 1/1 | 1.0 |
 | conversation_constraint_rate | 3/3 | 1.0 |
 | duplicate_side_effects | — | 0 |
 
-`artifact_count = 6` 与 `file_write_count = 6` 相等：本阶段没有纯恢复读回的产物进入正向分母（E3 的恢复读取计入其自身用例）。
+正向计数描述同一总体：6 个产物、5 次写入、6 条证据。差值 1 来自 E3 的恢复读回（有证据、无写入）。
+负向对照 A4 的 1 次写入与 1 条证据单独统计，不计入正向分母。
 
 ## 6. 产品能力缺口
 
@@ -119,15 +122,16 @@
 
 ## 8. 稳定报告与哈希
 
-稳定结果两次独立运行哈希一致：`fc941714b14299121a3097f7f89b42ae042e0b9d32968ad456fdfdde52f19d12`。
+稳定结果两次独立运行哈希一致：`8638869837cdbb547356f4857eafc7741cfa23fdfca34164be074ba579f20129`。
+（首次提交时为 `fc941714…`；随后修正了正向计数口径——`artifact_count` 排除负向对照而部分计数未排除——重新生成。）
 
 产物位于 `artifacts/audits/phase-3.15/`，被 `.gitignore` 排除，**未进入 Git 提交**：
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `acceptance-stable/stable.json` | `fc941714b14299121a3097f7f89b42ae042e0b9d32968ad456fdfdde52f19d12` |
-| `acceptance-stable/metadata.json` | `32b4d7106051b822b6a738f1d4927af8be434246e7d77a3bc12d38d3c6541020` |
-| `acceptance-summary.json` | `2a03d107dde42f5fa6a32a0fae45dad35cb29fdc4ca8435b535f1daffe0b9d3a` |
+| `acceptance-stable-v2/stable.json` | `8638869837cdbb547356f4857eafc7741cfa23fdfca34164be074ba579f20129` |
+| `acceptance-stable-v2/metadata.json` | `a7b7c054c7cca892b824fac958ec9d8f5c5ae02def5fe7a3f6323485add98db6` |
+| `acceptance-summary-v2.json` | `2e04cea88a8cfd73f4a2bd55394dd54723d124e8943c9a16a8c4c9de6e138829` |
 | `mutations.json` | `d51826d1dfc598e9a0c296290a040528adb97224e2485c717f646d67b181efa7` |
 | `e2e.json` | `b3aa9099b7a6ddd27fa197f99282918da05b555d46e33d6fc36a0e7471a852e4` |
 | `coverage/coverage-gate.json` | `2946c6022ec1c583ed0ff68884f16c563c01c770c7dc8b73bd6359f7ab056c29` |

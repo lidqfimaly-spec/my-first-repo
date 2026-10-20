@@ -1111,11 +1111,20 @@ def _report(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
         "duplicate_side_effects": duplicate,
         "artifact_count": len(artifact_cases),
         "negative_control_count": len(negatives),
+        # Counters cover the same population as ``artifact_count`` so the
+        # three numbers can be compared directly.  Negative controls are
+        # reported separately instead of inflating the positive totals.
         "file_write_count": sum(
-            item["effects"]["file_writes"] for item in scenarios
+            item["effects"]["file_writes"] for item in artifact_cases
         ),
         "evidence_count": sum(
-            item["effects"]["evidence_count"] for item in scenarios
+            item["effects"]["evidence_count"] for item in artifact_cases
+        ),
+        "negative_control_write_count": sum(
+            item["effects"]["file_writes"] for item in negatives
+        ),
+        "negative_control_evidence_count": sum(
+            item["effects"]["evidence_count"] for item in negatives
         ),
     }
     metric_audit = {

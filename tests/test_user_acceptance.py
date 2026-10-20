@@ -101,6 +101,23 @@ class UserAcceptanceTests(unittest.TestCase):
             sum(counts.values()), metrics["scenario_count"]
         )
         self.assertEqual(metrics["duplicate_side_effects"], 0)
+        # Positive counters describe the same population.
+        positive = [
+            item
+            for item in self.report["scenarios"]
+            if item["effects"]["origin"] != "none"
+            and not item.get("negative_control")
+        ]
+        self.assertEqual(metrics["artifact_count"], len(positive))
+        self.assertEqual(
+            metrics["file_write_count"],
+            sum(item["effects"]["file_writes"] for item in positive),
+        )
+        self.assertEqual(
+            metrics["evidence_count"],
+            sum(item["effects"]["evidence_count"] for item in positive),
+        )
+        self.assertEqual(metrics["negative_control_write_count"], 1)
 
     def test_negative_control_is_excluded_from_rates(self) -> None:
         audit = self.report["metric_audit"]["verifier_pass_rate"]
