@@ -869,6 +869,28 @@
         "tests.test_storage_integrity_faults.StorageIntegrityFaultTests.test_corrupt_task_json_returns_structured_storage_failure"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "recovery_approval_stale_accepted",
+      "property": "approval is invalid after task state changes",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "    if approval.state_digest != preview.state_digest:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_recovery_preview.RecoveryPreviewTests.test_approval_binds_preview_and_becomes_stale"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "recovery_preview_execution_authorized",
+      "property": "previews never authorize execution",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            \"audit\": self.audit,\n            \"execution_authorized\": False,\n",
+      "new": "            \"audit\": self.audit,\n            \"execution_authorized\": True,\n",
+      "tests": [
+        "tests.test_recovery_preview.RecoveryPreviewTests.test_success_preview_is_read_only_and_non_executable"
+      ],
+      "expected": "killed"
     }
   ]
 }

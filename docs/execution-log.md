@@ -1217,6 +1217,41 @@ evidence。
 
 ---
 
+# 第 3.63 阶段执行记录
+
+## 实现
+
+- 新增只读 recovery_preview，生成 confirmed/unknown/actions/state_digest；
+- 成功、 中断、cleanup pending、storage_unreadable 均有结构化动作；
+- 所有动作 executable=false，execution_authorized=false；
+- 审批绑定 preview_id/version/task/state_digest，状态变化后 stale；
+- 审批有效也不授权执行，只表示 plan_acknowledgement_only；
+- 预演前后任务、事件、workspace 文件不变。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 恢复预演矩阵 | 5/5 |
+| 系统 Python 全量 | 652/652 |
+| `.venv` 全量 | 652/652 |
+| Mutation runner | 76 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 审批持久化服务和执行接口未实现；
+- 自动恢复、自动清理和历史迁移未实现；
+- 详见 `docs/phase-3.63-recovery-preview-approval-protocol.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 # 第 3.62 阶段执行记录
 
 ## 实现

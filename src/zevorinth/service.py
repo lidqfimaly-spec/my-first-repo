@@ -56,6 +56,7 @@ from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
 from .verifier import ArtifactVerifier, TestResultVerifier
 from .task_lifecycle import audit_storage_error, audit_task_lifecycle
+from .recovery_preview import build_recovery_preview, build_unavailable_preview
 from .workspace_snapshot import (
     EffectPolicy,
     Snapshot,
@@ -444,6 +445,22 @@ class TaskService:
             now=now,
             evidence_state=evidence_state,
         )
+
+    def recovery_preview(
+        self, task_id: str, *, now: str | None = None
+    ) -> dict[str, Any]:
+        """Build a read-only recovery preview; never execute an action."""
+        report = self.audit_lifecycle(task_id, now=now)
+        try:
+            task = self.store.require_task(task_id)
+            events = self.store.list_events(task_id)
+        except Exception:
+            return build_unavailable_preview(
+                task_id, report, now=now
+            ).to_dict()
+        return build_recovery_preview(
+            task, events, audit=report, now=now
+        ).to_dict()
 
     def cleanup_provisioning_artifact(
         self,

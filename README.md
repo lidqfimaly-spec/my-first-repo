@@ -368,5 +368,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.60 阶段运行时故障与恢复一致性](docs/phase-3.60-runtime-fault-recovery-consistency.md)
 - [第 3.61 阶段执行结果持久化与恢复边界](docs/phase-3.61-result-persistence-recovery-boundaries.md)
 - [第 3.62 阶段数据库与证据完整性故障审计](docs/phase-3.62-database-evidence-integrity-audit.md)
+- [第 3.63 阶段恢复预演与人工审批协议](docs/phase-3.63-recovery-preview-approval-protocol.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)
