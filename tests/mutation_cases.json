@@ -412,6 +412,17 @@
         "tests.test_cleanup_reconciliation.ReconciliationTests.test_quarantined_but_not_deleted_is_pending"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "intent_gate_bypass",
+      "property": "no filesystem effect without a persisted intent",
+      "path": "src/zevorinth/service.py",
+      "old": "            if not record[\"intent_persisted\"]:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_durable_intent_and_isolation.DurableIntentGateTests.test_intent_write_failure_blocks_quarantine"
+      ],
+      "expected": "killed"
     }
   ]
 }

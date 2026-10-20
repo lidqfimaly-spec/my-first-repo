@@ -598,6 +598,35 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.21 阶段执行记录
+
+## 实现
+
+- 清理增加持久化意图硬门禁：store 不可用或意图未确认时不触碰文件系统；
+- 意图写入异常时按 operation_id 回查，区分“已落盘 / 明确失败 / 未知”；
+- 新增 `isolation.py`：Seatbelt 配置构建、探针与隔离区只读盘点。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 437/437，exit 0 |
+| 意图门禁专项 | 5/5 |
+| Mutation runner | 36 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| OS 隔离验证 | NOT VERIFIED（探针 SIGABRT） |
+
+## 边界
+
+- 操作系统级隔离未建立；
+- 隔离区无自动保留策略；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.21-os-isolation-durable-safety-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.20 阶段执行记录
 
 ## 实现

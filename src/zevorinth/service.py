@@ -342,9 +342,25 @@ class TaskService:
             if task.tool_result is not None
             else None
         )
+        try:
+            events = self.store.list_events(task_id)
+        except Exception:
+            return {
+                "task_id": task_id,
+                "batch_status": "unverified",
+                "files": [
+                    {
+                        "relative_path": path,
+                        "status": "unverified",
+                        "code": "store_unavailable",
+                        "removed": False,
+                    }
+                    for path in relative_paths
+                ],
+            }
         cleaned = {
             str(event.payload.get("relative_path"))
-            for event in self.store.list_events(task_id)
+            for event in events
             if event.event_type == "cleanup_completed"
             and event.payload.get("relative_path")
         }
@@ -413,6 +429,20 @@ class TaskService:
                     "expected_sha256": decision.expected_sha256,
                 },
             )
+            if not record["intent_persisted"]:
+                # A failed intent write is not permission to proceed: reconcile
+                # by operation id and refuse unless it is provably persisted.
+                persisted = self._intent_exists(task_id, operation_id)
+                record["intent_reconciled"] = persisted
+                if persisted is not True:
+                    record.update(
+                        status="unverified",
+                        code="intent_not_persisted",
+                        removed=False,
+                    )
+                    self._record_cleanup_event(task, record)
+                    results.append(record)
+                    continue
             if not decision.allowed:
                 record.update(
                     status="rejected", code=decision.code, removed=False
@@ -446,6 +476,18 @@ class TaskService:
         except Exception:
             return False
         return True
+
+    def _intent_exists(self, task_id: str, operation_id: str):
+        """Return True/False, or None when the store cannot be read."""
+        try:
+            events = self.store.list_events(task_id)
+        except Exception:
+            return None
+        return any(
+            event.event_type == "cleanup_intent"
+            and event.payload.get("operation_id") == operation_id
+            for event in events
+        )
 
     def reconcile_cleanup_operation(
         self, task_id: str, operation_id: str
