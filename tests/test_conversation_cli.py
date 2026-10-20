@@ -231,6 +231,96 @@ class ConversationCliTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("task conversation conflict", stderr.getvalue())
 
+    def test_process_cli_completes_clarification_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with redirect_stdout(StringIO()):
+                self.assertEqual(
+                    main(
+                        [
+                            "--home",
+                            temp_dir,
+                            "conversation",
+                            "create",
+                            "--conversation-id",
+                            "conversation-1",
+                        ]
+                    ),
+                    0,
+                )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                first_code = main(
+                    [
+                        "--home",
+                        temp_dir,
+                        "conversation",
+                        "process",
+                        "conversation-1",
+                        "--content",
+                        "创建一个文件",
+                        "--client-message-id",
+                        "m1",
+                        "--json",
+                    ]
+                )
+            first = json.loads(output.getvalue())
+            self.assertEqual(first_code, 3)
+            self.assertEqual(first["outcome"], "awaiting_clarification")
+            questions = {item["field_name"]: item for item in first["clarifications"]}
+
+            for index, field, value in (
+                (2, "operation", "write_text_artifact"),
+                (3, "artifact_path", "result.txt"),
+            ):
+                output = StringIO()
+                with redirect_stdout(output):
+                    code = main(
+                        [
+                            "--home",
+                            temp_dir,
+                            "conversation",
+                            "process",
+                            "conversation-1",
+                            "--content",
+                            value,
+                            "--client-message-id",
+                            f"m{index}",
+                            "--answer-to",
+                            questions[field]["question_id"],
+                            "--json",
+                        ]
+                    )
+                result = json.loads(output.getvalue())
+                self.assertEqual(code, 3)
+                self.assertEqual(result["outcome"], "awaiting_clarification")
+                questions = {
+                    item["field_name"]: item for item in result["clarifications"]
+                }
+
+            output = StringIO()
+            with redirect_stdout(output):
+                final_code = main(
+                    [
+                        "--home",
+                        temp_dir,
+                        "conversation",
+                        "process",
+                        "conversation-1",
+                        "--content",
+                        "verified",
+                        "--client-message-id",
+                        "m4",
+                        "--answer-to",
+                        questions["content"]["question_id"],
+                        "--json",
+                    ]
+                )
+            final = json.loads(output.getvalue())
+            self.assertEqual(final_code, 0)
+            self.assertEqual(final["outcome"], "completed")
+            self.assertEqual(final["task"]["status"], "succeeded")
+
     def test_conflict_and_missing_conversation_have_explicit_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with redirect_stdout(StringIO()):

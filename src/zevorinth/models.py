@@ -43,6 +43,35 @@ class MessageRole(str, Enum):
 
 class TurnStatus(str, Enum):
     RECEIVED = "received"
+    CLASSIFIED = "classified"
+    DISPATCHED = "dispatched"
+    AWAITING_CLARIFICATION = "awaiting_clarification"
+    NEEDS_ATTENTION = "needs_attention"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class IntentKind(str, Enum):
+    NEW_TASK = "new_task"
+    SUPPLEMENT = "supplement"
+    MODIFY_PENDING = "modify_pending"
+    CLARIFICATION_ANSWER = "clarification_answer"
+    STATUS_QUERY = "status_query"
+    AMBIGUOUS = "ambiguous"
+
+
+class ClarificationStatus(str, Enum):
+    OPEN = "open"
+    ANSWERED = "answered"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
+
+
+class ClarificationAnswerStatus(str, Enum):
+    PENDING_APPLY = "pending_apply"
+    APPLIED = "applied"
+    REJECTED = "rejected"
 
 
 class PlannerMode(str, Enum):
@@ -541,6 +570,102 @@ class ConversationTurn:
             created_at=str(data["created_at"]),
             updated_at=str(data["updated_at"]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class IntentClassification:
+    kind: IntentKind
+    reason: str
+    target_task_id: str | None = None
+    question_id: str | None = None
+    requires_question_binding: bool = False
+    requires_confirmation: bool = False
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "kind": self.kind.value,
+            "reason": self.reason,
+            "target_task_id": self.target_task_id,
+            "question_id": self.question_id,
+            "requires_question_binding": self.requires_question_binding,
+            "requires_confirmation": self.requires_confirmation,
+        }
+
+
+@dataclass(slots=True)
+class ClarificationRequest:
+    question_id: str
+    conversation_id: str
+    turn_id: str
+    task_id: str
+    field_name: str
+    ordinal: int
+    question_text: str
+    status: ClarificationStatus
+    created_at: str
+    answered_at: str | None = None
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "question_id": self.question_id,
+            "conversation_id": self.conversation_id,
+            "turn_id": self.turn_id,
+            "task_id": self.task_id,
+            "field_name": self.field_name,
+            "ordinal": self.ordinal,
+            "question_text": self.question_text,
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "answered_at": self.answered_at,
+        }
+
+
+@dataclass(slots=True)
+class ClarificationAnswer:
+    answer_id: str
+    question_id: str
+    message_id: str
+    conversation_id: str
+    normalized_value: Any
+    validation_status: ClarificationAnswerStatus
+    created_at: str
+    applied_at: str | None = None
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "answer_id": self.answer_id,
+            "question_id": self.question_id,
+            "message_id": self.message_id,
+            "conversation_id": self.conversation_id,
+            "normalized_value": self.normalized_value,
+            "validation_status": self.validation_status.value,
+            "created_at": self.created_at,
+            "applied_at": self.applied_at,
+        }
+
+
+@dataclass(slots=True)
+class ConversationProcessResult:
+    outcome: str
+    turn: ConversationTurn
+    message: Message
+    intent: IntentClassification
+    task: Task | None = None
+    clarifications: list[ClarificationRequest] = field(default_factory=list)
+    error: str | None = None
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "outcome": self.outcome,
+            "turn": self.turn.to_dict(),
+            "message": self.message.to_dict(),
+            "intent": self.intent.to_dict(),
+            "task": self.task.to_dict() if self.task else None,
+            "clarifications": [
+                item.to_dict() for item in self.clarifications
+            ],
+            "error": self.error,
+        }
 
 
 @dataclass(frozen=True, slots=True)

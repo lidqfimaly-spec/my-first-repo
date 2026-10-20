@@ -595,3 +595,38 @@ ZEVORINTH_MODEL=deepseek-flash
 - 没有在线评测；
 - 没有实现意图分类、上下文压缩或自动任务续接；
 - 未提交、未推送。
+
+---
+
+# 第 3.3 阶段执行记录
+
+## 实现范围
+
+- Schema v4 追加式迁移：澄清问题与答案表；
+- 问题 ID、答案来源 message、应用状态和并发唯一约束；
+- ConversationService 多轮 `process_message`；
+- 新任务、澄清答案、状态查询和保守的补充/修改处理；
+- CLI `conversation process`；
+- 任务、turn、conversation 和 clarification 的关联与事件。
+
+## 验证
+
+| 检查 | 结果 |
+| --- | --- |
+| Intent classifier 测试 | 8/8 通过 |
+| Clarification workflow 测试 | 6/6 通过 |
+| Conversation CLI 测试 | 5/5 通过 |
+| Conversation schema 测试 | 18/18 通过 |
+| 系统 Python 完整 unittest | 151/151 通过，exit 0 |
+| 隔离环境完整 unittest | 151/151 通过，exit 0 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version：4；
+- 真实模型 API 请求：0；
+- 不接入 LLM；
+- `supplement`/`modify_pending` 的非结构化文本不会自动覆盖任务计划；
+- 已执行副作用不会因新消息被撤销；
+- 未提交、未推送。

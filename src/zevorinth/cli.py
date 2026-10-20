@@ -292,6 +292,28 @@ def _print_history(messages: list[object], as_json: bool) -> None:
         )
 
 
+CONVERSATION_EXIT_CODES = {
+    "completed": 0,
+    "status": 0,
+    "already_processed": 0,
+    "awaiting_clarification": 3,
+    "needs_question_binding": 3,
+    "ambiguous": 3,
+    "requires_structured_update": 3,
+    "requires_confirmation": 4,
+    "active_task_conflict": 4,
+    "question_not_found": 2,
+    "question_mismatch": 2,
+    "answer_conflict": 2,
+    "answer_pending": 5,
+    "answer_rejected": 1,
+}
+
+
+def _conversation_exit_code(outcome: str) -> int:
+    return CONVERSATION_EXIT_CODES.get(outcome, 5)
+
+
 def _exit_code(task: Task) -> int:
     return STATUS_EXIT_CODES[task.status]
 
@@ -347,6 +369,15 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("conversation_id")
     history.add_argument("--limit", type=int, default=50)
     history.add_argument("--json", action="store_true")
+    process = conversation_sub.add_parser("process")
+    process.add_argument("conversation_id")
+    process.add_argument("--content", required=True)
+    process.add_argument("--client-message-id", required=True)
+    process.add_argument("--answer-to", default=None)
+    process.add_argument("--operation", default=None)
+    process.add_argument("--artifact-path", default=None)
+    process.add_argument("--task-content", default=None)
+    process.add_argument("--json", action="store_true")
 
     evaluation = subparsers.add_parser(
         "eval-planner",
@@ -478,6 +509,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"Turn: {turn.turn_id} (index={turn.turn_index})")
                     print(f"Message: {message.message_id} ({message.byte_count} bytes)")
                 return 0
+            if args.conversation_command == "process":
+                result = service.process_message(
+                    args.conversation_id,
+                    args.content,
+                    client_message_id=args.client_message_id,
+                    answer_to=args.answer_to,
+                    operation=args.operation,
+                    artifact_path=args.artifact_path,
+                    task_content=args.task_content,
+                )
+                if args.json:
+                    print(
+                        json.dumps(
+                            result.to_dict(),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Outcome: {result.outcome}")
+                    print(f"Intent: {result.intent.kind.value}")
+                    if result.task:
+                        print(f"Task: {result.task.task_id}")
+                        print(f"Task status: {result.task.status.value}")
+                    for question in result.clarifications:
+                        print(
+                            f"Question: {question.question_id} "
+                            f"[{question.field_name}] {question.question_text}"
+                        )
+                return _conversation_exit_code(result.outcome)
             messages = service.history(
                 args.conversation_id,
                 limit=args.limit,

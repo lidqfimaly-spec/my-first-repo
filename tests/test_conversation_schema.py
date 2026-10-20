@@ -16,6 +16,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from zevorinth.event_store import EventStore, SchemaVersionError  # noqa: E402
 from zevorinth.models import (  # noqa: E402
+    Event,
+    EventType,
     ExecutionMode,
     PlannerMode,
     Task,
@@ -119,6 +121,30 @@ def _create_v2_database(path: Path) -> Task:
     return task
 
 
+def _create_v3_database(path: Path) -> Task:
+    store = EventStore(path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        store._create_schema_v3(connection)
+        connection.commit()
+    finally:
+        connection.close()
+    task = _legacy_task()
+    store.create_task(
+        task,
+        Event.new(
+            task.task_id,
+            EventType.TASK_CREATED,
+            NOW,
+            {"goal_present": True},
+        ),
+    )
+    return task
+
+
 def _initialize_worker(
     path_text: str,
     barrier: object,
@@ -173,7 +199,7 @@ def _database_snapshot(path: Path) -> tuple[object, ...]:
 
 
 class ConversationSchemaTests(unittest.TestCase):
-    def test_blank_database_creates_schema_v3(self) -> None:
+    def test_blank_database_creates_schema_v4(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "data" / "zevorinth.sqlite3"
             EventStore(path).initialize()
@@ -205,7 +231,7 @@ class ConversationSchemaTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertEqual(user_version, 0)
             self.assertTrue(
                 {
@@ -213,6 +239,8 @@ class ConversationSchemaTests(unittest.TestCase):
                     "conversation_turns",
                     "messages",
                     "conversation_events",
+                    "clarification_requests",
+                    "clarification_answers",
                 }.issubset(tables)
             )
             self.assertIn("conversation_id", columns)
@@ -255,7 +283,7 @@ class ConversationSchemaTests(unittest.TestCase):
                 ).fetchall()
             finally:
                 connection.close()
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertIsNone(conversation_id)
             self.assertTrue(
                 any(
@@ -264,6 +292,78 @@ class ConversationSchemaTests(unittest.TestCase):
                     and row[4] == "conversation_id"
                     for row in task_fks
                 )
+            )
+
+    def test_v3_database_migrates_to_v4_and_keeps_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "data" / "zevorinth.sqlite3"
+            path.parent.mkdir(parents=True)
+            legacy = _create_v3_database(path)
+
+            EventStore(path).initialize()
+
+            store = EventStore(path)
+            self.assertEqual(store.require_task(legacy.task_id).status, TaskStatus.QUEUED)
+            connection = sqlite3.connect(path)
+            try:
+                version = connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                event_count = connection.execute(
+                    "SELECT COUNT(*) FROM events"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(version, "4")
+            self.assertIn("clarification_requests", tables)
+            self.assertIn("clarification_answers", tables)
+            self.assertEqual(event_count, 1)
+
+    def test_v3_to_v4_migration_failure_rolls_back(self) -> None:
+        class FailingV4Store(EventStore):
+            def _create_v4_tables(self, connection: sqlite3.Connection) -> None:
+                connection.execute(
+                    "CREATE TABLE clarification_requests (question_id TEXT)"
+                )
+                raise RuntimeError("injected v4 migration failure")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "data" / "zevorinth.sqlite3"
+            path.parent.mkdir(parents=True)
+            legacy = _create_v3_database(path)
+
+            with self.assertRaises(RuntimeError):
+                FailingV4Store(path).initialize()
+
+            connection = sqlite3.connect(path)
+            try:
+                version = connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'"
+                ).fetchone()[0]
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                task_count = connection.execute(
+                    "SELECT COUNT(*) FROM tasks"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(version, "3")
+            self.assertNotIn("clarification_requests", tables)
+            self.assertNotIn("clarification_answers", tables)
+            self.assertEqual(task_count, 1)
+            self.assertEqual(
+                EventStore(path).require_task(legacy.task_id).status,
+                TaskStatus.QUEUED,
             )
 
     def test_repeated_initialization_is_idempotent(self) -> None:
@@ -288,7 +388,7 @@ class ConversationSchemaTests(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(version_rows, 1)
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertEqual(task_count, 0)
 
     def test_migration_failure_rolls_back_all_ddl(self) -> None:
@@ -484,7 +584,7 @@ class ConversationSchemaTests(unittest.TestCase):
                 ).fetchone()[0]
             finally:
                 connection.close()
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertGreaterEqual(table_count, 7)
 
     def test_concurrent_v2_migration_is_completed_once(self) -> None:
@@ -533,7 +633,7 @@ class ConversationSchemaTests(unittest.TestCase):
                 ).fetchone()[0]
             finally:
                 connection.close()
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertEqual(conversation_table, 1)
             self.assertEqual(task_count, 1)
 

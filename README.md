@@ -193,7 +193,7 @@ ZEVORINTH_MODEL=deepseek-flash \
 
 ## 会话持久化 CLI
 
-当前提供基础会话命令，不自动创建任务或执行工具：
+当前提供基础会话命令；`process` 会在安全边界内创建或恢复任务：
 
 ```bash
 PYTHONPATH=src python3 -m zevorinth \
@@ -210,6 +210,13 @@ PYTHONPATH=src python3 -m zevorinth \
 PYTHONPATH=src python3 -m zevorinth \
   --home "$DEMO_ROOT" \
   conversation history demo --limit 20 --json
+
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  conversation process demo \
+  --content "创建一个文件" \
+  --client-message-id request-2 \
+  --json
 ```
 
 需要把任务绑定到已有 turn 时，可使用：
@@ -226,7 +233,7 @@ PYTHONPATH=src python3 -m zevorinth \
   --json
 ```
 
-相同 `client-message-id` 和相同内容返回原消息与 turn；相同 ID 但内容不同会明确报冲突。会话消息持久化不等同于任务执行，自动多轮规划和上下文压缩仍未完成。
+相同 `client-message-id` 和相同内容返回原消息与 turn；相同 ID 但内容不同会明确报冲突。`process` 返回结构化 outcome 和待回答的问题 ID；自然语言的补充/修改不会直接覆盖已有计划，需要结构化更新或确认。
 
 ## 模拟与未执行
 
@@ -290,5 +297,7 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 2.6 阶段结果](docs/phase-2.6-results.md)
 - [第 2.7 阶段定向复测预检](docs/phase-2.7-preflight.md)
 - [第 2.7 阶段定向复测结果](docs/phase-2.7-results.md)
+- [第 3 阶段会话与任务关联设计](docs/phase-3-design.md)
+- [第 3.3 阶段多轮意图与安全编排设计](docs/phase-3.3-design.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

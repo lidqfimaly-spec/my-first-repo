@@ -11,11 +11,15 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from .models import (
     ClaimResult,
+    ClarificationAnswer,
+    ClarificationAnswerStatus,
+    ClarificationRequest,
+    ClarificationStatus,
     Conversation,
     ConversationStatus,
     ConversationTurn,
@@ -71,8 +75,17 @@ class ActiveTaskConflict(EventStoreError):
     pass
 
 
+class ClarificationNotFound(LookupError):
+    pass
+
+
+class ClarificationConflict(EventStoreError):
+    pass
+
+
 class EventStore:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
+    V3_SCHEMA_VERSION = 3
     LEGACY_SCHEMA_VERSION = 2
     MAX_CONVERSATION_HISTORY = 200
     ACTIVE_TASK_STATUSES = (
@@ -109,10 +122,22 @@ class EventStore:
                             "database has user tables but no metadata.schema_version"
                         )
                     self._create_schema_v3(connection)
+                    self._create_schema_v4(connection)
                 elif version == self.SCHEMA_VERSION:
-                    self._validate_schema_v3(connection)
+                    self._validate_schema_v4(connection)
+                elif version == self.V3_SCHEMA_VERSION:
+                    self._migrate_v3_to_v4(connection)
+                    violations = connection.execute(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if violations:
+                        raise SchemaVersionError(
+                            "migrated database has foreign key violations: "
+                            f"{len(violations)}"
+                        )
                 elif version == self.LEGACY_SCHEMA_VERSION:
                     self._migrate_v2_to_v3(connection)
+                    self._migrate_v3_to_v4(connection)
                     violations = connection.execute(
                         "PRAGMA foreign_key_check"
                     ).fetchall()
@@ -369,6 +394,61 @@ class EventStore:
             )
         """
 
+    @staticmethod
+    def _clarification_requests_table_sql() -> str:
+        return """
+            CREATE TABLE clarification_requests (
+                question_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                field_name TEXT NOT NULL
+                    CHECK (field_name IN (
+                        'goal', 'operation', 'artifact_path', 'content'
+                    )),
+                ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                question_text TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK (status IN (
+                        'open', 'answered', 'cancelled', 'superseded'
+                    )),
+                created_at TEXT NOT NULL,
+                answered_at TEXT,
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(conversation_id),
+                FOREIGN KEY (turn_id, conversation_id)
+                    REFERENCES conversation_turns(turn_id, conversation_id),
+                FOREIGN KEY (task_id, conversation_id)
+                    REFERENCES tasks(task_id, conversation_id),
+                UNIQUE (task_id, ordinal),
+                UNIQUE (question_id, conversation_id)
+            )
+        """
+
+    @staticmethod
+    def _clarification_answers_table_sql() -> str:
+        return """
+            CREATE TABLE clarification_answers (
+                answer_id TEXT PRIMARY KEY,
+                question_id TEXT NOT NULL UNIQUE,
+                message_id TEXT NOT NULL UNIQUE,
+                conversation_id TEXT NOT NULL,
+                normalized_value_json TEXT NOT NULL,
+                validation_status TEXT NOT NULL
+                    CHECK (validation_status IN (
+                        'pending_apply', 'applied', 'rejected'
+                    )),
+                created_at TEXT NOT NULL,
+                applied_at TEXT,
+                FOREIGN KEY (question_id, conversation_id)
+                    REFERENCES clarification_requests(
+                        question_id, conversation_id
+                    ),
+                FOREIGN KEY (message_id, conversation_id)
+                    REFERENCES messages(message_id, conversation_id)
+            )
+        """
+
     def _v3_index_sqls(self) -> list[tuple[str, str]]:
         active_statuses = ", ".join(
             f"'{status}'" for status in self.ACTIVE_TASK_STATUSES
@@ -429,7 +509,25 @@ class EventStore:
             ),
         ]
 
-    def _schema_sql_objects(self) -> dict[str, str]:
+    def _v4_index_sqls(self) -> list[tuple[str, str]]:
+        return [
+            (
+                "uq_messages_id_conversation",
+                """
+            CREATE UNIQUE INDEX uq_messages_id_conversation
+            ON messages(message_id, conversation_id)
+                """,
+            ),
+            (
+                "idx_clarification_requests_task_status",
+                """
+            CREATE INDEX idx_clarification_requests_task_status
+            ON clarification_requests(task_id, status)
+                """,
+            ),
+        ]
+
+    def _schema_sql_objects_v3(self) -> dict[str, str]:
         objects = {
             "metadata": self._metadata_table_sql(),
             "conversations": self._conversations_table_sql(),
@@ -441,6 +539,21 @@ class EventStore:
             "conversation_events": self._conversation_events_table_sql(),
         }
         objects.update(dict(self._v3_index_sqls()))
+        return objects
+
+    def _schema_sql_objects_v4(self) -> dict[str, str]:
+        objects = self._schema_sql_objects_v3()
+        objects.update(
+            {
+                "clarification_requests": (
+                    self._clarification_requests_table_sql()
+                ),
+                "clarification_answers": (
+                    self._clarification_answers_table_sql()
+                ),
+            }
+        )
+        objects.update(dict(self._v4_index_sqls()))
         return objects
 
     @staticmethod
@@ -526,8 +639,28 @@ class EventStore:
         self._create_events_table(connection)
         self._create_conversation_children(connection)
         self._create_v3_indexes(connection)
-        self._write_schema_version(connection, self.SCHEMA_VERSION)
+        self._write_schema_version(connection, self.V3_SCHEMA_VERSION)
         self._validate_schema_v3(connection)
+
+    def _create_v4_tables(self, connection: sqlite3.Connection) -> None:
+        connection.execute(self._clarification_requests_table_sql())
+        connection.execute(self._clarification_answers_table_sql())
+
+    def _create_v4_indexes(self, connection: sqlite3.Connection) -> None:
+        for _, sql in self._v4_index_sqls():
+            connection.execute(sql)
+
+    def _create_schema_v4(self, connection: sqlite3.Connection) -> None:
+        self._create_v4_tables(connection)
+        self._create_v4_indexes(connection)
+        self._write_schema_version(connection, self.SCHEMA_VERSION)
+        self._validate_schema_v4(connection)
+
+    def _migrate_v3_to_v4(self, connection: sqlite3.Connection) -> None:
+        self._create_v4_tables(connection)
+        self._create_v4_indexes(connection)
+        self._write_schema_version(connection, self.SCHEMA_VERSION)
+        self._validate_schema_v4(connection)
 
     def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
         self._require_table(connection, "tasks")
@@ -543,11 +676,27 @@ class EventStore:
         )
         self._create_conversation_children(connection)
         self._create_v3_indexes(connection)
-        self._write_schema_version(connection, self.SCHEMA_VERSION)
+        self._write_schema_version(connection, self.V3_SCHEMA_VERSION)
         self._validate_schema_v3(connection)
 
     def _validate_schema_v3(self, connection: sqlite3.Connection) -> None:
-        for name, expected_sql in self._schema_sql_objects().items():
+        self._validate_schema_objects(
+            connection,
+            self._schema_sql_objects_v3(),
+        )
+
+    def _validate_schema_v4(self, connection: sqlite3.Connection) -> None:
+        self._validate_schema_objects(
+            connection,
+            self._schema_sql_objects_v4(),
+        )
+
+    def _validate_schema_objects(
+        self,
+        connection: sqlite3.Connection,
+        objects: Mapping[str, str],
+    ) -> None:
+        for name, expected_sql in objects.items():
             row = connection.execute(
                 "SELECT type, sql FROM sqlite_master WHERE name = ?",
                 (name,),
@@ -1074,6 +1223,483 @@ class EventStore:
             )
             for row in rows
         ]
+
+    def find_active_task_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> Task | None:
+        placeholders = ", ".join("?" for _ in self.ACTIVE_TASK_STATUSES)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT task_json FROM tasks
+                WHERE conversation_id = ?
+                  AND status IN ({placeholders})
+                ORDER BY created_at DESC
+                """,
+                (conversation_id, *self.ACTIVE_TASK_STATUSES),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise ActiveTaskConflict(
+                "conversation has more than one active task"
+            )
+        return Task.from_dict(json.loads(rows[0]["task_json"]))
+
+    def get_task_for_turn(self, turn_id: str) -> Task | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT task_id FROM conversation_turns WHERE turn_id = ?",
+                (turn_id,),
+            ).fetchone()
+        if row is None:
+            raise ConversationTurnNotFound(turn_id)
+        if row["task_id"] is None:
+            return None
+        return self.require_task(str(row["task_id"]))
+
+    def update_conversation_turn(
+        self,
+        turn_id: str,
+        *,
+        status: TurnStatus,
+        intent_kind: str | None,
+        now: str | None = None,
+    ) -> ConversationTurn:
+        timestamp = now or self._now()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE conversation_turns
+                SET status = ?, intent_kind = ?, updated_at = ?
+                WHERE turn_id = ?
+                """,
+                (status.value, intent_kind, timestamp, turn_id),
+            )
+            if cursor.rowcount != 1:
+                raise ConversationTurnNotFound(turn_id)
+            row = connection.execute(
+                """
+                SELECT turn_id, conversation_id, turn_index, status,
+                       intent_kind, task_id, created_at, updated_at
+                FROM conversation_turns
+                WHERE turn_id = ?
+                """,
+                (turn_id,),
+            ).fetchone()
+            self._insert_conversation_event(
+                connection,
+                str(row["conversation_id"]),
+                turn_id=turn_id,
+                task_id=(
+                    str(row["task_id"])
+                    if row["task_id"] is not None
+                    else None
+                ),
+                event_type="intent_classified",
+                occurred_at=timestamp,
+                payload={
+                    "intent_kind": intent_kind,
+                    "turn_status": status.value,
+                },
+            )
+            connection.commit()
+        return ConversationTurn(
+            turn_id=str(row["turn_id"]),
+            conversation_id=str(row["conversation_id"]),
+            turn_index=int(row["turn_index"]),
+            status=TurnStatus(row["status"]),
+            intent_kind=(
+                str(row["intent_kind"])
+                if row["intent_kind"] is not None
+                else None
+            ),
+            task_id=(
+                str(row["task_id"]) if row["task_id"] is not None else None
+            ),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def create_clarification_requests(
+        self,
+        *,
+        task_id: str,
+        conversation_id: str,
+        turn_id: str,
+        fields: Sequence[str],
+        questions: Sequence[str],
+        now: str | None = None,
+    ) -> list[ClarificationRequest]:
+        timestamp = now or self._now()
+        if not fields:
+            return []
+        if len(questions) != len(fields):
+            questions = [
+                f"请提供 {field}" for field in fields
+            ]
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                "SELECT conversation_id FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if task is None:
+                raise TaskNotFound(task_id)
+            if task["conversation_id"] != conversation_id:
+                raise ClarificationConflict(
+                    "task and conversation do not match"
+                )
+            turn = connection.execute(
+                """
+                SELECT conversation_id FROM conversation_turns
+                WHERE turn_id = ?
+                """,
+                (turn_id,),
+            ).fetchone()
+            if turn is None:
+                raise ConversationTurnNotFound(turn_id)
+            if turn["conversation_id"] != conversation_id:
+                raise ClarificationConflict(
+                    "turn and conversation do not match"
+                )
+            row = connection.execute(
+                """
+                SELECT COALESCE(MAX(ordinal), -1) + 1
+                FROM clarification_requests
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            next_ordinal = int(row[0])
+            created: list[ClarificationRequest] = []
+            for offset, (field, question) in enumerate(
+                zip(fields, questions, strict=True)
+            ):
+                if field not in {
+                    "goal",
+                    "operation",
+                    "artifact_path",
+                    "content",
+                }:
+                    raise ValueError(f"unsupported clarification field: {field}")
+                if not isinstance(question, str) or not question.strip():
+                    raise ValueError("clarification question must be non-empty")
+                request = ClarificationRequest(
+                    question_id=str(uuid4()),
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    field_name=field,
+                    ordinal=next_ordinal + offset,
+                    question_text=question.strip(),
+                    status=ClarificationStatus.OPEN,
+                    created_at=timestamp,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO clarification_requests(
+                        question_id, conversation_id, turn_id, task_id,
+                        field_name, ordinal, question_text, status, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request.question_id,
+                        request.conversation_id,
+                        request.turn_id,
+                        request.task_id,
+                        request.field_name,
+                        request.ordinal,
+                        request.question_text,
+                        request.status.value,
+                        request.created_at,
+                    ),
+                )
+                self._insert_conversation_event(
+                    connection,
+                    conversation_id,
+                    turn_id=turn_id,
+                    task_id=task_id,
+                    event_type="clarification_requested",
+                    occurred_at=timestamp,
+                    payload={
+                        "question_id": request.question_id,
+                        "field_name": field,
+                    },
+                )
+                created.append(request)
+            connection.commit()
+        return created
+
+    def get_clarification_request(
+        self,
+        question_id: str,
+    ) -> ClarificationRequest | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT question_id, conversation_id, turn_id, task_id,
+                       field_name, ordinal, question_text, status,
+                       created_at, answered_at
+                FROM clarification_requests
+                WHERE question_id = ?
+                """,
+                (question_id,),
+            ).fetchone()
+        return self._clarification_request_from_row(row) if row else None
+
+    def list_clarification_requests(
+        self,
+        task_id: str,
+        *,
+        open_only: bool = False,
+    ) -> list[ClarificationRequest]:
+        with self._connection() as connection:
+            if open_only:
+                rows = connection.execute(
+                    """
+                    SELECT question_id, conversation_id, turn_id, task_id,
+                           field_name, ordinal, question_text, status,
+                           created_at, answered_at
+                    FROM clarification_requests
+                    WHERE task_id = ? AND status = 'open'
+                    ORDER BY ordinal
+                    """,
+                    (task_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT question_id, conversation_id, turn_id, task_id,
+                           field_name, ordinal, question_text, status,
+                           created_at, answered_at
+                    FROM clarification_requests
+                    WHERE task_id = ?
+                    ORDER BY ordinal
+                    """,
+                    (task_id,),
+                ).fetchall()
+        return [self._clarification_request_from_row(row) for row in rows]
+
+    def record_clarification_answer(
+        self,
+        *,
+        question_id: str,
+        message_id: str,
+        normalized_value: Any,
+        now: str | None = None,
+    ) -> ClarificationAnswer:
+        timestamp = now or self._now()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            question = connection.execute(
+                """
+                SELECT conversation_id, status
+                FROM clarification_requests
+                WHERE question_id = ?
+                """,
+                (question_id,),
+            ).fetchone()
+            if question is None:
+                raise ClarificationNotFound(question_id)
+            if question["status"] != ClarificationStatus.OPEN.value:
+                raise ClarificationConflict(
+                    "clarification question is not open"
+                )
+            message = connection.execute(
+                "SELECT conversation_id FROM messages WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            if message is None:
+                raise MessageConflict("answer message does not exist")
+            if message["conversation_id"] != question["conversation_id"]:
+                raise ClarificationConflict(
+                    "answer message belongs to a different conversation"
+                )
+            answer = ClarificationAnswer(
+                answer_id=str(uuid4()),
+                question_id=question_id,
+                message_id=message_id,
+                conversation_id=str(question["conversation_id"]),
+                normalized_value=normalized_value,
+                validation_status=ClarificationAnswerStatus.PENDING_APPLY,
+                created_at=timestamp,
+            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO clarification_answers(
+                        answer_id, question_id, message_id, conversation_id,
+                        normalized_value_json, validation_status, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        answer.answer_id,
+                        answer.question_id,
+                        answer.message_id,
+                        answer.conversation_id,
+                        json.dumps(
+                            normalized_value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        answer.validation_status.value,
+                        answer.created_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ClarificationConflict(
+                    "question or message already has an answer"
+                ) from exc
+            connection.execute(
+                """
+                UPDATE clarification_requests
+                SET status = 'answered', answered_at = ?
+                WHERE question_id = ?
+                """,
+                (timestamp, question_id),
+            )
+            self._insert_conversation_event(
+                connection,
+                answer.conversation_id,
+                turn_id=None,
+                task_id=None,
+                event_type="clarification_answered",
+                occurred_at=timestamp,
+                payload={
+                    "question_id": question_id,
+                    "answer_id": answer.answer_id,
+                    "message_id": message_id,
+                },
+            )
+            connection.commit()
+        return answer
+
+    def mark_clarification_answer(
+        self,
+        answer_id: str,
+        status: ClarificationAnswerStatus,
+        *,
+        now: str | None = None,
+    ) -> ClarificationAnswer:
+        timestamp = now or self._now()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT answer_id, question_id, message_id, conversation_id,
+                       normalized_value_json, validation_status,
+                       created_at, applied_at
+                FROM clarification_answers
+                WHERE answer_id = ?
+                """,
+                (answer_id,),
+            ).fetchone()
+            if row is None:
+                raise ClarificationNotFound(answer_id)
+            applied_at = (
+                timestamp
+                if status is ClarificationAnswerStatus.APPLIED
+                else None
+            )
+            connection.execute(
+                """
+                UPDATE clarification_answers
+                SET validation_status = ?, applied_at = ?
+                WHERE answer_id = ?
+                """,
+                (status.value, applied_at, answer_id),
+            )
+            event_type = (
+                "clarification_applied"
+                if status is ClarificationAnswerStatus.APPLIED
+                else "clarification_rejected"
+            )
+            self._insert_conversation_event(
+                connection,
+                str(row["conversation_id"]),
+                turn_id=None,
+                task_id=None,
+                event_type=event_type,
+                occurred_at=timestamp,
+                payload={
+                    "answer_id": answer_id,
+                    "question_id": str(row["question_id"]),
+                },
+            )
+            connection.commit()
+        return ClarificationAnswer(
+            answer_id=str(row["answer_id"]),
+            question_id=str(row["question_id"]),
+            message_id=str(row["message_id"]),
+            conversation_id=str(row["conversation_id"]),
+            normalized_value=json.loads(row["normalized_value_json"]),
+            validation_status=status,
+            created_at=str(row["created_at"]),
+            applied_at=applied_at,
+        )
+
+    def list_clarification_answers(
+        self,
+        question_id: str,
+    ) -> list[ClarificationAnswer]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT answer_id, question_id, message_id, conversation_id,
+                       normalized_value_json, validation_status,
+                       created_at, applied_at
+                FROM clarification_answers
+                WHERE question_id = ?
+                ORDER BY created_at, answer_id
+                """,
+                (question_id,),
+            ).fetchall()
+        return [self._clarification_answer_from_row(row) for row in rows]
+
+    @staticmethod
+    def _clarification_request_from_row(
+        row: Mapping[str, Any],
+    ) -> ClarificationRequest:
+        return ClarificationRequest(
+            question_id=str(row["question_id"]),
+            conversation_id=str(row["conversation_id"]),
+            turn_id=str(row["turn_id"]),
+            task_id=str(row["task_id"]),
+            field_name=str(row["field_name"]),
+            ordinal=int(row["ordinal"]),
+            question_text=str(row["question_text"]),
+            status=ClarificationStatus(row["status"]),
+            created_at=str(row["created_at"]),
+            answered_at=(
+                str(row["answered_at"])
+                if row["answered_at"] is not None
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _clarification_answer_from_row(
+        row: Mapping[str, Any],
+    ) -> ClarificationAnswer:
+        return ClarificationAnswer(
+            answer_id=str(row["answer_id"]),
+            question_id=str(row["question_id"]),
+            message_id=str(row["message_id"]),
+            conversation_id=str(row["conversation_id"]),
+            normalized_value=json.loads(row["normalized_value_json"]),
+            validation_status=ClarificationAnswerStatus(
+                row["validation_status"]
+            ),
+            created_at=str(row["created_at"]),
+            applied_at=(
+                str(row["applied_at"])
+                if row["applied_at"] is not None
+                else None
+            ),
+        )
 
     @staticmethod
     def _insert_conversation_event(

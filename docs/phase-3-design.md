@@ -1,6 +1,6 @@
 # Zevorinth Phase 3 设计：多轮会话与任务上下文连续性
 
-状态：Phase 3.1 已提交（HEAD `629420c5f69719753883e75df574878f48318eaf`）；Phase 3.2 已实现领域模型、EventStore 持久化、ConversationService、消息幂等、TaskService 会话关联、task/turn 原子关联和基础会话 CLI，但尚未提交。意图分类和上下文压缩仍未实现。早期章节保留设计草案，实际状态以第 16–20 节为准。
+状态：Phase 3.2 已提交（`9146ddea0defd0b3645c1974255bd27171ee596c`）；Phase 3.3 已实现 Schema v4 澄清绑定、确定性意图分类和多轮 `conversation process`，当前工作树尚未提交。真实 LLM 和上下文压缩仍未实现。早期章节保留设计草案，实际状态以第 16–20 节及 `docs/phase-3.3-design.md` 为准。
 
 日期：2026-10-20（Asia/Shanghai）
 
@@ -10,7 +10,7 @@
 | --- | --- |
 | 仓库 | `/Users/lidequan/PythonProject/Zevorinth` |
 | 分支 | `phase-2.6-response-hardening` |
-| HEAD | `629420c5f69719753883e75df574878f48318eaf` |
+| HEAD | `9146ddea0defd0b3645c1974255bd27171ee596c` |
 | Phase 2.7 提交 | `test: seal phase 2.7 targeted DeepSeek retest` |
 | 工作树 | 仅有既有 `.idea/` 未跟踪文件；本次未修改、删除或暂存 |
 | 远程 | 未配置 |
