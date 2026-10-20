@@ -155,6 +155,24 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.9 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.9-real-model-pilot.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+本地运行产物：
+
+- `artifacts/evaluations/phase-3.9-targeted-pilot-v1.json`，不纳入源码提交。
+
+---
+
 # 第 3.7 阶段新增与修改
 
 ## 新增

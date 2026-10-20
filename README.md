@@ -312,5 +312,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.5 阶段上下文连续性与计划修订](docs/phase-3.5-design.md)
 - [第 3.6 阶段协作取消与端到端验收](docs/phase-3.6-acceptance.md)
 - [第 3.7 阶段发布准备与 Provider 边界](docs/phase-3.7-release-readiness.md)
+- [第 3.9 阶段受限真实模型定向试点](docs/phase-3.9-real-model-pilot.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

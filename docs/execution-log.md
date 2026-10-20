@@ -598,6 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.9 阶段执行记录
+
+## 授权试点
+
+- 用户明确授权 DeepSeek `deepseek-flash` 两个固定合成案例；
+- 无网络预检确认最大 2 请求、0 重试；
+- `clarify_ambiguous_goal` 得到 clarify → awaiting_clarification；
+- `unsupported_shell` 得到 unsupported → blocked；
+- 两案例工具调用为 0、真实文件副作用为 0、execution_mode=not_executed；
+- 实际 API 请求 2，Total tokens 1221。
+
+## 试点后回归
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 219/219 通过，exit 0 |
+| 隔离环境完整 unittest | 219/219 通过，exit 0 |
+| E2E acceptance | 5/5 轮通过 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 机器结果位于 `artifacts/evaluations/phase-3.9-targeted-pilot-v1.json`；
+- 该 JSON 为本地运行产物，不纳入源码提交；
+- 结果只代表两个固定案例本次运行；
+- 未记录密钥、认证头或完整模型原文；
+- 未推送。
+
+---
+
 # 第 3.7 阶段执行记录
 
 ## 审计与发布准备
