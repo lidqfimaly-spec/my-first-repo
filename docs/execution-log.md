@@ -598,6 +598,42 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.12 阶段执行记录
+
+## 实现
+
+- `tests/coverage_runner.py`：在同一个 Python 解释器下离线运行测试与覆盖率；
+- `tests/coverage_gate.py`：拒绝关闭分支覆盖或分支分母为 0 的报告；
+- 每个 Gate 案例新增 `effects` 来源记录（written / recovered / none）；
+- 聚合 artifact/write/evidence 计数改为从来源记录求和；
+- `validate_case_effects()` 与报告级 provenance 交叉校验；
+- 变异集从 9 增至 12，补充策略拒绝、执行预算和恢复决策；
+- mutation runner 增加 `_classify_result()`，测试选择失败不再计为 killed；
+- `tests/eval_compare.py`：版本间比较，缺字段/定义变更时拒绝比较。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 261/261，exit 0 |
+| 同解释器覆盖率（3.14.6） | 261 项通过，7/7 模块 PASS，两次运行完全一致 |
+| Mutation runner | 12 killed / 0 survived / 0 invalid / 0 error |
+| Mutation self-test | killed/survived/invalid/error 各 1 |
+| E2E acceptance | 11/11 场景通过 |
+| 3.11 ↔ 3.12 比较 | NOT_COMPARABLE（definition 1.0.0→1.1.0，预期） |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 覆盖率使用 coverage 7.16.1 的纯 Python tracer，无网络安装；
+- 未安装自动变异框架（NOT RUN）；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.12-reproducible-gates-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.11 阶段执行记录
 
 ## 实现

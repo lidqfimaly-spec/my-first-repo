@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "cases": [
     {
       "id": "artifact_path_validation",
@@ -97,6 +97,39 @@
       "new": "    set()\n",
       "tests": [
         "tests.test_intent.IntentClassifierTests.test_status_query_and_empty_message"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "policy_path_rejection",
+      "property": "policy rejects unsafe artifact paths",
+      "path": "src/zevorinth/policy.py",
+      "old": "        except ArtifactToolError as exc:\n            return PolicyDecision(False, exc.code, exc.message)\n",
+      "new": "        except ArtifactToolError as exc:\n            return PolicyDecision(True, \"allowed\", \"mutated\")\n",
+      "tests": [
+        "tests.test_safety_gate.SafetyGateTests.test_gate_passes_with_layered_cases_and_bounded_metrics"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "execution_budget_enforced",
+      "property": "expired execution budget fails the claim before any tool",
+      "path": "src/zevorinth/event_store.py",
+      "old": "                task.execution_deadline_at is not None\n                and not self._lease_is_active(task.execution_deadline_at, now)\n",
+      "new": "                False\n                and not self._lease_is_active(task.execution_deadline_at, now)\n",
+      "tests": [
+        "tests.test_execution_budget.ExecutionBudgetTests.test_claim_layer_rejects_expired_budget_on_its_own"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "recovery_verify_existing",
+      "property": "recovered publish is verified instead of rewritten",
+      "path": "src/zevorinth/service.py",
+      "old": "        if can_verify_existing:\n            verifying, _ = self.store.transition(\n",
+      "new": "        if False:\n            verifying, _ = self.store.transition(\n",
+      "tests": [
+        "tests.test_crash_consistency.CrashConsistencyTests.test_sigkill_inside_final_success_transaction_rolls_back_together"
       ],
       "expected": "killed"
     }

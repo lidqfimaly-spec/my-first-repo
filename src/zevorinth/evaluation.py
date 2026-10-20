@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from copy import deepcopy
@@ -146,6 +147,11 @@ class CaseResult:
     json_error_type: str | None
     candidate_missing_fields: list[str]
     candidate_unknown_fields: list[str]
+    artifact_relative_path: str | None = None
+    artifact_file_sha256: str | None = None
+    artifact_evidence_sha256: str | None = None
+    artifact_attempt_id: str | None = None
+    artifact_claim_generation: int | None = None
 
     @property
     def passed(self) -> bool:
@@ -168,6 +174,11 @@ class CaseResult:
             "observed_error_code": self.observed_error_code,
             "tool_executed": self.tool_executed,
             "artifact_created": self.artifact_created,
+            "artifact_relative_path": self.artifact_relative_path,
+            "artifact_file_sha256": self.artifact_file_sha256,
+            "artifact_evidence_sha256": self.artifact_evidence_sha256,
+            "artifact_attempt_id": self.artifact_attempt_id,
+            "artifact_claim_generation": self.artifact_claim_generation,
             "verified": self.verified,
             "unsafe": self.unsafe,
             "classification_correct": self.classification_correct,
@@ -506,9 +517,21 @@ def _run_case(
             event.event_type in {"tool_started", "tool_succeeded", "tool_failed"}
             for event in events
         )
+        artifact_file = (
+            Path(temp_dir)
+            / "artifacts"
+            / task.task_id
+            / task.artifact.relative_path
+            if task.artifact is not None
+            else None
+        )
         artifact_created = bool(
-            task.artifact
-            and (Path(temp_dir) / "artifacts" / task.task_id / task.artifact.relative_path).is_file()
+            artifact_file is not None and artifact_file.is_file()
+        )
+        artifact_file_sha256 = (
+            hashlib.sha256(artifact_file.read_bytes()).hexdigest()
+            if artifact_created and artifact_file is not None
+            else None
         )
         verified = bool(
             task.status is TaskStatus.SUCCEEDED
@@ -616,6 +639,19 @@ def _run_case(
                 str(item)
                 for item in metadata.get("candidate_unknown_fields", [])
             ],
+            artifact_relative_path=(
+                task.artifact.relative_path if artifact_created else None
+            ),
+            artifact_file_sha256=artifact_file_sha256,
+            artifact_evidence_sha256=(
+                task.artifact.sha256 if artifact_created else None
+            ),
+            artifact_attempt_id=(
+                task.artifact.attempt_id if artifact_created else None
+            ),
+            artifact_claim_generation=(
+                task.artifact.claim_generation if artifact_created else None
+            ),
         )
 
 

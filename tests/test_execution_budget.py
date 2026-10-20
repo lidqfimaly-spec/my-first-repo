@@ -209,6 +209,45 @@ class ExecutionBudgetTests(unittest.TestCase):
             self.assertNotIn("tool_started", event_types)
             self.assertIn("task_failed", event_types)
 
+    def test_claim_layer_rejects_expired_budget_on_its_own(self) -> None:
+        """The store-level guard must hold even if no executor runs.
+
+        ``_run_with_renewal`` has its own remaining-budget check, so a
+        service-level test cannot isolate the claim-time guard.  Mutating
+        only the claim check would be masked by the second guard; this test
+        calls ``claim_task`` directly so the claim layer is the only thing
+        under test.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = TaskService(root, clock=lambda: NOW)
+            task = service.enqueue(_request())
+            service.store.record_event_and_update(
+                task.task_id,
+                "budget_probe",
+                NOW,
+                updates={
+                    "execution_deadline_at": "2026-10-19T23:59:59.000+00:00"
+                },
+            )
+
+            claim = service.store.claim_task(
+                task.task_id,
+                owner_id="budget-probe",
+                lease_token="budget-probe-lease",
+                attempt_id="budget-probe-attempt",
+                now=NOW,
+                expires_at="2026-10-20T00:10:00.000+00:00",
+                allowed_statuses=TaskService.RUNNABLE_STATUSES,
+            )
+
+            self.assertFalse(claim.acquired)
+            self.assertEqual(claim.task.status, TaskStatus.FAILED)
+            self.assertEqual(
+                claim.task.error.code, "execution_budget_exceeded"
+            )
+            self.assertIsNone(claim.task.lease_token)
+
 
 if __name__ == "__main__":
     unittest.main()

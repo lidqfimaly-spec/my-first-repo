@@ -155,6 +155,36 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.12 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.12-reproducible-gates-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/coverage_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/eval_compare.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_coverage_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_effect_provenance.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_eval_compare.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/evaluation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/safety_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/coverage_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_runner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_coverage_gate.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_event_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_execution_budget.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_mutation_runner.py`
+
+运行产物和 coverage 数据不纳入源码提交；Schema 版本保持 v4。
+
+---
+
 # 第 3.11 阶段新增与修改
 
 ## 新增

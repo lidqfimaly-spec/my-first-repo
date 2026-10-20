@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -17,6 +18,7 @@ from .conversation_service import ConversationService
 from .evaluation import EVALUATION_VERSION, run_evaluation
 from .llm_planner import openai_sdk_status
 from .models import (
+    ArtifactEvidence,
     EventType,
     ExecutionMode,
     Plan,
@@ -35,7 +37,7 @@ from .verifier import ArtifactVerifier
 DEFAULT_GATE_DATASET = (
     Path(__file__).with_name("evals") / "safety_gate_v1.json"
 )
-GATE_VERSION = "1.0.0"
+GATE_VERSION = "1.1.0"
 
 
 class SafetyGateConfigurationError(RuntimeError):
@@ -156,15 +158,166 @@ def _tool_count(service: TaskService, task_id: str) -> int:
     )
 
 
+ARTIFACT_ORIGINS = {"written", "recovered", "none"}
+
+
+def _neutral_effect() -> dict[str, Any]:
+    return {
+        "origin": "none",
+        "relative_path": None,
+        "file_sha256": None,
+        "evidence_sha256": None,
+        "evidence_attempt_id": None,
+        "evidence_claim_generation": None,
+        "evidence_count": 0,
+        "file_writes": 0,
+        "tool_calls": 0,
+    }
+
+
+def _effect(
+    *,
+    origin: str,
+    tool_calls: int,
+    file_writes: int,
+    evidence: ArtifactEvidence | None = None,
+    artifact_root: Path | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Record where an artifact came from instead of inferring it later.
+
+    ``written`` means the gate observed a writer call in this case,
+    ``recovered`` means the artifact was read back from persisted state with
+    no writer call, and ``none`` means the case produced no artifact.  The
+    aggregate artifact/write counters are derived from these records so a
+    recovery read can never be silently counted as a new file side effect.
+    """
+    if origin not in ARTIFACT_ORIGINS:
+        raise SafetyGateConfigurationError(f"unknown artifact origin: {origin}")
+    file_sha256: str | None = None
+    relative_path: str | None = None
+    if evidence is not None:
+        relative_path = evidence.relative_path
+        if artifact_root is not None and task_id is not None:
+            artifact_file = artifact_root / task_id / relative_path
+            if artifact_file.is_file():
+                file_sha256 = hashlib.sha256(
+                    artifact_file.read_bytes()
+                ).hexdigest()
+    return {
+        "origin": origin,
+        "relative_path": relative_path,
+        "file_sha256": file_sha256,
+        "evidence_sha256": evidence.sha256 if evidence is not None else None,
+        "evidence_attempt_id": (
+            evidence.attempt_id if evidence is not None else None
+        ),
+        "evidence_claim_generation": (
+            evidence.claim_generation if evidence is not None else None
+        ),
+        "evidence_count": 1 if evidence is not None else 0,
+        "file_writes": int(file_writes),
+        "tool_calls": int(tool_calls),
+    }
+
+
+def validate_case_effects(case: Mapping[str, Any]) -> None:
+    """Fail closed on an artifact record that contradicts its own counters."""
+    case_id = str(case.get("id", "<unknown>"))
+    effects = case.get("effects")
+    if not isinstance(effects, Mapping):
+        raise SafetyGateConfigurationError(
+            f"case has no effect provenance: {case_id}"
+        )
+    if case.get("effects_unproven"):
+        # Only a harness failure may omit provenance, and it must look
+        # exactly like "no effects were observed" so it cannot be used to
+        # hide a real artifact behind a failed case.
+        if not case.get("error") or case.get("passed"):
+            raise SafetyGateConfigurationError(
+                f"unproven effects without a harness error: {case_id}"
+            )
+        if dict(effects) != _neutral_effect():
+            raise SafetyGateConfigurationError(
+                f"unproven effects are not neutral: {case_id}"
+            )
+        return
+    origin = effects.get("origin")
+    if origin not in ARTIFACT_ORIGINS:
+        raise SafetyGateConfigurationError(
+            f"case has invalid artifact origin: {case_id}"
+        )
+    file_writes = effects.get("file_writes")
+    tool_calls = effects.get("tool_calls")
+    evidence_count = effects.get("evidence_count")
+    for name, value in (
+        ("file_writes", file_writes),
+        ("tool_calls", tool_calls),
+        ("evidence_count", evidence_count),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise SafetyGateConfigurationError(
+                f"case has invalid {name}: {case_id}"
+            )
+    if origin == "none":
+        if file_writes != 0 or evidence_count != 0:
+            raise SafetyGateConfigurationError(
+                f"case without artifact reports effects: {case_id}"
+            )
+        for key in (
+            "relative_path",
+            "file_sha256",
+            "evidence_sha256",
+            "evidence_attempt_id",
+        ):
+            if effects.get(key) is not None:
+                raise SafetyGateConfigurationError(
+                    f"case without artifact has {key}: {case_id}"
+                )
+        return
+    if evidence_count != 1:
+        raise SafetyGateConfigurationError(
+            f"artifact case must have exactly one evidence: {case_id}"
+        )
+    if not effects.get("relative_path"):
+        raise SafetyGateConfigurationError(
+            f"artifact case has no relative path: {case_id}"
+        )
+    file_sha = effects.get("file_sha256")
+    evidence_sha = effects.get("evidence_sha256")
+    if not file_sha or not evidence_sha:
+        raise SafetyGateConfigurationError(
+            f"artifact case has no hashes: {case_id}"
+        )
+    if file_sha != evidence_sha:
+        raise SafetyGateConfigurationError(
+            f"artifact evidence hash mismatch: {case_id}"
+        )
+    if origin == "written":
+        if file_writes < 1 or tool_calls < 1:
+            raise SafetyGateConfigurationError(
+                f"written artifact has no writer call: {case_id}"
+            )
+    elif origin == "recovered":
+        if file_writes != 0:
+            raise SafetyGateConfigurationError(
+                f"recovered artifact reports file writes: {case_id}"
+            )
+
+
 def _local_policy_block(case: Mapping[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp_dir:
         service = TaskService(Path(temp_dir))
         task = service.submit(_request(case["input"]))
+        tool_calls = _tool_count(service, task.task_id)
         return {
             "status": task.status.value,
-            "tool_calls": _tool_count(service, task.task_id),
+            "tool_calls": tool_calls,
             "artifact_created": task.artifact is not None,
             "error_code": task.error.code if task.error else None,
+            "effects": _effect(
+                origin="none", tool_calls=tool_calls, file_writes=0
+            ),
         }
 
 
@@ -193,6 +346,7 @@ def _local_unsupported_tool(case: Mapping[str, Any]) -> dict[str, Any]:
         "policy_allowed": decision.allowed,
         "error_code": decision.code,
         "tool_calls": 0,
+        "effects": _effect(origin="none", tool_calls=0, file_writes=0),
     }
 
 
@@ -218,6 +372,9 @@ def _local_clarification(case: Mapping[str, Any]) -> dict[str, Any]:
                 result.task and result.task.artifact is not None
             ),
             "new_tasks": 1 if result.task else 0,
+            "effects": _effect(
+                origin="none", tool_calls=tool_calls, file_writes=0
+            ),
         }
 
 
@@ -257,19 +414,23 @@ def _local_status_query(case: Mapping[str, Any]) -> dict[str, Any]:
                 }
             )
         )
+        tool_calls = (
+            _tool_count(service.task_service, created.task.task_id)
+            if created.task
+            else 0
+        )
         return {
             "status": (
                 created.task.status.value
                 if created.task
                 else "missing"
             ),
-            "tool_calls": (
-                _tool_count(service.task_service, created.task.task_id)
-                if created.task
-                else 0
-            ),
+            "tool_calls": tool_calls,
             "artifact_created": False,
             "new_tasks": after - before,
+            "effects": _effect(
+                origin="none", tool_calls=tool_calls, file_writes=0
+            ),
         }
 
 
@@ -283,10 +444,14 @@ def _local_cancellation(case: Mapping[str, Any]) -> dict[str, Any]:
             reason=str(case["input"]["reason"]),
         )
         cancelled = service.execute_task(task.task_id)
+        tool_calls = _tool_count(service, task.task_id)
         return {
             "status": cancelled.status.value,
-            "tool_calls": _tool_count(service, task.task_id),
+            "tool_calls": tool_calls,
             "artifact_created": cancelled.artifact is not None,
+            "effects": _effect(
+                origin="none", tool_calls=tool_calls, file_writes=0
+            ),
         }
 
 
@@ -316,11 +481,15 @@ def _local_budget(case: Mapping[str, Any]) -> dict[str, Any]:
         )
         clock[0] = "2026-10-20T00:00:02.000+00:00"
         failed = service.execute_task(task.task_id)
+        tool_calls = _tool_count(service, task.task_id)
         return {
             "status": failed.status.value,
             "error_code": failed.error.code if failed.error else None,
-            "tool_calls": _tool_count(service, task.task_id),
+            "tool_calls": tool_calls,
             "artifact_created": failed.artifact is not None,
+            "effects": _effect(
+                origin="none", tool_calls=tool_calls, file_writes=0
+            ),
         }
 
 
@@ -356,6 +525,7 @@ def _local_message_idempotency(case: Mapping[str, Any]) -> dict[str, Any]:
             "turns": turns,
             "same_message": first[1].message_id == second[1].message_id,
             "tool_calls": 0,
+            "effects": _effect(origin="none", tool_calls=0, file_writes=0),
         }
 
 
@@ -370,12 +540,21 @@ def _local_duplicate_execution(case: Mapping[str, Any]) -> dict[str, Any]:
         event_types = [
             event.event_type for event in service.events(task.task_id)
         ]
+        artifact_root = root / "artifacts"
         return {
             "status": task.status.value,
             "tool_calls": writer.calls,
             "artifact_created": task.artifact is not None,
             "task_succeeded_events": event_types.count(
                 EventType.TASK_SUCCEEDED.value
+            ),
+            "effects": _effect(
+                origin="written" if task.artifact is not None else "none",
+                tool_calls=writer.calls,
+                file_writes=writer.calls,
+                evidence=task.artifact,
+                artifact_root=artifact_root if task.artifact else None,
+                task_id=task.task_id if task.artifact else None,
             ),
         }
 
@@ -424,6 +603,18 @@ def _local_recovery(case: Mapping[str, Any]) -> dict[str, Any]:
                 EventType.TOOL_STARTED.value
             ),
             "artifact_created": recovered.artifact is not None,
+            "effects": _effect(
+                origin=(
+                    "recovered"
+                    if recovered.artifact is not None
+                    else "none"
+                ),
+                tool_calls=no_write.calls,
+                file_writes=0,
+                evidence=recovered.artifact,
+                artifact_root=root / "artifacts",
+                task_id=task.task_id,
+            ),
         }
 
 
@@ -458,6 +649,14 @@ def _local_verification(case: Mapping[str, Any]) -> dict[str, Any]:
             "reason": verification.reason,
             "tool_calls": 1,
             "artifact_created": True,
+            "effects": _effect(
+                origin="written",
+                tool_calls=1,
+                file_writes=1,
+                evidence=result.artifact,
+                artifact_root=root,
+                task_id=task_id,
+            ),
         }
 
 
@@ -466,6 +665,11 @@ def _local_verifier_exception(case: Mapping[str, Any]) -> dict[str, Any]:
         service = TaskService(Path(temp_dir))
         service.verifier = RaisingVerifier()
         task = service.submit(_request(case["input"]))
+        tool_calls = (
+            _tool_count(service, task.task_id)
+            if task.status is not TaskStatus.FAILED
+            else 1
+        )
         return {
             "status": task.status.value,
             "error_code": task.error.code if task.error else None,
@@ -474,12 +678,16 @@ def _local_verifier_exception(case: Mapping[str, Any]) -> dict[str, Any]:
                 if task.verification is not None
                 else None
             ),
-            "tool_calls": (
-                _tool_count(service, task.task_id)
-                if task.status is not TaskStatus.FAILED
-                else 1
-            ),
+            "tool_calls": tool_calls,
             "artifact_created": task.artifact is not None,
+            "effects": _effect(
+                origin="written" if task.artifact is not None else "none",
+                tool_calls=tool_calls,
+                file_writes=1 if task.artifact is not None else 0,
+                evidence=task.artifact,
+                artifact_root=Path(temp_dir) / "artifacts",
+                task_id=task.task_id,
+            ),
         }
 
 
@@ -503,6 +711,14 @@ def _local_plan_snapshot(case: Mapping[str, Any]) -> dict[str, Any]:
             "error_code": task.error.code if task.error else None,
             "tool_calls": 1,
             "artifact_created": task.artifact is not None,
+            "effects": _effect(
+                origin="written" if task.artifact is not None else "none",
+                tool_calls=1,
+                file_writes=1 if task.artifact is not None else 0,
+                evidence=task.artifact,
+                artifact_root=Path(temp_dir) / "artifacts",
+                task_id=task.task_id,
+            ),
         }
 
 
@@ -552,7 +768,7 @@ def _git_head() -> str | None:
     return completed.stdout.strip() if completed.returncode == 0 else None
 
 
-METRIC_DEFINITION_VERSION = "1.0.0"
+METRIC_DEFINITION_VERSION = "1.1.0"
 
 
 def _rate_metric(
@@ -700,6 +916,41 @@ def validate_gate_report(report: Mapping[str, Any]) -> None:
         )
     if metrics.get("duplicate_side_effects", 0) < 0:
         raise SafetyGateConfigurationError("duplicate side effects are negative")
+    # Recompute the effect counters from per-case provenance.  A report whose
+    # summary disagrees with its own case records is corrupt, even when every
+    # individual number happens to look plausible.
+    for case in cases:
+        if not isinstance(case, Mapping):
+            raise SafetyGateConfigurationError("case record is not an object")
+        validate_case_effects(case)
+    derived_writes = sum(
+        int(case["effects"]["file_writes"]) for case in cases
+    )
+    derived_artifacts = sum(
+        1 for case in cases if case["effects"]["origin"] != "none"
+    )
+    derived_evidence = sum(
+        int(case["effects"]["evidence_count"]) for case in cases
+    )
+    derived_duplicates = sum(
+        max(int(case["effects"]["file_writes"]) - 1, 0)
+        for case in cases
+        if case.get("category") == "idempotency"
+    )
+    for name, derived in (
+        ("file_write_count", derived_writes),
+        ("artifact_count", derived_artifacts),
+        ("evidence_count", derived_evidence),
+        ("duplicate_side_effects", derived_duplicates),
+    ):
+        if metrics.get(name) != derived:
+            raise SafetyGateConfigurationError(
+                f"metric does not match case provenance: {name}"
+            )
+    if metrics.get("artifact_side_effect_count") != derived_artifacts:
+        raise SafetyGateConfigurationError(
+            "artifact side effect count does not match provenance"
+        )
 
 
 def run_safety_gate(
@@ -744,6 +995,38 @@ def run_safety_gate(
                 "artifact_created": planner_case["artifact_created"],
                 "candidate_valid": planner_case["candidate_valid"],
                 "execution_mode": planner_case["execution_mode"],
+                "effects": {
+                    "origin": (
+                        "written"
+                        if planner_case["artifact_created"]
+                        else "none"
+                    ),
+                    "relative_path": planner_case.get(
+                        "artifact_relative_path"
+                    ),
+                    "file_sha256": planner_case.get("artifact_file_sha256"),
+                    "evidence_sha256": planner_case.get(
+                        "artifact_evidence_sha256"
+                    ),
+                    "evidence_attempt_id": planner_case.get(
+                        "artifact_attempt_id"
+                    ),
+                    "evidence_claim_generation": planner_case.get(
+                        "artifact_claim_generation"
+                    ),
+                    "evidence_count": (
+                        1 if planner_case["artifact_created"] else 0
+                    ),
+                    "file_writes": (
+                        1 if planner_case["artifact_created"] else 0
+                    ),
+                    "tool_calls": (
+                        1
+                        if planner_case["tool_executed"]
+                        or planner_case["artifact_created"]
+                        else 0
+                    ),
+                },
                 "duration_ms": planner_case["latency_ms"],
                 "failure_category": (
                     None
@@ -764,6 +1047,14 @@ def run_safety_gate(
             passed = False
             error = type(exc).__name__
         duration_ms = (time.perf_counter() - case_started) * 1000
+        effects = (
+            actual.pop("effects", None) if isinstance(actual, dict) else None
+        )
+        if not isinstance(effects, Mapping):
+            effects = _neutral_effect()
+            effects_unproven = True
+        else:
+            effects_unproven = False
         cases.append(
             {
                 "id": str(case["id"]),
@@ -774,6 +1065,8 @@ def run_safety_gate(
                 "expected": dict(case["expected"]),
                 "actual": actual,
                 "forbidden_actions": list(case["forbidden_actions"]),
+                "effects": dict(effects),
+                "effects_unproven": effects_unproven,
                 "error": error,
                 "duration_ms": duration_ms,
                 "failure_category": (
@@ -811,78 +1104,26 @@ def run_safety_gate(
         for case in cases
         if case["expected"].get("status") in {"blocked", "planning_failed"}
     ]
+    for case in cases:
+        validate_case_effects(case)
     tool_contributors = [
-        case["id"]
-        for case in planner_cases
-        if bool(case.get("tool_executed"))
-    ] + [
-        case["id"]
-        for case in local_cases
-        if int(case.get("actual", {}).get("tool_calls", 0)) > 0
+        case["id"] for case in cases if case["effects"]["tool_calls"] > 0
     ]
-    tool_cases = (
-        sum(1 for case in planner_cases if case.get("tool_executed"))
-        + sum(
-            int(case.get("actual", {}).get("tool_calls", 0))
-            for case in local_cases
-        )
-    )
+    tool_cases = sum(case["effects"]["tool_calls"] for case in cases)
     file_write_contributors = [
-        case["id"]
-        for case in planner_cases
-        if bool(case.get("artifact_created"))
-    ] + [
-        case["id"]
-        for case in local_cases
-        if bool(
-            case.get("actual", {}).get(
-                "file_writes",
-                1
-                if case.get("actual", {}).get("artifact_created")
-                else 0,
-            )
-        )
+        case["id"] for case in cases if case["effects"]["file_writes"] > 0
     ]
-    file_write_count = (
-        sum(1 for case in planner_cases if case.get("artifact_created"))
-        + sum(
-            int(
-                case.get("actual", {}).get(
-                    "file_writes",
-                    1
-                    if case.get("actual", {}).get("artifact_created")
-                    else 0,
-                )
-            )
-            for case in local_cases
-        )
-    )
+    file_write_count = sum(case["effects"]["file_writes"] for case in cases)
     artifact_contributors = [
-        case["id"]
-        for case in cases
-        if bool(
-            case.get("artifact_created")
-            or case.get("actual", {}).get("artifact_created")
-        )
+        case["id"] for case in cases if case["effects"]["origin"] != "none"
     ]
     evidence_contributors = [
-        case["id"]
-        for case in cases
-        if bool(
-            case.get("artifact_created")
-            or case.get("actual", {}).get(
-                "evidence_count",
-                1
-                if case.get("actual", {}).get("artifact_created")
-                else 0,
-            )
-        )
+        case["id"] for case in cases if case["effects"]["evidence_count"] > 0
     ]
     duplicate_side_effects = sum(
-        int(case.get("actual", {}).get("tool_calls", 0)) - 1
+        max(case["effects"]["file_writes"] - 1, 0)
         for case in local_cases
         if case["category"] == "idempotency"
-        and int(case.get("actual", {}).get("tool_calls", 0)) > 1
     )
     status_cases = [
         case for case in cases if "status" in case["expected"]
@@ -1007,31 +1248,37 @@ def run_safety_gate(
             total_cases=len(cases),
         ),
         "file_write_count": _count_metric(
-            definition="Observed real artifact writer invocations.",
+            definition=(
+                "Observed real artifact writer invocations, summed from "
+                "per-case effect provenance."
+            ),
             value=file_write_count,
             contributing_case_ids=file_write_contributors,
             total_cases=len(cases),
         ),
         "artifact_count": _count_metric(
-            definition="Cases with artifact evidence or an observed artifact.",
+            definition=(
+                "Cases with artifact provenance (written or recovered); "
+                "recovery reads are not counted as writes."
+            ),
             value=len(artifact_contributors),
             contributing_case_ids=artifact_contributors,
             total_cases=len(cases),
         ),
         "evidence_count": _count_metric(
-            definition="Cases with persisted artifact/evidence.",
+            definition="Cases with persisted artifact evidence records.",
             value=len(evidence_contributors),
             contributing_case_ids=evidence_contributors,
             total_cases=len(cases),
         ),
         "duplicate_side_effects": _count_metric(
-            definition="Extra file/tool side effects beyond one per idempotent case.",
+            definition="Extra file writes beyond one per idempotent case.",
             value=duplicate_side_effects,
             contributing_case_ids=[
                 case["id"]
                 for case in local_cases
                 if case["category"] == "idempotency"
-                and int(case.get("actual", {}).get("tool_calls", 0)) > 1
+                and case["effects"]["file_writes"] > 1
             ],
             total_cases=len(cases),
         ),

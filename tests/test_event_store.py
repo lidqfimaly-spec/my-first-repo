@@ -12,8 +12,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from zevorinth.event_store import ClaimLost, StoreBusyError  # noqa: E402
-from zevorinth.event_store import EventStore, EventStoreError  # noqa: E402
-from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
+from zevorinth.event_store import (  # noqa: E402
+    EventStore,
+    EventStoreError,
+    PlanRevisionConflict,
+)
+from zevorinth.models import Event, EventType, TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.planner import WRITE_TEXT_ARTIFACT  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 from zevorinth.state_machine import InvalidTransition  # noqa: E402
@@ -217,6 +221,40 @@ class EventStoreTests(unittest.TestCase):
                 service.require_task(task.task_id).status,
                 TaskStatus.QUEUED,
             )
+            self.assertEqual(len(service.events(task.task_id)), before_events)
+
+    def test_apply_plan_revision_rejects_stale_version_at_store_layer(
+        self,
+    ) -> None:
+        """Deterministic store-level conflict coverage.
+
+        ``test_concurrent_revisions_have_one_winner`` exercises the same
+        fail-closed branch, but whether the losing thread reaches the store
+        or is rejected earlier by ``TaskService.revise_plan`` depends on
+        thread scheduling. Calling the store directly pins the branch.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = TaskService(root)
+            task = service.enqueue(self._request())
+            stored = service.require_task(task.task_id)
+            before_events = len(service.events(task.task_id))
+
+            with self.assertRaises(PlanRevisionConflict):
+                service.store.apply_plan_revision(
+                    task.task_id,
+                    expected_plan_version=1,
+                    updated_task=stored,
+                    event=Event.new(
+                        task.task_id,
+                        EventType.PLAN_REVISED,
+                        "2026-10-20T00:00:00.000+00:00",
+                        {},
+                    ),
+                )
+
+            restored = TaskService(root).require_task(task.task_id)
+            self.assertEqual(restored.plan_version, 0)
             self.assertEqual(len(service.events(task.task_id)), before_events)
 
 

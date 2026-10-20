@@ -55,6 +55,34 @@ def _run(command: list[str], *, cwd: Path, timeout: int = 60) -> dict[str, Any]:
     }
 
 
+def _classify_result(
+    test: Mapping[str, Any],
+    test_ids: list[str],
+) -> tuple[str, str | None]:
+    """Map a test run to one of the four mutation outcomes.
+
+    ``unittest`` exits 1 both for a real assertion failure and for a broken
+    test selection (missing module, import error).  Counting the latter as
+    ``killed`` would let a runner defect masquerade as a caught mutation, so
+    a kill additionally requires unittest's failure banner *and* every
+    declared test id to appear in the output.
+    """
+    exit_code = test.get("exit_code")
+    if exit_code == 0:
+        return "survived", None
+    output = f"{test.get('stdout', '')}\n{test.get('stderr', '')}"
+    if "_FailedTest" in output or "unittest.loader" in output:
+        return "error", "test selection failed to load"
+    if exit_code == 1 and "FAILED (" in output and all(
+        str(test_id) in output for test_id in test_ids
+    ):
+        return "killed", None
+    return (
+        "error",
+        f"test command exited {exit_code} without failing the selected tests",
+    )
+
+
 def _evaluate_mutation(
     case: dict[str, Any],
     *,
@@ -94,12 +122,7 @@ def _evaluate_mutation(
             *[str(test) for test in case["tests"]],
         ]
         test_result = _run(command, cwd=root)
-        if test_result["exit_code"] == 0:
-            result = "survived"
-        elif test_result["exit_code"] == 1:
-            result = "killed"
-        else:
-            result = "error"
+        result, reason = _classify_result(test_result, list(case["tests"]))
         return {
             "id": case["id"],
             "property": case.get("property"),
@@ -107,6 +130,7 @@ def _evaluate_mutation(
             "tests": list(case["tests"]),
             "expected": case.get("expected", "killed"),
             "result": result,
+            "reason": reason,
             "test": test_result,
         }
 
@@ -230,12 +254,7 @@ def run_self_test() -> dict[str, Any]:
                     "tests.test_mini",
                 ]
                 test = _run(command, cwd=project)
-                if test["exit_code"] == 0:
-                    result = "survived"
-                elif test["exit_code"] == 1:
-                    result = "killed"
-                else:
-                    result = "error"
+                result, _ = _classify_result(test, ["tests.test_mini"])
                 results.append({"id": case["id"], "result": result})
         counts = {
             name: sum(1 for item in results if item["result"] == name)

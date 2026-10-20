@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,14 @@ def evaluate_coverage(report: dict[str, Any]) -> dict[str, Any]:
     files = report.get("files")
     if not isinstance(files, dict):
         raise ValueError("coverage report has no files object")
+    meta = report.get("meta")
+    if not isinstance(meta, dict):
+        raise ValueError("coverage report has no meta object")
+    # A report produced without ``--branch`` still contains ``summary``
+    # numbers, so an unset branch flag would otherwise let every module
+    # clear its branch threshold with an empty denominator.
+    if meta.get("branch_coverage") is not True:
+        raise ValueError("coverage report was produced without --branch")
     for module_name, (min_lines, min_branches) in THRESHOLDS.items():
         matches = [
             value
@@ -49,9 +58,12 @@ def evaluate_coverage(report: dict[str, Any]) -> dict[str, Any]:
             else 100.0
         )
         passed = (
-            line_percent >= min_lines
+            branches > 0
+            and line_percent >= min_lines
             and branch_percent >= min_branches
         )
+        if branches <= 0:
+            failures.append(f"{module_name}:no_branch_data")
         if not passed:
             failures.append(module_name)
         modules[module_name] = {
@@ -77,8 +89,11 @@ def main() -> int:
     parser.add_argument("--coverage-json", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
-    report = json.loads(args.coverage_json.read_text(encoding="utf-8"))
+    payload = args.coverage_json.read_bytes()
+    report = json.loads(payload.decode("utf-8"))
     result = evaluate_coverage(report)
+    result["coverage_report_sha256"] = hashlib.sha256(payload).hexdigest()
+    result["coverage_report_path"] = str(args.coverage_json)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
