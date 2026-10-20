@@ -586,6 +586,77 @@ class CrashConsistencyTests(unittest.TestCase):
                 self._task_event_types(root, task_id),
             )
 
+    def test_execution_budget_expiry_after_publish_fails_without_rewrite(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = self._run_until_checkpoint(
+                "writer_after_publish",
+                root,
+            )
+            task_id = checkpoint["task_id"]
+            artifact = root / "artifacts" / task_id / ARTIFACT_PATH
+            before_inode = artifact.stat().st_ino
+            before = EventStore(self._db(root)).require_task(task_id)
+            assert before.execution_deadline_at is not None
+            recovery_time = (
+                datetime.fromisoformat(before.execution_deadline_at)
+                + timedelta(seconds=1)
+            ).isoformat(timespec="milliseconds")
+            no_write = NoWriteWriter()
+            restarted = TaskService(
+                root,
+                writer=no_write,
+                clock=lambda: recovery_time,
+            )
+            failed = restarted.execute_task(task_id)
+
+            self.assertEqual(failed.status, TaskStatus.FAILED)
+            self.assertEqual(
+                failed.error.code,
+                "execution_budget_exceeded",
+            )
+            self.assertEqual(no_write.calls, 0)
+            self.assertEqual(artifact.stat().st_ino, before_inode)
+            self.assertNotIn(
+                "task_succeeded",
+                self._task_event_types(root, task_id),
+            )
+
+    def test_cancellation_after_publish_never_becomes_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = self._run_until_checkpoint(
+                "writer_after_publish",
+                root,
+            )
+            task_id = checkpoint["task_id"]
+            artifact = root / "artifacts" / task_id / ARTIFACT_PATH
+            before_inode = artifact.stat().st_ino
+            store = EventStore(self._db(root))
+            running = store.require_task(task_id)
+            assert running.lease_token is not None
+            cancelled, _ = store.transition(
+                task_id,
+                TaskStatus.CANCELLED,
+                "task_cancelled",
+                "2026-10-20T00:00:00.000+00:00",
+                lease_token=running.lease_token,
+            )
+            self.assertEqual(cancelled.status, TaskStatus.CANCELLED)
+
+            no_write = NoWriteWriter()
+            final = TaskService(root, writer=no_write).execute_task(task_id)
+
+            self.assertEqual(final.status, TaskStatus.CANCELLED)
+            self.assertEqual(no_write.calls, 0)
+            self.assertEqual(artifact.stat().st_ino, before_inode)
+            self.assertNotIn(
+                "task_succeeded",
+                self._task_event_types(root, task_id),
+            )
+
     def test_sigkill_inside_final_success_transaction_rolls_back_together(
         self,
     ) -> None:

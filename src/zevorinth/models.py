@@ -112,6 +112,7 @@ class EventType(str, Enum):
     TASK_RESUMED = "task_resumed"
     TASK_SUCCEEDED = "task_succeeded"
     TASK_FAILED = "task_failed"
+    STAGING_CLEANED = "staging_cleaned"
 
 
 @dataclass(slots=True)
@@ -397,6 +398,8 @@ class Task:
     planning_metadata: JsonObject = field(default_factory=dict)
     clarification_questions: list[str] = field(default_factory=list)
     conversation_id: str | None = None
+    execution_started_at: str | None = None
+    execution_deadline_at: str | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -419,6 +422,8 @@ class Task:
             "lease_expires_at": self.lease_expires_at,
             "conversation_id": self.conversation_id,
             "claim_generation": self.claim_generation,
+            "execution_started_at": self.execution_started_at,
+            "execution_deadline_at": self.execution_deadline_at,
             "planner_mode": self.planner_mode.value,
             "planning_metadata": self.planning_metadata,
             "clarification_questions": list(self.clarification_questions),
@@ -455,6 +460,16 @@ class Task:
                 else None
             ),
             claim_generation=int(data.get("claim_generation", 0)),
+            execution_started_at=(
+                str(data["execution_started_at"])
+                if data.get("execution_started_at") is not None
+                else None
+            ),
+            execution_deadline_at=(
+                str(data["execution_deadline_at"])
+                if data.get("execution_deadline_at") is not None
+                else None
+            ),
             planner_mode=PlannerMode(data.get("planner_mode", "deterministic")),
             planning_metadata=dict(data.get("planning_metadata", {})),
             clarification_questions=[

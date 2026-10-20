@@ -598,6 +598,45 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.4.6 阶段执行记录
+
+## 审计与修复
+
+- `max_execution_seconds` 改为首次 claim 写入的持久化严格 deadline；
+- Lease 续租只延长 authority，不重置任务总预算；
+- 新进程恢复旧 Task 时复用原 deadline；
+- 新增安全、幂等、带事件审计的 staging cleanup；
+- cleanup 尊重活动 attempt、Lease、generation 和 Task 发布锁；
+- 增加发布后预算耗尽、取消和 evidence 缺失的恢复断言。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 201/201 通过，exit 0 |
+| 隔离环境完整 unittest | 201/201 通过，exit 0 |
+| execution budget 专项 | 4/4，连续 20 轮 0 失败 |
+| staging cleanup 专项 | 3/3，连续 20 轮 0 失败 |
+| Lease renewal 专项 | 10/10 |
+| 文件副作用 fencing 专项 | 9/9 |
+| 崩溃一致性专项 | 18/18 |
+| 并发任务专项 | 3/3 |
+| 并发初始化 | 100/100 |
+| 并发澄清答案 | 20/20 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 执行预算从首次 claim 起按墙钟计算，等待澄清也计入；
+- Schema version 4；
+- staging cleanup 仅删除有持久化事件归属的已知非活动 attempt；
+- 来源不明文件保留；
+- 详见 `docs/phase-3.4.6-execution-budget-recovery-audit.md`；
+- 真实模型 API 请求：0，未推送。
+
+---
+
 # 第 3.4.5 阶段执行记录
 
 ## 审计与修复

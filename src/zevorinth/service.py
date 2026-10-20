@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import stat
 from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .artifact_tool import (
+    MAX_ARTIFACT_BYTES,
     ArtifactToolError,
     ArtifactWriter,
     RealArtifactWriter,
@@ -276,6 +280,215 @@ class TaskService:
     def events(self, task_id: str) -> list[Event]:
         return self.store.list_events(task_id)
 
+    def cleanup_staging(self, *, now: str | None = None) -> dict[str, object]:
+        """Remove only staging files with provable, non-active ownership."""
+        timestamp = self._normalize_time(now or self.clock())
+        entries: list[dict[str, object]] = []
+        if not self.artifacts_root.exists():
+            return {
+                "scanned": 0,
+                "deleted": 0,
+                "retained": 0,
+                "errors": [],
+                "entries": entries,
+            }
+
+        for task_dir in sorted(self.artifacts_root.iterdir()):
+            try:
+                task_id = str(UUID(task_dir.name))
+            except (ValueError, AttributeError):
+                continue
+            if (
+                task_id != task_dir.name
+                or task_dir.is_symlink()
+                or not task_dir.is_dir()
+            ):
+                continue
+            staging_dir = task_dir / ".staging"
+            if not staging_dir.exists():
+                continue
+            if staging_dir.is_symlink() or not staging_dir.is_dir():
+                entries.append(
+                    {
+                        "task_id": task_id,
+                        "action": "retained",
+                        "reason": "unsafe_staging_directory",
+                    }
+                )
+                continue
+            try:
+                with task_publication_lock(
+                    self.artifacts_root,
+                    task_id,
+                    timeout_seconds=self.publish_lock_timeout_seconds,
+                ):
+                    task = self.store.get_task(task_id)
+                    if task is None:
+                        entries.append(
+                            {
+                                "task_id": task_id,
+                                "action": "retained",
+                                "reason": "task_missing",
+                            }
+                        )
+                        continue
+                    known_attempts: set[str] = set()
+                    for event in self.store.list_events(task_id):
+                        if event.event_type == EventType.TOOL_STARTED.value:
+                            attempt_id = event.payload.get("attempt_id")
+                            if isinstance(attempt_id, str):
+                                known_attempts.add(attempt_id)
+                    lease_active = (
+                        task.lease_token is not None
+                        and task.lease_expires_at is not None
+                        and datetime.fromisoformat(task.lease_expires_at)
+                        > datetime.fromisoformat(timestamp)
+                    )
+                    for staging_path in sorted(staging_dir.glob("*.part")):
+                        entries.append(
+                            self._cleanup_staging_file(
+                                task,
+                                known_attempts,
+                                lease_active,
+                                staging_path,
+                                timestamp,
+                            )
+                        )
+            except ArtifactToolError as exc:
+                entries.append(
+                    {
+                        "task_id": task_id,
+                        "action": "retained",
+                        "reason": exc.code,
+                    }
+                )
+
+        deleted = sum(
+            1 for entry in entries if entry["action"] == "deleted"
+        )
+        errors = [
+            entry for entry in entries if entry["action"] == "error"
+        ]
+        return {
+            "scanned": len(entries),
+            "deleted": deleted,
+            "retained": len(entries) - deleted - len(errors),
+            "errors": errors,
+            "entries": entries,
+        }
+
+    def _cleanup_staging_file(
+        self,
+        task: Task,
+        known_attempts: set[str],
+        lease_active: bool,
+        staging_path: Path,
+        timestamp: str,
+    ) -> dict[str, object]:
+        attempt_id = staging_path.stem
+        try:
+            canonical_attempt = str(UUID(attempt_id))
+        except (ValueError, AttributeError):
+            return {
+                "task_id": task.task_id,
+                "file": staging_path.name,
+                "action": "retained",
+                "reason": "unknown_attempt_name",
+            }
+        if canonical_attempt != attempt_id:
+            return {
+                "task_id": task.task_id,
+                "file": staging_path.name,
+                "action": "retained",
+                "reason": "unknown_attempt_name",
+            }
+        if (
+            attempt_id == task.attempt_id
+            and lease_active
+        ):
+            return {
+                "task_id": task.task_id,
+                "file": staging_path.name,
+                "attempt_id": attempt_id,
+                "action": "retained",
+                "reason": "active_attempt",
+            }
+        if attempt_id not in known_attempts:
+            return {
+                "task_id": task.task_id,
+                "file": staging_path.name,
+                "attempt_id": attempt_id,
+                "action": "retained",
+                "reason": "unknown_attempt",
+            }
+        if staging_path.is_symlink() or not staging_path.is_file():
+            return {
+                "task_id": task.task_id,
+                "file": staging_path.name,
+                "attempt_id": attempt_id,
+                "action": "retained",
+                "reason": "unsafe_staging_file",
+            }
+        try:
+            byte_count, digest = self._hash_staging_file(staging_path)
+            staging_path.unlink()
+            self.store.append_event(
+                task.task_id,
+                Event.new(
+                    task.task_id,
+                    EventType.STAGING_CLEANED,
+                    timestamp,
+                    {
+                        "attempt_id": attempt_id,
+                        "file": staging_path.name,
+                        "byte_count": byte_count,
+                        "sha256": digest,
+                    },
+                ),
+            )
+        except Exception as exc:
+            return {
+                "task_id": task.task_id,
+                "file": staging_path.name,
+                "action": "error",
+                "reason": type(exc).__name__,
+            }
+        return {
+            "task_id": task.task_id,
+            "file": staging_path.name,
+            "attempt_id": attempt_id,
+            "action": "deleted",
+            "reason": "known_inactive_attempt",
+            "byte_count": byte_count,
+            "sha256": digest,
+        }
+
+    @staticmethod
+    def _hash_staging_file(path: Path) -> tuple[int, str]:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ArtifactToolError(
+                    "unsafe_staging_file",
+                    "staging file is not a regular file",
+                )
+            if metadata.st_size > MAX_ARTIFACT_BYTES:
+                raise ArtifactToolError(
+                    "oversized_staging_file",
+                    "staging file exceeds the artifact size limit",
+                )
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 16384)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        finally:
+            os.close(descriptor)
+        return metadata.st_size, digest.hexdigest()
+
     def recover_expired_leases(self) -> list[Task]:
         """Expire stale leases, preserving tasks actively owned by another instance."""
         now = self._normalize_time(self.clock())
@@ -346,6 +559,7 @@ class TaskService:
                     now=now,
                     expires_at=expires_at,
                     allowed_statuses=allowed,
+                    max_execution_seconds=self.max_execution_seconds,
                 )
         except ArtifactToolError as exc:
             raise StoreBusyError(
@@ -400,6 +614,36 @@ class TaskService:
         action: Callable[[], Task],
     ) -> Task:
         effective_lease_seconds = self._effective_lease_seconds()
+        if task.execution_deadline_at is None:
+            raise LeaseRenewalError(
+                "execution_budget_missing",
+                "claimed task is missing a persisted execution deadline",
+            )
+        remaining_budget = (
+            datetime.fromisoformat(task.execution_deadline_at)
+            - datetime.fromisoformat(self._normalize_time(self.clock()))
+        ).total_seconds()
+        if remaining_budget <= 0:
+            failed, _ = self.store.transition(
+                task.task_id,
+                TaskStatus.FAILED,
+                EventType.TASK_FAILED,
+                self.clock(),
+                payload={
+                    "code": "execution_budget_exceeded",
+                    "execution_deadline_at": task.execution_deadline_at,
+                },
+                updates={
+                    **self._clear_claim_updates(),
+                    "phase": "execution_budget_expired",
+                    "error": TaskError(
+                        "execution_budget_exceeded",
+                        "task execution budget expired before execution started",
+                    ),
+                },
+                lease_token=lease_token,
+            )
+            return failed
         renewer = LeaseRenewer(
             self.store,
             task_id=task.task_id,
@@ -412,10 +656,7 @@ class TaskService:
                 if self.lease_renewal_interval_seconds is not None
                 else max(0.01, effective_lease_seconds / 3.0)
             ),
-            max_duration_seconds=max(
-                self.max_execution_seconds,
-                effective_lease_seconds,
-            ),
+            max_duration_seconds=remaining_budget,
         )
         reset_token = _ACTIVE_RENEWER.set(renewer)
         renewer.start()

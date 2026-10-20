@@ -219,20 +219,26 @@ class LeaseRenewalTests(unittest.TestCase):
                 max_execution_seconds=2.0,
             )
             task = service.enqueue(_request())
+            claim = service._claim(
+                task.task_id,
+                allowed=TaskService.RUNNABLE_STATUSES,
+            )
+            self.assertTrue(claim.acquired)
             with patch(
                 "zevorinth.service.LeaseRenewer",
                 FakeRenewer,
             ):
                 returned = service._run_with_renewal(
-                    task,
-                    "lease",
-                    lambda: task,
+                    claim.task,
+                    str(claim.task.lease_token),
+                    lambda: claim.task,
                 )
 
-            self.assertIs(returned, task)
+            self.assertIs(returned, claim.task)
             self.assertEqual(captured["lease_seconds"], 5.0)
             self.assertEqual(captured["interval_seconds"], 5.0 / 3.0)
-            self.assertEqual(captured["max_duration_seconds"], 5.0)
+            self.assertLessEqual(captured["max_duration_seconds"], 2.0)
+            self.assertGreater(captured["max_duration_seconds"], 0)
 
     def test_expired_or_superseded_lease_cannot_be_renewed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

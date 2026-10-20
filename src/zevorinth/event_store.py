@@ -9,7 +9,7 @@ import re
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
@@ -32,7 +32,7 @@ from .models import (
     TaskStatus,
     TurnStatus,
 )
-from .state_machine import ensure_transition
+from .state_machine import ensure_transition, is_terminal
 
 
 class TaskNotFound(LookupError):
@@ -1977,6 +1977,17 @@ class EventStore:
             for row in rows
         ]
 
+    def append_event(self, task_id: str, event: Event) -> Event:
+        """Append an audit event without changing the task snapshot."""
+        if event.task_id != task_id:
+            raise ValueError("event task id does not match task")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._load_task(connection, task_id)
+            stored = self._insert_event(connection, event)
+            connection.commit()
+        return stored
+
     def transition(
         self,
         task_id: str,
@@ -2046,11 +2057,50 @@ class EventStore:
         now: str,
         expires_at: str,
         allowed_statuses: frozenset[TaskStatus],
+        max_execution_seconds: float | None = None,
     ) -> ClaimResult:
+        if max_execution_seconds is not None and max_execution_seconds <= 0:
+            raise ValueError("max_execution_seconds must be positive")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = self._load_task(connection, task_id)
             events: list[Event] = []
+
+            if (
+                task.execution_deadline_at is not None
+                and not self._lease_is_active(task.execution_deadline_at, now)
+                and not is_terminal(task.status)
+            ):
+                ensure_transition(task.status, TaskStatus.FAILED)
+                task.status = TaskStatus.FAILED
+                task.updated_at = now
+                task.phase = "execution_budget_expired"
+                task.execution_owner = None
+                task.lease_token = None
+                task.lease_expires_at = None
+                task.error = TaskError(
+                    "execution_budget_exceeded",
+                    "task execution budget expired before claim",
+                )
+                events.append(
+                    Event.new(
+                        task_id,
+                        EventType.TASK_FAILED,
+                        now,
+                        {
+                            "code": "execution_budget_exceeded",
+                            "execution_deadline_at": task.execution_deadline_at,
+                        },
+                    )
+                )
+                self._update_task(connection, task)
+                self._insert_events(connection, events)
+                connection.commit()
+                return ClaimResult(
+                    False,
+                    task,
+                    "execution_budget_exhausted",
+                )
 
             if task.status not in allowed_statuses:
                 reason = f"status_not_runnable:{task.status.value}"
@@ -2153,6 +2203,15 @@ class EventStore:
             task.lease_expires_at = expires_at
             task.claim_generation += 1
             task.attempt_id = attempt_id
+            if (
+                task.execution_deadline_at is None
+                and max_execution_seconds is not None
+            ):
+                task.execution_started_at = now
+                task.execution_deadline_at = (
+                    datetime.fromisoformat(now)
+                    + timedelta(seconds=max_execution_seconds)
+                ).isoformat(timespec="milliseconds")
             task.phase = "claimed"
             task.updated_at = now
             events.append(

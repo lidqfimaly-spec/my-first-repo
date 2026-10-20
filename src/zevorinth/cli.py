@@ -472,6 +472,12 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("task_id")
     events.add_argument("--json", action="store_true")
 
+    cleanup = subparsers.add_parser(
+        "cleanup-staging",
+        help="remove provably inactive staging files",
+    )
+    cleanup.add_argument("--json", action="store_true")
+
     resume = subparsers.add_parser(
         "resume",
         help="resume a clarification, blocked task, or interrupted task",
@@ -769,6 +775,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"{event.event_type} {json.dumps(event.payload, ensure_ascii=False, sort_keys=True)}"
                     )
             return 0
+        if args.command == "cleanup-staging":
+            report = service.cleanup_staging()
+            if args.json:
+                print(
+                    json.dumps(
+                        report,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    "Staging cleanup: "
+                    f"scanned={report['scanned']} "
+                    f"deleted={report['deleted']} "
+                    f"retained={report['retained']} "
+                    f"errors={len(report['errors'])}"
+                )
+                for entry in report["entries"]:
+                    print(
+                        f"{entry.get('task_id')} "
+                        f"{entry.get('file', '-')} "
+                        f"{entry['action']} "
+                        f"{entry.get('reason', '')}"
+                    )
+            return 1 if report["errors"] else 0
         if args.command == "resume":
             task = service.resume(args.task_id, _patch_from_args(args))
             _print_task(task, args.json)

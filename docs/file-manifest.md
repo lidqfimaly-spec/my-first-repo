@@ -155,6 +155,32 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.4.6 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.4.6-execution-budget-recovery-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_execution_budget.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_staging_cleanup.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/event_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/models.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/state_machine.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_concurrency.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_crash_consistency.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/staging_cleanup_worker.py`
+
+Schema version 保持 4；运行产物和 `.idea/` 不纳入源码清单。
+
+---
+
 # 第 3.4.5 阶段新增与修改
 
 ## 新增

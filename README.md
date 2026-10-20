@@ -308,5 +308,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.4.3 阶段文件副作用 Fencing 审计](docs/phase-3.4.3-side-effect-fencing-audit.md)
 - [第 3.4.4 阶段 Lease 接管协调审计](docs/phase-3.4.4-lease-takeover-coordination-audit.md)
 - [第 3.4.5 阶段 Lease 续租审计](docs/phase-3.4.5-lease-renewal-audit.md)
+- [第 3.4.6 阶段执行预算与恢复审计](docs/phase-3.4.6-execution-budget-recovery-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

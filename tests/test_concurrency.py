@@ -77,12 +77,19 @@ def _execute_worker(
     entered: Any = None,
     release: Any = None,
     gate: Any = None,
+    clock_text: str | None = None,
 ) -> None:
     root = Path(root_text)
     writer: Any = NoWriteWriter() if block_verify else None
     if block_write:
         writer = ProcessBlockingWriter(root / "artifacts", entered, release)
-    service = TaskService(root, writer=writer, owner_id=owner_id)
+    service_kwargs: dict[str, Any] = {
+        "writer": writer,
+        "owner_id": owner_id,
+    }
+    if clock_text is not None:
+        service_kwargs["clock"] = lambda: clock_text
+    service = TaskService(root, **service_kwargs)
     if block_verify:
         service.verifier = ProcessBlockingVerifier(
             root / "artifacts", entered, release
@@ -122,10 +129,17 @@ def _resume_worker(
     block_verify: bool,
     entered: Any,
     release: Any,
+    clock_text: str | None = None,
 ) -> None:
     root = Path(root_text)
     writer = NoWriteWriter()
-    service = TaskService(root, writer=writer, owner_id=owner_id)
+    service_kwargs: dict[str, Any] = {
+        "writer": writer,
+        "owner_id": owner_id,
+    }
+    if clock_text is not None:
+        service_kwargs["clock"] = lambda: clock_text
+    service = TaskService(root, **service_kwargs)
     if block_verify:
         service.verifier = ProcessBlockingVerifier(
             root / "artifacts", entered, release
@@ -262,6 +276,7 @@ class ConcurrencyTests(unittest.TestCase):
                     "block_verify": True,
                     "entered": entered,
                     "release": release,
+                    "clock_text": recovery_time,
                 },
             )
             executor: Any = None
@@ -271,7 +286,10 @@ class ConcurrencyTests(unittest.TestCase):
                 executor = context.Process(
                     target=_execute_worker,
                     args=(str(root), task_id, queue),
-                    kwargs={"owner_id": "executor"},
+                    kwargs={
+                        "owner_id": "executor",
+                        "clock_text": recovery_time,
+                    },
                 )
                 executor.start()
                 rejected = queue.get(timeout=10)
