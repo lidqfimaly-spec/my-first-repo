@@ -362,5 +362,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.54 阶段真实模型取消路径验证](docs/phase-3.54-real-model-cancel-verification.md)
 - [第 3.55 阶段真实模型验证器拒绝路径](docs/phase-3.55-real-model-verifier-rejection.md)
 - [第 3.56 阶段真实模型容器启动失败](docs/phase-3.56-real-model-startup-failure.md)
+- [第 3.57 阶段持久任务生命周期与进程级恢复审计](docs/phase-3.57-durable-task-lifecycle-process-recovery-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

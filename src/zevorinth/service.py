@@ -6,6 +6,7 @@ import hashlib
 import os
 import stat
 import subprocess
+import time
 from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,7 @@ from .planner import WRITE_TEXT_ARTIFACT, DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
 from .verifier import ArtifactVerifier, TestResultVerifier
+from .task_lifecycle import audit_task_lifecycle
 from .workspace_snapshot import (
     EffectPolicy,
     Snapshot,
@@ -386,6 +388,15 @@ class TaskService:
     def get_task(self, task_id: str) -> Task | None:
         return self.store.get_task(task_id)
 
+    def audit_lifecycle(
+        self, task_id: str, *, now: str | None = None
+    ) -> dict[str, Any]:
+        """Read-only audit of task, evidence and cleanup consistency."""
+        task = self.store.require_task(task_id)
+        return audit_task_lifecycle(
+            task, self.store.list_events(task_id), now=now
+        )
+
     def cleanup_provisioning_artifact(
         self,
         task_id: str,
@@ -480,6 +491,35 @@ class TaskService:
         )
         target = workspace.joinpath(*parts)
         if target.is_symlink() or not target.is_file():
+            if not target.is_symlink():
+                deadline = time.monotonic() + 1.0
+                latest_events: list[Event] = []
+                while True:
+                    try:
+                        latest_events = self.store.list_events(task_id)
+                    except Exception:
+                        latest_events = []
+                    if any(
+                        event.event_type == "cleanup_completed"
+                        and event.payload.get("relative_path") == normalized
+                        for event in latest_events
+                    ):
+                        return reject(
+                            "already_cleaned",
+                            "another request completed this cleanup",
+                        )
+                    if any(
+                        event.event_type == "cleanup_intent"
+                        and event.payload.get("relative_path") == normalized
+                        for event in latest_events
+                    ):
+                        return reject(
+                            "cleanup_in_progress",
+                            "another cleanup request is in progress",
+                        )
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
             return reject("missing_target", "target does not exist")
         expected_sha256 = str(record.get("sha256") or "")
         try:
@@ -545,19 +585,39 @@ class TaskService:
             )
         )
         if result.get("status") != "completed":
-            try:
-                latest_events = self.store.list_events(task_id)
-            except Exception:
-                latest_events = []
-            if any(
-                event.event_type == "cleanup_completed"
-                and event.payload.get("relative_path") == normalized
-                for event in latest_events
-            ):
+            deadline = time.monotonic() + 1.0
+            latest_events: list[Event] = []
+            completed_elsewhere = False
+            while True:
+                try:
+                    latest_events = self.store.list_events(task_id)
+                except Exception:
+                    latest_events = []
+                completed_elsewhere = any(
+                    event.event_type == "cleanup_completed"
+                    and event.payload.get("relative_path") == normalized
+                    for event in latest_events
+                )
+                if completed_elsewhere or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+            if completed_elsewhere:
                 result.update(
                     status="rejected",
                     code="already_cleaned",
                     reason="another request completed this cleanup",
+                    removed=False,
+                )
+            elif any(
+                event.event_type == "cleanup_intent"
+                and event.payload.get("relative_path") == normalized
+                and event.payload.get("operation_id") != operation_id
+                for event in latest_events
+            ):
+                result.update(
+                    status="unverified",
+                    code="cleanup_in_progress",
+                    reason="another cleanup request is in progress",
                     removed=False,
                 )
         self._record_cleanup_event(task, result)

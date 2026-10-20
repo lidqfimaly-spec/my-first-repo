@@ -114,8 +114,17 @@ class ProcessCleanupTests(unittest.TestCase):
 
         statuses = sorted(item["status"] for item in outputs)
         self.assertEqual(statuses.count("completed"), 1)
-        self.assertEqual(statuses.count("rejected"), 1)
-        self.assertIn("already_cleaned", [item.get("code") for item in outputs])
+        self.assertEqual(
+            statuses.count("rejected") + statuses.count("unverified"), 1
+        )
+        self.assertTrue(
+            any(
+                item.get("code")
+                in {"already_cleaned", "cleanup_in_progress"}
+                for item in outputs
+            ),
+            outputs,
+        )
         self.assertFalse(target.exists())
         self.assertEqual(
             [

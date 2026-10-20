@@ -827,6 +827,28 @@
         "tests.test_provisioning_cleanup.ProvisioningCleanupTests.test_completion_event_failure_is_not_reported_completed"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "task_lifecycle_verification_bypass",
+      "property": "succeeded tasks require a passed independent verification",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        if task.verification is None or not task.verification.passed:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_task_lifecycle_audit.TaskLifecycleAuditTests.test_succeeded_without_verification_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cleanup_intent_expiry_ignored",
+      "property": "old pending cleanup intents expire",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "            ).total_seconds() > CLEANUP_INTENT_TTL_SECONDS:\n",
+      "new": "            ).total_seconds() > 10**18:\n",
+      "tests": [
+        "tests.test_task_lifecycle_audit.TaskLifecycleAuditTests.test_old_pending_cleanup_intent_is_expired"
+      ],
+      "expected": "killed"
     }
   ]
 }

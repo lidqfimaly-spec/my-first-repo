@@ -1182,6 +1182,41 @@ evidence。
 
 ---
 
+# 第 3.57 阶段执行记录
+
+## 实现
+
+- 新增只读 `audit_lifecycle()`：核对任务状态、事件、最终计划、evidence、验证和清理记录；
+- 清理操作派生 completed/pending/expired/rejected/unverified、retryable 和 manual 状态；
+- 进程级任务在测试完成后 SIGKILL，新进程只读恢复，不重跑；
+- 独立进程清理竞争最多一次删除，失败方返回 already_cleaned 或 cleanup_in_progress；
+- event insert 失败时任务状态更新回滚；
+- 历史任务无最终计划继续 fail-closed。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 生命周期/进程专项 | 10/10 |
+| 系统 Python 全量 | 625/625 |
+| `.venv` 全量 | 625/625 |
+| Mutation runner | 73 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 进程级任务恢复使用 host backend；
+- 清理自动化与历史迁移未实现；
+- 详见 `docs/phase-3.57-durable-task-lifecycle-process-recovery-audit.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 
 
 ## 实现
