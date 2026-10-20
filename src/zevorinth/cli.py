@@ -491,6 +491,15 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("task_id")
     cancel.add_argument("--json", action="store_true")
 
+    request_cancel = subparsers.add_parser(
+        "request-cancel",
+        help="persist a cooperative cancellation request",
+    )
+    request_cancel.add_argument("task_id")
+    request_cancel.add_argument("--source", required=True)
+    request_cancel.add_argument("--reason", default=None)
+    request_cancel.add_argument("--json", action="store_true")
+
     revise = subparsers.add_parser(
         "revise",
         help="apply a confirmed plan revision without executing it",
@@ -844,6 +853,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "cancel":
             task = service.cancel(args.task_id)
+            _print_task(task, args.json)
+            return _exit_code(task)
+        if args.command == "request-cancel":
+            task = service.request_cancel(
+                args.task_id,
+                requested_by=args.source,
+                reason=args.reason,
+            )
             _print_task(task, args.json)
             return _exit_code(task)
         if args.command == "revise":

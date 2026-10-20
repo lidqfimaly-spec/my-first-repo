@@ -160,8 +160,11 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 ## 新增
 
 - `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.5-design.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.6-acceptance.md`
 - `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/context.py`
 - `/Users/lidequan/PythonProject/Zevorinth/tests/test_context_continuity.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_cooperative_cancellation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/e2e_acceptance_runner.py`
 
 ## 修改
 

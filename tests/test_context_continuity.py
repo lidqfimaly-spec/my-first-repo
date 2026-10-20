@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta
 from queue import Queue
 from pathlib import Path
 
@@ -196,6 +197,77 @@ class ContextContinuityTests(unittest.TestCase):
             self.assertEqual(unchanged.plan_version, 0)
             self.assertIsNone(unchanged.request.parameters["content"])
             self.assertEqual(unchanged.plan_revisions, [])
+
+    def test_execution_uses_immutable_plan_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            task_ids: list[str] = []
+
+            def interrupt(_stage: str, task) -> None:
+                task_ids.append(task.task_id)
+                raise RuntimeError("stop before verification")
+
+            service = TaskService(root, fault_hook=interrupt)
+            with self.assertRaises(RuntimeError):
+                service.submit(_request())
+            task = service.require_task(task_ids[0])
+            self.assertEqual(
+                task.execution_plan_version,
+                task.plan_version,
+            )
+            self.assertEqual(
+                task.execution_plan_snapshot,
+                task.plan.to_dict(),
+            )
+            with self.assertRaises(PlanRevisionConflict):
+                service.revise_plan(
+                    task.task_id,
+                    {"parameters": {"content": "changed"}},
+                    source_id="late-revision",
+                    expected_plan_version=task.plan_version,
+                    confirmed=True,
+                )
+
+            assert task.lease_expires_at is not None
+            recovery_time = (
+                datetime.fromisoformat(task.lease_expires_at)
+                + timedelta(seconds=1)
+            ).isoformat(timespec="milliseconds")
+            recovered = TaskService(
+                root,
+                clock=lambda: recovery_time,
+            ).resume(task.task_id)
+            self.assertEqual(recovered.status, TaskStatus.SUCCEEDED)
+            self.assertEqual(recovered.plan_version, 0)
+
+    def test_plan_snapshot_mismatch_cannot_pass_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = TaskService(
+                Path(temp_dir),
+                clock=lambda: NOW,
+            )
+
+            def mutate_plan(_stage: str, task) -> None:
+                service.store.record_event_and_update(
+                    task.task_id,
+                    "test_plan_mutation",
+                    NOW,
+                    updates={"plan_version": task.plan_version + 1},
+                    lease_token=task.lease_token,
+                )
+
+            service.fault_hook = mutate_plan
+            task = service.submit(_request())
+
+            self.assertEqual(task.status, TaskStatus.FAILED)
+            self.assertEqual(
+                task.error.code,
+                "execution_plan_snapshot_changed",
+            )
+            event_types = [
+                event.event_type for event in service.events(task.task_id)
+            ]
+            self.assertNotIn(EventType.TASK_SUCCEEDED.value, event_types)
 
     def test_concurrent_revisions_have_one_winner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

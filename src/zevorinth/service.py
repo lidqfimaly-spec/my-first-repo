@@ -58,6 +58,10 @@ _ACTIVE_RENEWER: ContextVar[LeaseRenewer | None] = ContextVar(
 )
 
 
+class CancellationRequested(Exception):
+    pass
+
+
 class TaskService:
     """Single-host coordinator using SQLite transactions for task ownership."""
 
@@ -288,6 +292,57 @@ class TaskService:
 
     def cancel(self, task_id: str) -> Task:
         return self.store.cancel_task(task_id, now=self.clock())
+
+    def request_cancel(
+        self,
+        task_id: str,
+        *,
+        requested_by: str,
+        reason: str | None = None,
+    ) -> Task:
+        return self.store.request_cancel(
+            task_id,
+            requested_by=requested_by,
+            reason=reason,
+            now=self.clock(),
+        )
+
+    def _cancel_if_requested(
+        self,
+        task: Task,
+        lease_token: str,
+        *,
+        checkpoint: str,
+        side_effect_observed: bool,
+    ) -> Task | None:
+        current = self.store.require_task(task.task_id)
+        if current.cancel_requested_at is None or is_terminal(current.status):
+            return None
+        cancelled, _ = self.store.transition(
+            current.task_id,
+            TaskStatus.CANCELLED,
+            EventType.TASK_CANCELLED,
+            self.clock(),
+            payload={
+                "checkpoint": checkpoint,
+                "side_effect_observed": side_effect_observed,
+                "artifact": (
+                    current.artifact.to_dict()
+                    if current.artifact is not None
+                    else None
+                ),
+            },
+            updates={
+                **self._clear_claim_updates(),
+                "phase": f"cancelled_{checkpoint}",
+                "error": TaskError(
+                    "cancelled",
+                    "task was cancelled at a cooperative checkpoint",
+                ),
+            },
+            lease_token=lease_token,
+        )
+        return cancelled
 
     def revise_plan(
         self,
@@ -729,6 +784,14 @@ class TaskService:
     def _run_claimed(self, task: Task, lease_token: str | None) -> Task:
         if lease_token is None:
             raise ValueError("claimed task is missing lease token")
+        cancelled = self._cancel_if_requested(
+            task,
+            lease_token,
+            checkpoint="claim",
+            side_effect_observed=task.artifact is not None,
+        )
+        if cancelled is not None:
+            return cancelled
         if task.status is TaskStatus.QUEUED:
             return self._run_with_renewal(
                 task,
@@ -841,6 +904,9 @@ class TaskService:
             claim_generation=claim_generation,
             now=self.clock(),
         )
+        current = self.store.require_task(task_id)
+        if current.cancel_requested_at is not None:
+            raise CancellationRequested()
 
     def _plan_and_execute(self, task: Task, lease_token: str) -> Task:
         return self._plan_with_current_status(task, lease_token)
@@ -871,6 +937,14 @@ class TaskService:
                 },
             )
         self._ensure_execution_health()
+        cancelled = self._cancel_if_requested(
+            task,
+            lease_token,
+            checkpoint="after_planning",
+            side_effect_observed=False,
+        )
+        if cancelled is not None:
+            return cancelled
 
         planning_metadata = {
             "classification": outcome.classification.value,
@@ -1080,6 +1154,14 @@ class TaskService:
 
         intended_mode = getattr(self.writer, "execution_mode", ExecutionMode.REAL)
         started_at = self.clock()
+        cancelled = self._cancel_if_requested(
+            task,
+            lease_token,
+            checkpoint="before_tool",
+            side_effect_observed=False,
+        )
+        if cancelled is not None:
+            return cancelled
         self._assert_execution_authority(task, lease_token)
         task, _ = self.store.record_event_and_update(
             task.task_id,
@@ -1091,10 +1173,15 @@ class TaskService:
                 "attempt_id": task.attempt_id,
                 "intended_execution_mode": intended_mode.value,
                 "claim_generation": task.claim_generation,
+                "plan_version": task.plan_version,
             },
             updates={
                 "execution_mode": intended_mode,
                 "phase": "tool_started",
+                "execution_plan_version": task.plan_version,
+                "execution_plan_snapshot": (
+                    task.plan.to_dict() if task.plan is not None else None
+                ),
             },
             lease_token=lease_token,
         )
@@ -1117,6 +1204,16 @@ class TaskService:
             )
         except ClaimLost:
             raise
+        except CancellationRequested:
+            cancelled = self._cancel_if_requested(
+                task,
+                lease_token,
+                checkpoint="before_publish",
+                side_effect_observed=False,
+            )
+            if cancelled is not None:
+                return cancelled
+            raise
         except ArtifactToolError as exc:
             return self._finish_tool_failure(
                 task,
@@ -1135,6 +1232,21 @@ class TaskService:
             )
 
         self._assert_execution_authority(task, lease_token)
+        latest = self.store.require_task(task.task_id)
+        if latest.cancel_requested_at is not None:
+            task = self._persist_tool_result_before_cancel(
+                task,
+                lease_token,
+                result,
+            )
+            cancelled = self._cancel_if_requested(
+                task,
+                lease_token,
+                checkpoint="after_tool",
+                side_effect_observed=result.success,
+            )
+            if cancelled is not None:
+                return cancelled
         if not result.success:
             return self._finish_tool_failure(
                 task,
@@ -1280,15 +1392,76 @@ class TaskService:
         )
         return failed
 
+    def _persist_tool_result_before_cancel(
+        self,
+        task: Task,
+        lease_token: str,
+        result: ToolResult,
+    ) -> Task:
+        event_type = (
+            EventType.TOOL_SUCCEEDED
+            if result.success
+            else EventType.TOOL_FAILED
+        )
+        updates: dict[str, object] = {
+            "tool_result": result,
+            "execution_mode": result.execution_mode,
+            "phase": "tool_completed_before_cancellation",
+        }
+        if result.artifact is not None:
+            updates["artifact"] = result.artifact
+        if not result.success:
+            updates["error"] = TaskError(
+                result.error_code or "tool_failed",
+                result.error_message or "tool reported failure",
+            )
+        updated, _ = self.store.record_event_and_update(
+            task.task_id,
+            event_type,
+            self.clock(),
+            payload={
+                "tool_result": result.to_dict(),
+                "cancellation_observed": True,
+            },
+            updates=updates,
+            lease_token=lease_token,
+        )
+        return updated
+
     def _verify_and_finish(self, task: Task, lease_token: str) -> Task:
         self._assert_execution_authority(task, lease_token)
+        cancelled = self._cancel_if_requested(
+            task,
+            lease_token,
+            checkpoint="before_verification",
+            side_effect_observed=task.artifact is not None,
+        )
+        if cancelled is not None:
+            return cancelled
         parameters = task.request.parameters
         artifact_path = parameters["artifact_path"]
         content = parameters["content"]
         assert isinstance(artifact_path, str)
         assert isinstance(content, str)
         result = task.tool_result
-        if result is None:
+        snapshot_matches = (
+            task.execution_plan_version == task.plan_version
+            and task.execution_plan_snapshot
+            == (task.plan.to_dict() if task.plan is not None else None)
+        )
+        if not snapshot_matches:
+            verification = VerificationResult(
+                verifier_name=self.verifier.name,
+                passed=False,
+                exists=False,
+                path_safe=False,
+                content_matches=False,
+                evidence_matches=False,
+                reason="execution_plan_snapshot_mismatch",
+                artifact=None,
+                checked_at=self.clock(),
+            )
+        elif result is None:
             verification = VerificationResult(
                 verifier_name=self.verifier.name,
                 passed=False,
@@ -1353,7 +1526,29 @@ class TaskService:
             lease_token=lease_token,
         )
         self._assert_execution_authority(task, lease_token)
+        cancelled = self._cancel_if_requested(
+            task,
+            lease_token,
+            checkpoint="before_success",
+            side_effect_observed=task.artifact is not None,
+        )
+        if cancelled is not None:
+            return cancelled
         if verification.passed:
+            if (
+                task.execution_plan_version != task.plan_version
+                or task.execution_plan_snapshot
+                != (task.plan.to_dict() if task.plan is not None else None)
+            ):
+                return self._fail(
+                    task,
+                    lease_token,
+                    code="execution_plan_snapshot_changed",
+                    message=(
+                        "execution evidence no longer matches the current plan"
+                    ),
+                    phase="execution_plan_snapshot_changed",
+                )
             succeeded, _ = self.store.transition(
                 task.task_id,
                 TaskStatus.SUCCEEDED,

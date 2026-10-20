@@ -114,6 +114,7 @@ class EventType(str, Enum):
     TASK_SUCCEEDED = "task_succeeded"
     TASK_FAILED = "task_failed"
     TASK_CANCELLED = "task_cancelled"
+    CANCEL_REQUESTED = "cancel_requested"
     PLAN_REVISED = "plan_revised"
     STAGING_CLEANED = "staging_cleaned"
 
@@ -461,6 +462,11 @@ class Task:
     execution_deadline_at: str | None = None
     plan_version: int = 0
     plan_revisions: list[PlanRevision] = field(default_factory=list)
+    cancel_requested_at: str | None = None
+    cancel_requested_by: str | None = None
+    cancel_reason: str | None = None
+    execution_plan_version: int | None = None
+    execution_plan_snapshot: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -489,6 +495,11 @@ class Task:
             "plan_revisions": [
                 revision.to_dict() for revision in self.plan_revisions
             ],
+            "cancel_requested_at": self.cancel_requested_at,
+            "cancel_requested_by": self.cancel_requested_by,
+            "cancel_reason": self.cancel_reason,
+            "execution_plan_version": self.execution_plan_version,
+            "execution_plan_snapshot": self.execution_plan_snapshot,
             "planner_mode": self.planner_mode.value,
             "planning_metadata": self.planning_metadata,
             "clarification_questions": list(self.clarification_questions),
@@ -540,6 +551,31 @@ class Task:
                 PlanRevision.from_dict(item)
                 for item in data.get("plan_revisions", [])
             ],
+            cancel_requested_at=(
+                str(data["cancel_requested_at"])
+                if data.get("cancel_requested_at") is not None
+                else None
+            ),
+            cancel_requested_by=(
+                str(data["cancel_requested_by"])
+                if data.get("cancel_requested_by") is not None
+                else None
+            ),
+            cancel_reason=(
+                str(data["cancel_reason"])
+                if data.get("cancel_reason") is not None
+                else None
+            ),
+            execution_plan_version=(
+                int(data["execution_plan_version"])
+                if data.get("execution_plan_version") is not None
+                else None
+            ),
+            execution_plan_snapshot=(
+                dict(data["execution_plan_snapshot"])
+                if data.get("execution_plan_snapshot") is not None
+                else None
+            ),
             planner_mode=PlannerMode(data.get("planner_mode", "deterministic")),
             planning_metadata=dict(data.get("planning_metadata", {})),
             clarification_questions=[

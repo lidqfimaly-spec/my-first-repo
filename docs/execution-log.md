@@ -615,10 +615,12 @@ ZEVORINTH_MODEL=deepseek-flash
 
 | 检查 | 结果 |
 | --- | --- |
-| 系统 Python 完整 unittest | 209/209 通过，exit 0 |
-| 隔离环境完整 unittest | 209/209 通过，exit 0 |
-| context continuity 专项 | 8/8 |
+| 系统 Python 完整 unittest | 216/216 通过，exit 0 |
+| 隔离环境完整 unittest | 216/216 通过，exit 0 |
+| context continuity 专项 | 10/10 |
+| cooperative cancellation 专项 | 5/5 |
 | 并发计划修订竞态 | 20/20 轮 0 失败 |
+| E2E acceptance | 7/7，连续 10 轮 0 失败 |
 | Lease renewal / fencing / recovery | 全部通过 |
 | `compileall` | exit 0 |
 | `git diff --check` | exit 0 |

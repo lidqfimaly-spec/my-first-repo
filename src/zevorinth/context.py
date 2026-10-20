@@ -194,6 +194,17 @@ class ConversationContextBuilder:
                         True,
                     )
                 )
+            if task.cancel_requested_at is not None and not is_terminal(
+                task.status
+            ):
+                unresolved.append(
+                    ContextItem(
+                        ContextItemKind.FACT,
+                        "cancellation requested",
+                        task.task_id,
+                        True,
+                    )
+                )
 
         completed = self._completed_items(current_task)
         pending = self._pending_items(current_task)

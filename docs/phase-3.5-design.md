@@ -180,10 +180,13 @@ zevorinth revise <task_id> \
 
 | 项目 | 结果 |
 | --- | --- |
-| 系统完整 unittest | 209/209，exit 0 |
-| 隔离环境完整 unittest | 209/209，exit 0 |
-| context continuity 专项 | 8/8 |
+| 系统完整 unittest | 216/216，exit 0 |
+| 隔离环境完整 unittest | 216/216，exit 0 |
+| context continuity 专项 | 10/10 |
+| cooperative cancellation 专项 | 5/5 |
 | 并发 revision race | 20/20 轮 0 失败 |
+| context + cancellation | 20/20 轮 0 失败 |
+| E2E acceptance | 7/7，连续 10 轮 0 失败 |
 | `compileall` | exit 0 |
 | `git diff --check` | exit 0 |
 
@@ -194,7 +197,29 @@ zevorinth revise <task_id> \
 - 忽略 active Lease 强制取消：取消测试捕获；
 - 只用摘要、丢弃原始消息约束：summary omission 测试捕获。
 
+协作取消与证据隔离变异：
+
+- 忽略 claim 检查点取消：claim cancellation 测试捕获；
+- 忽略发布前取消：before-publish 测试捕获；
+- 移除执行计划 snapshot 校验：snapshot mismatch 测试捕获；
+- 取消请求不幂等：重复 request 测试捕获。
+
 coverage / mutation framework：NOT RUN，环境未安装。
+
+End-to-end runner：
+
+```text
+tests/e2e_acceptance_runner.py
+artifacts/audits/phase-3.6-acceptance.json
+success_rate=1.0
+executable_success_rate=1.0
+recovery_success_rate=1.0
+duplicate_side_effects=0
+cancellation_handled=true
+evidence_complete_rate=0.5714285714285714
+```
+
+evidence complete rate 包含故意无最终 evidence 的阻断/否决场景，不代表产品失败率。
 
 ## 9. 未实现与风险
 

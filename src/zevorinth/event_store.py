@@ -2122,6 +2122,41 @@ class EventStore:
             connection.commit()
         return task
 
+    def request_cancel(
+        self,
+        task_id: str,
+        *,
+        requested_by: str,
+        reason: str | None,
+        now: str,
+    ) -> Task:
+        """Persist an idempotent cancellation request without changing owner."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            if is_terminal(task.status) or task.cancel_requested_at is not None:
+                connection.commit()
+                return task
+            task.cancel_requested_at = now
+            task.cancel_requested_by = requested_by
+            task.cancel_reason = reason
+            task.updated_at = now
+            self._update_task(connection, task)
+            self._insert_event(
+                connection,
+                Event.new(
+                    task_id,
+                    EventType.CANCEL_REQUESTED,
+                    now,
+                    {
+                        "requested_by": requested_by,
+                        "reason": reason,
+                    },
+                ),
+            )
+            connection.commit()
+        return task
+
     def transition(
         self,
         task_id: str,
