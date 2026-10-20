@@ -122,6 +122,9 @@ def build_test_plan(
                     "config_digest": validation.get("config_digest"),
                     "command_digest": validation.get("command_digest"),
                     "host_authorization": validation.get("host_authorization"),
+                    "required_artifacts": list(
+                        validation.get("required_artifacts") or []
+                    ),
                 },
             )
         ],

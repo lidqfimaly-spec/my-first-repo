@@ -1729,7 +1729,10 @@ class TaskService:
         return self._verify_and_finish(verifying, lease_token)
 
     def _run_container_test(
-        self, task: Task, parameters: dict[str, Any]
+        self,
+        task: Task,
+        parameters: dict[str, Any],
+        cancel_check: Any = None,
     ) -> dict[str, Any]:
         """Run ``python -m unittest`` inside the verified container backend.
 
@@ -1802,42 +1805,83 @@ class TaskService:
             container_name,
             *container_command[2:],
         ]
-        try:
-            completed = _subprocess.run(
-                container_command,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except _subprocess.TimeoutExpired as exc:
+        process = _subprocess.Popen(
+            container_command,
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+            text=True,
+        )
+        import threading as _threading
+
+        timed_out = False
+        cancelled = False
+        captured: dict[str, str] = {}
+
+        def _reader() -> None:
+            try:
+                captured["stdout"], captured["stderr"] = process.communicate()
+            except Exception:  # pragma: no cover - defensive
+                captured.setdefault("stdout", "")
+                captured.setdefault("stderr", "")
+
+        reader = _threading.Thread(target=_reader, daemon=True)
+        reader.start()
+        deadline = _time.time() + timeout
+        while process.poll() is None:
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                break
+            if _time.time() >= deadline:
+                timed_out = True
+                break
+            _time.sleep(0.05)
+        if timed_out or cancelled:
             terminated = self._terminate_container(container_name)
             if terminated is not True:
+                process.kill()
                 raise TestExecutionError(
                     "container_termination_unverified",
-                    "container may still be running after timeout",
+                    "container may still be running",
                 )
+            process.wait(timeout=10)
+        reader.join(timeout=15)
+        stdout_raw = captured.get("stdout", "")
+        stderr_raw = captured.get("stderr", "")
+        if timed_out or cancelled:
             artifacts = self._collect_test_artifacts(workspace, limit)
             return {
                 "runner": "unittest",
                 "target": target,
                 "workspace": str(parameters["workspace"]),
                 "exit_code": None,
-                "timed_out": True,
-                "cancelled": False,
+                "timed_out": timed_out,
+                "cancelled": cancelled,
                 "terminated_confirmed": True,
                 "container_name": container_name,
                 "artifacts": artifacts,
-                "truncated": True,
-                "stdout": b"",
-                "stderr": b"",
-                "stdout_bytes": 0,
-                "stderr_bytes": 0,
-                "stdout_sha256": _hashlib.sha256(b"").hexdigest(),
-                "stderr_sha256": _hashlib.sha256(b"").hexdigest(),
+                "truncated": False,
+                "stdout": stdout_raw.encode("utf-8", "replace")[:limit],
+                "stderr": stderr_raw.encode("utf-8", "replace")[:limit],
+                "stdout_bytes": len(stdout_raw.encode("utf-8", "replace")),
+                "stderr_bytes": len(stderr_raw.encode("utf-8", "replace")),
+                "stdout_sha256": _hashlib.sha256(
+                    stdout_raw.encode("utf-8", "replace")
+                ).hexdigest(),
+                "stderr_sha256": _hashlib.sha256(
+                    stderr_raw.encode("utf-8", "replace")
+                ).hexdigest(),
                 "duration_ms": round((_time.time() - started) * 1000, 3),
                 "output_limit_bytes": limit,
                 "timeout_seconds": timeout,
             }
+        completed = _subprocess.CompletedProcess(
+            container_command, process.returncode, stdout_raw, stderr_raw
+        )
+        artifacts = self._collect_test_artifacts(workspace, limit)
+        required = [str(item) for item in (parameters.get("required_artifacts") or [])]
+        present = {item["relative_path"] for item in artifacts}
+        missing = [item for item in required if item not in present]
+        collection_status = "failed" if missing else "complete"
         stdout = completed.stdout.encode("utf-8", "replace")
         stderr = completed.stderr.encode("utf-8", "replace")
         truncated = len(stdout) > limit or len(stderr) > limit
@@ -1864,7 +1908,8 @@ class TaskService:
             "command_digest": command_digest,
             "evidence_id": str(evidence_id),
             "container_name": container_name,
-            "artifacts": self._collect_test_artifacts(workspace, limit),
+            "artifacts": artifacts,
+            "collection_status": collection_status,
         }
 
     def _terminate_container(self, name: str) -> bool:
@@ -2000,6 +2045,9 @@ class TaskService:
             "image": plan_step.parameters.get("image"),
             "config_digest": plan_step.parameters.get("config_digest"),
             "command_digest": plan_step.parameters.get("command_digest"),
+            "required_artifacts": list(
+                plan_step.parameters.get("required_artifacts") or []
+            ),
             "allowed_side_effects": list(
                 plan_step.parameters.get("allowed_side_effects") or []
             ),
@@ -2122,7 +2170,7 @@ class TaskService:
 
         try:
             if parameters.get("execution_backend", "host") == "container":
-                raw = self._run_container_test(task, parameters)
+                raw = self._run_container_test(task, parameters, cancel_check)
             else:
                 raw = self.test_runner(
                     project_root=self.project_root,
@@ -2140,6 +2188,15 @@ class TaskService:
                 "test_runner_error",
                 f"test runner raised {type(exc).__name__}",
                 started_at,
+            )
+        if raw.get("collection_status") == "failed":
+            return self._fail(
+                task,
+                lease_token,
+                code="collection_failed",
+                message="required test artifacts were not collected",
+                phase="collection_failed",
+                payload_extra={"artifacts": raw.get("artifacts", [])},
             )
         evidence = TestExecutionEvidence(
             runner=str(raw["runner"]),

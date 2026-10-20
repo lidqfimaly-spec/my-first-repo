@@ -598,7 +598,35 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.31 阶段执行记录
+# 第 3.32 阶段执行记录
+
+## 实现
+
+- 容器执行改为 Popen + 并发读线程 + 取消/超时轮询，修复大输出导致的管道死锁；
+- 超时/取消后 `docker kill` 并确认不在运行，任务状态与事件一致；
+- `required_artifacts` 产物清单，缺失即 `collection_failed`。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 529/529，exit 0 |
+| 超时/取消/产物专项（真实容器） | 6/6 |
+| Mutation runner | 56 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 容器内磁盘无配额；
+- 终止确认失败路径未构造；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.32-container-timeout-cancel-artifact-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

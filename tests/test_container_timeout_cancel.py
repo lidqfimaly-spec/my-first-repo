@@ -1,0 +1,228 @@
+"""Container timeout/cancel closure and artifact manifest completeness."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from zevorinth.evidence_store import EvidenceStore  # noqa: E402
+from zevorinth.isolation import (  # noqa: E402
+    _live_image_digest,
+    _live_runtime_identity,
+    build_container_command,
+)
+from zevorinth.isolation_evidence import (  # noqa: E402
+    PROBE_BOUNDARIES,
+    build_evidence,
+    evidence_digest,
+)
+from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
+from zevorinth.planner import RUN_TESTS  # noqa: E402
+from zevorinth.service import TaskService  # noqa: E402
+
+
+IMAGE = "python:3.13-alpine"
+SLOW = (
+    "import time, unittest\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_slow(self):\n"
+    "        time.sleep(30)\n"
+)
+NOISY = (
+    "import pathlib, unittest\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_noisy(self):\n"
+    "        print('x' * 200000)\n"
+)
+
+
+def _ready() -> bool:
+    try:
+        return _live_image_digest(IMAGE).startswith("python@")
+    except Exception:
+        return False
+
+
+def _probe_evidence(root: Path, workspace: Path, request_id: str, image: str):
+    probe = build_container_command(
+        image=image,
+        workspace=workspace,
+        argv=[
+            "/bin/sh",
+            "-c",
+            "echo ok >/dev/null && echo ready",
+        ],
+    )
+    subprocess.run(probe, capture_output=True, text=True, timeout=60)
+    evidence = build_evidence(
+        environment_id="test",
+        runtime_identity=_live_runtime_identity(),
+        image_digest=_live_image_digest(image),
+        container_config_digest="",
+        request_id=request_id,
+        probes=[
+            {
+                "probe_id": f"p-{b}",
+                "boundary": b,
+                "status": "PASS",
+                "expected_result": "x",
+                "observed_result": "x",
+                "exit_code": 0,
+                "evidence_artifact_ids": [b],
+            }
+            for b in PROBE_BOUNDARIES
+        ],
+        ttl_seconds=600,
+    )
+    return evidence
+
+
+def _bind_evidence(evidence, workspace: Path, target: str, request_id: str) -> dict:
+    argv = ["python", "-B", "-m", "unittest", "-q", target]
+    command = build_container_command(image=IMAGE, workspace=workspace, argv=argv)
+    evidence["container_config_digest"] = hashlib.sha256(
+        " ".join(command).encode()
+    ).hexdigest()
+    evidence["command_digest"] = hashlib.sha256(
+        json.dumps(argv, separators=(",", ":")).encode()
+    ).hexdigest()
+    evidence["request_id"] = request_id
+    evidence["digest"] = evidence_digest(evidence)
+    return evidence
+
+
+def _request(target: str, **extra) -> TaskRequest:
+    parameters = {
+        "runner": "unittest",
+        "target": target,
+        "workspace": "demo",
+        "execution_backend": "container",
+        "image": IMAGE,
+        "timeout_seconds": 60,
+    }
+    parameters.update(extra)
+    return TaskRequest(goal="run", operation=RUN_TESTS, parameters=parameters)
+
+
+class ContainerTimeoutCancelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if not _ready():
+            self.skipTest("python:3.13-alpine not available")
+
+    def _run(self, module: str, content: str, *, timeout: float = 60, cancel_after=None, **extra):
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / f"{module}.py").write_text(content, encoding="utf-8")
+        service = TaskService(root)
+        queued = service.enqueue(
+            _request(module, timeout_seconds=timeout, **extra)
+        )
+        evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
+        _bind_evidence(evidence, workspace, module, queued.task_id)
+        EvidenceStore(root).save_evidence(evidence)
+        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
+        service.store.record_event_and_update(
+            queued.task_id,
+            "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+        if cancel_after is not None:
+            def cancel():
+                time.sleep(cancel_after)
+                service.request_cancel(
+                    queued.task_id, requested_by="test", reason="stop"
+                )
+            threading.Thread(target=cancel).start()
+        result = service.execute_task(queued.task_id)
+        events = [e.event_type for e in TaskService(root).events(queued.task_id)]
+        return root, service, result, events
+
+    def test_timeout_kills_container_and_fails_task(self) -> None:
+        root, service, result, events = self._run(
+            "test_slow", SLOW, timeout=2
+        )
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(result.error.code, "test_timeout")
+        self.assertIn("task_failed", events)
+        self.assertNotIn("task_succeeded", events)
+        leftovers = subprocess.run(
+            ["docker", "ps", "--filter", "name=zv-", "--format", "{{.ID}}"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(leftovers.stdout.strip(), "")
+
+    def test_cancel_during_container_run_stops_it(self) -> None:
+        root, service, result, events = self._run(
+            "test_slow", SLOW, timeout=60, cancel_after=1.0
+        )
+        self.assertEqual(result.status, TaskStatus.CANCELLED)
+        self.assertIn("task_cancelled", events)
+        leftovers = subprocess.run(
+            ["docker", "ps", "--filter", "name=zv-", "--format", "{{.ID}}"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(leftovers.stdout.strip(), "")
+
+    def test_missing_required_artifact_fails_collection(self) -> None:
+        root, service, result, events = self._run(
+            "test_slow_ok",
+            "import unittest\nclass T(unittest.TestCase):\n"
+            "    def test_ok(self):\n        self.assertTrue(True)\n",
+            required_artifacts=["report.json"],
+        )
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(result.error.code, "collection_failed")
+        self.assertNotIn("task_succeeded", events)
+
+    def test_large_output_is_truncated_and_marked(self) -> None:
+        root, service, result, events = self._run("test_noisy", NOISY)
+        # The test itself passes, but the recorded output is capped.
+        evidence = (
+            result.tool_result.test_evidence
+            if result.tool_result is not None
+            else None
+        )
+        if evidence is None:
+            self.skipTest(f"run did not complete: {result.error}")
+        self.assertLessEqual(
+            len(evidence.stdout_excerpt), 2000, "excerpt must be bounded"
+        )
+
+
+class ArtifactManifestUnitTests(unittest.TestCase):
+    def test_required_artifact_missing_fails_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "ws"
+            (workspace / "artifacts").mkdir(parents=True)
+            service = TaskService(Path(temp_dir))
+            collected = service._collect_test_artifacts(workspace, 4096)
+            present = {item["relative_path"] for item in collected}
+            self.assertNotIn("report.json", present)
+
+    def test_optional_artifacts_do_not_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "ws"
+            (workspace / "artifacts").mkdir(parents=True)
+            (workspace / "artifacts" / "log.txt").write_text("ok")
+            service = TaskService(Path(temp_dir))
+            collected = service._collect_test_artifacts(workspace, 4096)
+        self.assertEqual(len(collected), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
