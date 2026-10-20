@@ -1097,6 +1097,34 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.54 阶段执行记录
+
+## 真实调用
+
+1 次真实模型请求，0 重试；真实 `run_tests` 容器启动后由操作者取消。
+
+- 候选通过严格校验：`run_tests` / `test_ok`；
+- 取消前观察到容器 `zv-f7133c4ff957-3859a707`；
+- 容器终止确认 true，任务 `cancelled`；
+- `TestResultVerifier` 返回 `test_cancelled`；
+- evidence 独立复核 `verified`；
+- 计划/证据一致，无 `task_succeeded`；
+- 无宿主机回退。
+
+## 测试
+
+- 预检专项连续复跑 38/38；
+- Phase 3.53 全量 619/619（系统 Python 与 `.venv`）；
+- Mutation runner 71 killed / 0 survived；
+- 本阶段无代码变更。
+
+## 结论
+
+**PASS**。详见
+`docs/phase-3.54-real-model-cancel-verification.md`；未推送。
+
+---
+
 
 
 ## 实现
