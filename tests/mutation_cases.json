@@ -1292,6 +1292,72 @@
         "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_success_audit_is_consistent_and_read_only"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_approval_shape_bypass",
+      "property": "approval lifecycle field combinations are checked",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if shape_issues:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_approval_lifecycle_shape_contradiction_is_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_freshness_bypass",
+      "property": "approved audit can revalidate preview freshness",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "            audit[\"approval_freshness\"] = verdict[\"state\"]\n            if not verdict[\"valid\"]:\n",
+      "new": "            audit[\"approval_freshness\"] = verdict[\"state\"]\n            if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_approved_audit_revalidates_optional_freshness"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_intent_schema_bypass",
+      "property": "consuming intent must match the controlled operation schema",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        elif intent_issues := _audit_intent(approval, root):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_consuming_intent_must_match_expected_schema"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_failed_evidence_digest_bypass",
+      "property": "failed completion evidence digest is checked",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if result.get(\"intent\") != approval.execution_intent:\n        issues.append(\"result_intent_mismatch\")\n    digest = controlled_recovery_evidence_digest(\n        approval.execution_intent, execution, verification\n    )\n    if result.get(\"evidence_digest\") != digest:\n",
+      "new": "    if result.get(\"intent\") != approval.execution_intent:\n        issues.append(\"result_intent_mismatch\")\n    digest = controlled_recovery_evidence_digest(\n        approval.execution_intent, execution, verification\n    )\n    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_failed_evidence_corruption_is_not_verified_failure"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_missing_execution_bypass",
+      "property": "missing execution evidence never yields consistency",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if not isinstance(execution, dict):\n        issues.append(\"execution_evidence_missing\")\n    if not isinstance(verification, dict):\n        issues.append(\"verification_evidence_missing\")\n    if issues:\n        return issues\n",
+      "new": "    if False:\n        issues.append(\"execution_evidence_missing\")\n    if not isinstance(verification, dict):\n        issues.append(\"verification_evidence_missing\")\n    if issues:\n        return issues\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_missing_execution_evidence_is_never_consistent"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_result_operation_bypass",
+      "property": "completion result envelope operation is bound",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if approval.result.get(\"operation\") != CONTROLLED_RESTORE_ACTION:\n        issues.append(\"result_operation_mismatch\")\n",
+      "new": "    if False:\n        issues.append(\"result_operation_mismatch\")\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_result_envelope_mismatch_is_never_consistent"
+      ],
+      "expected": "killed"
     }
   ]
 }

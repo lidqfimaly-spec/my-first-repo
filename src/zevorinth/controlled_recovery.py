@@ -18,6 +18,7 @@ from .recovery_preview import (
     RecoveryApprovalStore,
     RecoveryPreview,
     approval_record_digest,
+    validate_recovery_approval,
 )
 
 
@@ -111,6 +112,7 @@ def _read_bounded(fd: int, limit: int) -> bytes:
 
 def _observation_base(root: Path) -> dict[str, Any]:
     return {
+        "operation": CONTROLLED_RESTORE_ACTION,
         "target": controlled_restore_target(root),
         "relative_path": CONTROLLED_RESTORE_RELATIVE_PATH,
         "expected_sha256": CONTROLLED_RESTORE_SHA256,
@@ -689,16 +691,94 @@ def execute_controlled_restore(
     }
 
 
-def _audit_stored_evidence(approval: Any) -> list[str]:
+def _audit_approval_shape(approval: Any) -> list[str]:
+    issues: list[str] = []
+    forbidden = {
+        "approved": (
+            "execution_attempt_id",
+            "claimed_at",
+            "execution_intent",
+            "intent_recorded_at",
+            "completed_at",
+            "result",
+            "verification_result",
+            "verification_passed",
+        ),
+        "revoked": (
+            "execution_attempt_id",
+            "claimed_at",
+            "execution_intent",
+            "intent_recorded_at",
+            "completed_at",
+            "result",
+            "verification_result",
+            "verification_passed",
+        ),
+        "rejected": (
+            "execution_attempt_id",
+            "claimed_at",
+            "execution_intent",
+            "intent_recorded_at",
+            "completed_at",
+            "result",
+            "verification_result",
+            "verification_passed",
+        ),
+        "consuming": (
+            "completed_at",
+            "result",
+            "verification_result",
+            "verification_passed",
+        ),
+    }
+    for field in forbidden.get(approval.status, ()):
+        if getattr(approval, field) is not None:
+            issues.append(f"{approval.status}_has_{field}")
+    if approval.status in {"consuming", "consumed", "failed"}:
+        if not approval.execution_attempt_id:
+            issues.append("claimed_state_missing_attempt")
+        if not approval.claimed_at:
+            issues.append("claimed_state_missing_claim_time")
+    return issues
+
+
+def _audit_intent(approval: Any, root: Path) -> list[str]:
+    intent = approval.execution_intent
+    if not isinstance(intent, dict):
+        return ["intent_missing"]
+    issues: list[str] = []
+    expected = {
+        "intent_version": "controlled-restore-intent-v1",
+        "execution_attempt_id": approval.execution_attempt_id,
+        "action": approval.action,
+        "target": approval.target,
+        "action_digest": approval.action_digest,
+        "workspace_root": str(root),
+        "relative_path": CONTROLLED_RESTORE_RELATIVE_PATH,
+        "expected_sha256": CONTROLLED_RESTORE_SHA256,
+        "expected_size": len(CONTROLLED_RESTORE_CONTENT),
+        "expected_mode": CONTROLLED_RESTORE_MODE,
+    }
+    for field, value in expected.items():
+        if intent.get(field) != value:
+            issues.append(f"intent_{field}_mismatch")
+    return issues
+
+
+def _audit_stored_evidence(approval: Any, root: Path) -> list[str]:
     issues: list[str] = []
     if not isinstance(approval.result, dict):
         return ["result_missing"]
     intent = approval.execution_intent
     execution = approval.result.get("execution")
     verification = approval.result.get("verification")
+    issues.extend(_audit_intent(approval, root))
     if not isinstance(intent, dict):
-        issues.append("intent_missing")
         return issues
+    if approval.result.get("operation") != CONTROLLED_RESTORE_ACTION:
+        issues.append("result_operation_mismatch")
+    if approval.result.get("target") != approval.target:
+        issues.append("result_target_mismatch")
     if not isinstance(execution, dict):
         issues.append("execution_evidence_missing")
     if not isinstance(verification, dict):
@@ -724,6 +804,23 @@ def _audit_stored_evidence(approval: Any) -> list[str]:
         or intent.get("action_digest") != approval.action_digest
     ):
         issues.append("intent_identity_mismatch")
+    for evidence, label in (
+        (execution, "execution"),
+        (verification, "verification"),
+    ):
+        if evidence.get("operation") != CONTROLLED_RESTORE_ACTION:
+            issues.append(f"{label}_operation_mismatch")
+        if evidence.get("target") != approval.target:
+            issues.append(f"{label}_target_mismatch")
+        if (
+            evidence.get("relative_path")
+            != CONTROLLED_RESTORE_RELATIVE_PATH
+        ):
+            issues.append(f"{label}_relative_path_mismatch")
+    if execution.get("bytes_written") != len(CONTROLLED_RESTORE_CONTENT):
+        issues.append("execution_size_mismatch")
+    if execution.get("mode") != CONTROLLED_RESTORE_MODE:
+        issues.append("execution_mode_mismatch")
     expected = {
         "sha256": CONTROLLED_RESTORE_SHA256,
         "size": len(CONTROLLED_RESTORE_CONTENT),
@@ -754,12 +851,58 @@ def _audit_stored_evidence(approval: Any) -> list[str]:
     return list(dict.fromkeys(issues))
 
 
+def _audit_failed_evidence(approval: Any, root: Path) -> list[str]:
+    result = approval.result
+    if not isinstance(result, dict):
+        return ["result_missing"]
+    issues: list[str] = []
+    if result.get("operation") != CONTROLLED_RESTORE_ACTION:
+        issues.append("result_operation_mismatch")
+    if result.get("target") != approval.target:
+        issues.append("result_target_mismatch")
+    if isinstance(result.get("precondition"), dict):
+        return issues
+    execution = result.get("execution")
+    verification = result.get("verification")
+    if not isinstance(execution, dict):
+        issues.append("execution_evidence_missing")
+    if not isinstance(verification, dict):
+        issues.append("verification_evidence_missing")
+    if not isinstance(approval.execution_intent, dict):
+        issues.append("intent_missing")
+    if issues:
+        return list(dict.fromkeys(issues))
+    issues.extend(_audit_intent(approval, root))
+    if result.get("intent") != approval.execution_intent:
+        issues.append("result_intent_mismatch")
+    digest = controlled_recovery_evidence_digest(
+        approval.execution_intent, execution, verification
+    )
+    if result.get("evidence_digest") != digest:
+        issues.append("evidence_digest_mismatch")
+    for evidence, label in (
+        (execution, "execution"),
+        (verification, "verification"),
+    ):
+        if evidence.get("operation") != CONTROLLED_RESTORE_ACTION:
+            issues.append(f"{label}_operation_mismatch")
+        if evidence.get("target") != approval.target:
+            issues.append(f"{label}_target_mismatch")
+        if (
+            evidence.get("relative_path")
+            != CONTROLLED_RESTORE_RELATIVE_PATH
+        ):
+            issues.append(f"{label}_relative_path_mismatch")
+    return list(dict.fromkeys(issues))
+
+
 def audit_controlled_recovery(
     store: RecoveryApprovalStore,
     approval_id: str,
     workspace_root: Path | str,
     *,
     now: str | None = None,
+    preview: RecoveryPreview | None = None,
 ) -> dict[str, Any]:
     """Audit persisted approval evidence against the current real file."""
     root = _workspace_root(workspace_root)
@@ -793,16 +936,15 @@ def audit_controlled_recovery(
             "reason": "approval_store_unreadable",
             "code": exc.code,
         }
-    if (
-        approval.action != CONTROLLED_RESTORE_ACTION
-        or approval.target != target
-    ):
+    shape_issues = _audit_approval_shape(approval)
+    if shape_issues:
         return {
             **audit,
             "status": "unverified",
-            "reason": "controlled_action_binding_mismatch",
+            "reason": "approval_state_inconsistent",
             "manual_review": True,
             "approval_status": approval.status,
+            "approval_issues": shape_issues,
             "observation": verify_controlled_restore(root),
         }
     observation = verify_controlled_restore(root)
@@ -814,18 +956,49 @@ def audit_controlled_recovery(
         intent_recorded=approval.execution_intent is not None,
         observation=observation,
         observation_digest=_canonical_digest(observation),
+        approval_freshness="not_checked",
     )
     if approval.execution_intent is not None:
         audit["intent_digest"] = _canonical_digest(
             approval.execution_intent
         )
-    if approval.status == "approved":
-        return {**audit, "status": "not_claimed"}
     if approval.status in {"revoked", "rejected"}:
         return {**audit, "status": "denied"}
+    if (
+        approval.action != CONTROLLED_RESTORE_ACTION
+        or approval.target != target
+    ):
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": "controlled_action_binding_mismatch",
+            "manual_review": True,
+        }
+    if approval.status == "approved":
+        if preview is not None:
+            verdict = validate_recovery_approval(approval, preview)
+            audit["approval_freshness"] = verdict["state"]
+            if not verdict["valid"]:
+                return {
+                    **audit,
+                    "status": "unverified",
+                    "reason": "approval_freshness_invalid",
+                    "manual_review": True,
+                    "approval_verdict": verdict,
+                }
+        return {**audit, "status": "not_claimed"}
     if approval.status == "consuming":
         if approval.execution_intent is None:
             reason = "claimed_without_persisted_intent"
+        elif intent_issues := _audit_intent(approval, root):
+            return {
+                **audit,
+                "status": "unverified",
+                "reason": "execution_intent_inconsistent",
+                "manual_review": True,
+                "intent_issues": intent_issues,
+                "execution_supported": True,
+            }
         elif observation["state"] == "target_absent":
             reason = "interrupted_before_or_during_side_effect"
         elif observation["verified"]:
@@ -840,6 +1013,16 @@ def audit_controlled_recovery(
             "execution_supported": True,
         }
     if approval.status == "failed":
+        failure_issues = _audit_failed_evidence(approval, root)
+        if failure_issues:
+            return {
+                **audit,
+                "status": "unverified",
+                "reason": "stored_failure_evidence_inconsistent",
+                "manual_review": True,
+                "evidence_issues": failure_issues,
+                "execution_supported": True,
+            }
         return {
             **audit,
             "status": "verified_failure",
@@ -858,7 +1041,7 @@ def audit_controlled_recovery(
             "reason": "approval_status_unknown",
             "manual_review": True,
         }
-    evidence_issues = _audit_stored_evidence(approval)
+    evidence_issues = _audit_stored_evidence(approval, root)
     if evidence_issues:
         return {
             **audit,
