@@ -15,9 +15,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from tests.test_lifecycle_audit_coverage import _host_test_task  # noqa: E402
 from zevorinth.controlled_recovery import (  # noqa: E402
+    ASSURANCE_LEVELS,
     CONTROLLED_RESTORE_ACTION,
     CONTROLLED_RESTORE_CONTENT,
     audit_controlled_recovery,
+    assurance_level,
     controlled_recovery_evidence_digest,
     execute_controlled_restore,
     with_controlled_restore_action,
@@ -78,6 +80,10 @@ class EvidenceTrustBoundaryTests(unittest.TestCase):
             store, approval.approval_id, workspace, now=NOW
         )
         self.assertEqual(audit["status"], "consistent")
+        self.assertEqual(audit["assurance_level"], "L1")
+        self.assertEqual(
+            audit["assurance"]["label"], "internal_consistency_only"
+        )
         self.assertEqual(
             audit["authenticity"], "not_authenticated"
         )
@@ -109,6 +115,14 @@ class EvidenceTrustBoundaryTests(unittest.TestCase):
                 for item in audit["evidence_sources"].values()
             )
         )
+        self.assertIn(
+            "claim_authenticity",
+            audit["assurance"]["prohibited_behavior"],
+        )
+        self.assertIn(
+            "automatic_retry",
+            audit["assurance"]["prohibited_behavior"],
+        )
 
     def test_single_record_tamper_in_isolated_copy_is_corrupt(self) -> None:
         service, workspace, store, approval = self._consumed()
@@ -129,6 +143,7 @@ class EvidenceTrustBoundaryTests(unittest.TestCase):
 
         self.assertEqual(audit["status"], "unverified")
         self.assertEqual(audit["code"], "approval_corrupt")
+        self.assertEqual(audit["assurance_level"], "L0")
         self.assertFalse(audit["same_privilege_rewrite_protected"])
 
     def test_coordinated_partial_rewrite_is_still_detected(self) -> None:
@@ -227,6 +242,7 @@ class EvidenceTrustBoundaryTests(unittest.TestCase):
             store, approval.approval_id, workspace, now=NOW
         )
         self.assertEqual(approved["status"], "not_claimed")
+        self.assertEqual(approved["assurance_level"], "L1")
         self.assertEqual(approved["trust_root"], "none")
 
         store.revoke(
@@ -238,8 +254,35 @@ class EvidenceTrustBoundaryTests(unittest.TestCase):
             store, approval.approval_id, workspace, now=NOW
         )
         self.assertEqual(revoked["status"], "denied")
+        self.assertEqual(revoked["assurance_level"], "L1")
         self.assertEqual(revoked["trust_root"], "none")
         self.assertEqual(revoked["authenticity"], "not_authenticated")
+
+    def test_unimplemented_assurance_levels_cannot_claim_trust(self) -> None:
+        for level in ("L2", "L3"):
+            with self.subTest(level=level):
+                definition = assurance_level(level)
+                self.assertFalse(definition["implemented"])
+                self.assertFalse(definition["evidence_authenticated"])
+                self.assertFalse(definition["security_certification"])
+                self.assertEqual(
+                    ASSURANCE_LEVELS[level]["allowed_behavior"], []
+                )
+
+    def test_l0_and_l1_behavior_contracts_deny_automation(self) -> None:
+        for level in ("L0", "L1"):
+            with self.subTest(level=level):
+                definition = assurance_level(level)
+                self.assertTrue(definition["implemented"])
+                self.assertFalse(definition["security_certification"])
+                self.assertIn(
+                    "automatic_retry",
+                    definition["prohibited_behavior"],
+                )
+                self.assertIn(
+                    "automatic_cleanup",
+                    definition["prohibited_behavior"],
+                )
 
 
 if __name__ == "__main__":

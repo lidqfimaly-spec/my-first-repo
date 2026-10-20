@@ -35,6 +35,84 @@ CONTROLLED_RESTORE_SHA256 = hashlib.sha256(
 CONTROLLED_RESTORE_MODE = 0o600
 MAX_VERIFICATION_BYTES = 4096
 Checkpoint = Callable[[str], None]
+ASSURANCE_LEVELS = {
+    "L0": {
+        "label": "missing_or_inconsistent",
+        "meaning": "evidence is missing, corrupt, contradictory or unreadable",
+        "implemented": True,
+        "allowed_behavior": [
+            "read_only_inspection",
+            "manual_review",
+        ],
+        "prohibited_behavior": [
+            "success_display",
+            "automatic_retry",
+            "automatic_cleanup",
+            "security_certification",
+        ],
+    },
+    "L1": {
+        "label": "internal_consistency_only",
+        "meaning": (
+            "local records and current observation are internally consistent"
+        ),
+        "implemented": True,
+        "allowed_behavior": [
+            "display_internal_consistency",
+            "manual_inspection",
+            "retain_existing_controlled_result",
+        ],
+        "prohibited_behavior": [
+            "claim_authenticity",
+            "claim_security_certification",
+            "automatic_retry",
+            "automatic_cleanup",
+            "general_recovery",
+        ],
+    },
+    "L2": {
+        "label": "source_authenticated",
+        "meaning": "evidence source identity is independently authenticated",
+        "implemented": False,
+        "allowed_behavior": [],
+        "prohibited_behavior": [
+            "claim_l2_until_a_trust_root_is_implemented",
+        ],
+    },
+    "L3": {
+        "label": "independent_attestation",
+        "meaning": (
+            "audit or runtime is attested independently of local permissions"
+        ),
+        "implemented": False,
+        "allowed_behavior": [],
+        "prohibited_behavior": [
+            "claim_l3_until_external_attestation_is_implemented",
+        ],
+    },
+}
+
+
+def assurance_level(level: str) -> dict[str, Any]:
+    definition = ASSURANCE_LEVELS[level]
+    return {
+        "level": level,
+        **definition,
+        "evidence_authenticated": (
+            definition["implemented"] and level in {"L2", "L3"}
+        ),
+        "security_certification": (
+            definition["implemented"] and level == "L3"
+        ),
+    }
+
+
+def _with_assurance(audit: dict[str, Any], level: str) -> dict[str, Any]:
+    return {
+        **audit,
+        "assurance_level": level,
+        "assurance": assurance_level(level),
+    }
 
 
 def _canonical_digest(value: Any) -> str:
@@ -967,6 +1045,7 @@ def audit_controlled_recovery(
         "execution_supported": False,
         "general_recovery_supported": False,
     }
+    audit = _with_assurance(audit, "L0")
     try:
         approval = store.load(approval_id)
     except ApprovalStoreError as exc:
@@ -1004,7 +1083,7 @@ def audit_controlled_recovery(
             approval.execution_intent
         )
     if approval.status in {"revoked", "rejected"}:
-        return {**audit, "status": "denied"}
+        return _with_assurance({**audit, "status": "denied"}, "L1")
     if (
         approval.action != CONTROLLED_RESTORE_ACTION
         or approval.target != target
@@ -1027,7 +1106,9 @@ def audit_controlled_recovery(
                     "manual_review": True,
                     "approval_verdict": verdict,
                 }
-        return {**audit, "status": "not_claimed"}
+        return _with_assurance(
+            {**audit, "status": "not_claimed"}, "L1"
+        )
     if approval.status == "consuming":
         if approval.execution_intent is None:
             reason = "claimed_without_persisted_intent"
@@ -1065,7 +1146,7 @@ def audit_controlled_recovery(
                 "execution_supported": True,
             }
         return {
-            **audit,
+            **_with_assurance(audit, "L1"),
             "status": "verified_failure",
             "reason": (
                 "failed_attempt_with_currently_verified_target"
@@ -1115,7 +1196,7 @@ def audit_controlled_recovery(
             "execution_supported": True,
         }
     return {
-        **audit,
+        **_with_assurance(audit, "L1"),
         "status": "consistent",
         "reason": "stored_evidence_and_current_file_match",
         "evidence_digest": approval.result.get("evidence_digest"),

@@ -1413,6 +1413,83 @@
         "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_audit_distinguishes_consistency_from_authenticity"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "assurance_l0_overclaimed_as_l1",
+      "property": "missing or corrupt evidence remains L0",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    audit = _with_assurance(audit, \"L0\")\n",
+      "new": "    audit = _with_assurance(audit, \"L1\")\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_single_record_tamper_in_isolated_copy_is_corrupt"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_consistent_level_overclaimed",
+      "property": "consistent audit remains L1",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    return {\n        **_with_assurance(audit, \"L1\"),\n        \"status\": \"consistent\",\n",
+      "new": "    return {\n        **_with_assurance(audit, \"L2\"),\n        \"status\": \"consistent\",\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_audit_distinguishes_consistency_from_authenticity"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_l2_marked_implemented",
+      "property": "L2 remains an unimplemented design target",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"label\": \"source_authenticated\",\n        \"meaning\": \"evidence source identity is independently authenticated\",\n        \"implemented\": False,\n",
+      "new": "        \"label\": \"source_authenticated\",\n        \"meaning\": \"evidence source identity is independently authenticated\",\n        \"implemented\": True,\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_unimplemented_assurance_levels_cannot_claim_trust"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_l3_marked_implemented",
+      "property": "L3 remains an unimplemented design target",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"label\": \"independent_attestation\",\n        \"meaning\": (\n            \"audit or runtime is attested independently of local permissions\"\n        ),\n        \"implemented\": False,\n",
+      "new": "        \"label\": \"independent_attestation\",\n        \"meaning\": (\n            \"audit or runtime is attested independently of local permissions\"\n        ),\n        \"implemented\": True,\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_unimplemented_assurance_levels_cannot_claim_trust"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_unimplemented_level_authenticated",
+      "property": "unimplemented levels cannot report authenticated evidence",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"evidence_authenticated\": (\n            definition[\"implemented\"] and level in {\"L2\", \"L3\"}\n        ),\n",
+      "new": "        \"evidence_authenticated\": (\n            level in {\"L2\", \"L3\"}\n        ),\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_unimplemented_assurance_levels_cannot_claim_trust"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_unimplemented_level_security_certified",
+      "property": "unimplemented L3 cannot report security certification",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"security_certification\": (\n            definition[\"implemented\"] and level == \"L3\"\n        ),\n",
+      "new": "        \"security_certification\": (\n            level == \"L3\"\n        ),\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_unimplemented_assurance_levels_cannot_claim_trust"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_l1_allows_retry",
+      "property": "L1 never permits automatic retry",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"prohibited_behavior\": [\n            \"claim_authenticity\",\n            \"claim_security_certification\",\n            \"automatic_retry\",\n",
+      "new": "        \"prohibited_behavior\": [\n            \"claim_authenticity\",\n            \"claim_security_certification\",\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_l0_and_l1_behavior_contracts_deny_automation"
+      ],
+      "expected": "killed"
     }
   ]
 }
