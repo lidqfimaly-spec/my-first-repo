@@ -570,6 +570,30 @@
 
 ---
 
+# 第 3.62 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_storage_integrity_faults.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.62-database-evidence-integrity-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/task_lifecycle.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.62/storage-integrity-matrix.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.62/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.62/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增

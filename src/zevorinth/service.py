@@ -55,7 +55,7 @@ from .planner import WRITE_TEXT_ARTIFACT, DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
 from .state_machine import is_terminal
 from .verifier import ArtifactVerifier, TestResultVerifier
-from .task_lifecycle import audit_task_lifecycle
+from .task_lifecycle import audit_storage_error, audit_task_lifecycle
 from .workspace_snapshot import (
     EffectPolicy,
     Snapshot,
@@ -392,7 +392,14 @@ class TaskService:
         self, task_id: str, *, now: str | None = None
     ) -> dict[str, Any]:
         """Read-only audit of task, evidence and cleanup consistency."""
-        task = self.store.require_task(task_id)
+        try:
+            task = self.store.require_task(task_id)
+        except Exception as exc:
+            return audit_storage_error(task_id, exc, now=now)
+        try:
+            events = self.store.list_events(task_id)
+        except Exception as exc:
+            return audit_storage_error(task_id, exc, now=now)
         evidence_state = None
         evidence = (
             task.tool_result.test_evidence
@@ -433,7 +440,7 @@ class TaskService:
                 }
         return audit_task_lifecycle(
             task,
-            self.store.list_events(task_id),
+            events,
             now=now,
             evidence_state=evidence_state,
         )

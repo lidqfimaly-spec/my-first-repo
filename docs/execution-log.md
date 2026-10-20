@@ -1217,6 +1217,40 @@ evidence。
 
 ---
 
+# 第 3.62 阶段执行记录
+
+## 实现
+
+- 损坏的 DB 副本显式打开失败，原始库不受影响；
+- task_json 损坏时 audit_lifecycle 返回 storage_unreadable 和 manual_review；
+- evidence 缺失/损坏被标记 blocked/unverified，成功任务不能通过审计；
+- 审计前后数据库和 evidence 文件保持不变；
+- safe_to_retry 对不可信存储保持 false。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 存储完整性矩阵 | 4/4 |
+| 系统 Python 全量 | 647/647 |
+| `.venv` 全量 | 647/647 |
+| Mutation runner | 74 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 数据库损坏仅显式失败，不自动修复；
+- 历史迁移和自动清理未实现；
+- 详见 `docs/phase-3.62-database-evidence-integrity-audit.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 # 第 3.61 阶段执行记录
 
 ## 实现

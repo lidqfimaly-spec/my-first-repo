@@ -858,6 +858,17 @@
         "tests.test_task_lifecycle_audit.TaskLifecycleAuditTests.test_old_pending_cleanup_intent_is_expired"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "storage_failure_reported_success",
+      "property": "unreadable storage is never reported as a successful audit",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        \"ok\": False,\n",
+      "new": "        \"ok\": True,\n",
+      "tests": [
+        "tests.test_storage_integrity_faults.StorageIntegrityFaultTests.test_corrupt_task_json_returns_structured_storage_failure"
+      ],
+      "expected": "killed"
     }
   ]
 }

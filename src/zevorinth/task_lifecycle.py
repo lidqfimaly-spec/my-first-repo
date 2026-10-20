@@ -25,6 +25,43 @@ def _parse_time(value: object) -> datetime | None:
     return parsed
 
 
+def audit_storage_error(
+    task_id: str,
+    error: BaseException,
+    *,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Return a safe report when the store cannot provide trustworthy data."""
+    checked = _parse_time(now) if now else datetime.now(timezone.utc)
+    if checked is None:
+        checked = datetime.now(timezone.utc)
+    return {
+        "task_id": task_id,
+        "auditor_version": AUDITOR_VERSION,
+        "checked_at": checked.isoformat(timespec="milliseconds"),
+        "scope": "consistency_only",
+        "security_certification": False,
+        "status": "unknown",
+        "phase": "unreadable",
+        "tool": None,
+        "ok": False,
+        "issues": [
+            {
+                "code": "storage_unreadable",
+                "detail": type(error).__name__,
+            }
+        ],
+        "evidence_state": {"state": "unverified", "reasons": ["storage"]},
+        "task_recovery": {
+            "safe_to_retry": False,
+            "manual_intervention": True,
+            "recommendation": "manual_review",
+        },
+        "cleanup_operations": [],
+        "event_types": [],
+    }
+
+
 def _cleanup_operation_states(
     events: Iterable[Event],
     *,
