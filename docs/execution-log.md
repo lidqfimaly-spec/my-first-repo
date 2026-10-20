@@ -598,6 +598,38 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.20 阶段执行记录
+
+## 实现
+
+- 清理先持久化 `cleanup_intent`，再执行隔离与删除；
+- 文件 `rename` 到任务目录内 `.quarantine/<op_id>/`，重新打开核对 inode 与哈希；
+- 新增只读对账 `reconcile_cleanup` / `reconcile_cleanup_operation`；
+- 审计矩阵补齐路径穿越、绝对路径、符号链接、缺少所有权、旧 generation 等真实负向样本。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 432/432，exit 0 |
+| 对账专项 | 12/12 |
+| 竞态专项 | 14/14 |
+| 稳定结果复现 | `ea33fe62…` 两次一致 |
+| Mutation runner | 35 killed |
+| 覆盖率门禁 | 432 项通过，11/11 PASS |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- TOCTOU 未消除；
+- 隔离对象保留，需要后续保留策略；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.20-cleanup-quarantine-recovery-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.19 阶段执行记录
 
 ## 实现

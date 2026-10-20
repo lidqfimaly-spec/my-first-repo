@@ -64,6 +64,7 @@ from .workspace_effects import build_workspace_effects, validate_workspace_effec
 from .workspace_cleanup import (
     execute_cleanup,
     plan_cleanup,
+    reconcile_cleanup,
     summarize_batch,
 )
 
@@ -399,6 +400,19 @@ class TaskService:
                 "relative_path": path,
                 "decision": decision.to_dict(),
             }
+            operation_id = str(uuid4())
+            record["operation_id"] = operation_id
+            record["intent_persisted"] = self._record_cleanup_intent(
+                task,
+                {
+                    "operation_id": operation_id,
+                    "task_id": task_id,
+                    "attempt_id": task.attempt_id,
+                    "claim_generation": task.claim_generation,
+                    "relative_path": path,
+                    "expected_sha256": decision.expected_sha256,
+                },
+            )
             if not decision.allowed:
                 record.update(
                     status="rejected", code=decision.code, removed=False
@@ -409,6 +423,7 @@ class TaskService:
                         decision,
                         workspace_root=root,
                         checkpoint=checkpoint,
+                        operation_id=operation_id,
                     )
                 )
             if record.get("status") == "completed":
@@ -421,14 +436,75 @@ class TaskService:
             "files": results,
         }
 
+    def _record_cleanup_intent(
+        self, task: Task, payload: dict[str, Any]
+    ) -> bool:
+        try:
+            self.store.record_event_and_update(
+                task.task_id, "cleanup_intent", self.clock(), payload=payload
+            )
+        except Exception:
+            return False
+        return True
+
+    def reconcile_cleanup_operation(
+        self, task_id: str, operation_id: str
+    ) -> dict[str, Any]:
+        """Read-only reconciliation of one cleanup operation."""
+        task = self.store.require_task(task_id)
+        effects = (
+            task.tool_result.workspace_effects
+            if task.tool_result is not None
+            else None
+        )
+        if effects is None:
+            return {"state": "reconciled_unverified", "reason": "no effects"}
+        events = self.store.list_events(task_id)
+        intent = next(
+            (
+                e
+                for e in events
+                if e.event_type == "cleanup_intent"
+                and e.payload.get("operation_id") == operation_id
+            ),
+            None,
+        )
+        if intent is None:
+            return {
+                "operation_id": operation_id,
+                "state": "reconciled_unverified",
+                "reason": "no persisted cleanup intent",
+            }
+        completed = any(
+            e.event_type == "cleanup_completed"
+            and e.payload.get("operation_id") == operation_id
+            for e in events
+        )
+        workspace = str(effects.get("workspace"))
+        root = (
+            resolve_workspace(self.project_root, workspace)
+            if effects.get("operation") == RUN_TESTS_TOOL
+            else self.artifacts_root / workspace
+        )
+        return reconcile_cleanup(
+            workspace_root=root,
+            relative_path=str(intent.payload.get("relative_path")),
+            operation_id=operation_id,
+            expected_sha256=str(intent.payload.get("expected_sha256")),
+            intent_persisted=True,
+            completed_event=completed,
+            current_generation=task.claim_generation,
+            record_generation=int(intent.payload.get("claim_generation", -1)),
+        )
+
     def _record_cleanup_event(
         self, task: Task, record: dict[str, Any]
     ) -> None:
-        event_type = (
-            "cleanup_completed"
-            if record.get("status") == "completed"
-            else "cleanup_rejected"
-        )
+        status = record.get("status")
+        event_type = {
+            "completed": "cleanup_completed",
+            "unverified": "cleanup_unverified",
+        }.get(status, "cleanup_rejected")
         try:
             self.store.record_event_and_update(
                 task.task_id,

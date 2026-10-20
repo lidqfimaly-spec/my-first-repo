@@ -91,7 +91,7 @@ class CleanupRaceTests(unittest.TestCase):
             path.unlink()
             os.symlink(outside, path)
 
-        outcome, state = self._run_with(mutate, "before_unlink")
+        outcome, state = self._run_with(mutate, "before_quarantine")
         self.assertEqual(outcome["status"], "unverified")
         self.assertEqual(outcome["code"], "target_replaced")
         self.assertTrue(state["is_symlink"])
@@ -102,7 +102,7 @@ class CleanupRaceTests(unittest.TestCase):
             replacement.write_text("hi\n")
             os.replace(replacement, path)
 
-        outcome, state = self._run_with(mutate, "before_unlink")
+        outcome, state = self._run_with(mutate, "before_quarantine")
         self.assertEqual(outcome["code"], "target_replaced")
         self.assertTrue(state["exists"])
 
@@ -115,7 +115,7 @@ class CleanupRaceTests(unittest.TestCase):
             moved = root / "old-task-dir"
 
             def checkpoint(stage: str) -> None:
-                if stage != "before_unlink":
+                if stage != "before_quarantine":
                     return
                 task_dir.rename(moved)
                 task_dir.mkdir()
@@ -194,7 +194,7 @@ class CleanupRaceTests(unittest.TestCase):
 
     def test_disappearing_target_is_not_reported_as_removed(self) -> None:
         outcome, state = self._run_with(
-            lambda path: path.unlink(), "before_unlink"
+            lambda path: path.unlink(), "before_quarantine"
         )
         self.assertIn(
             outcome["status"], {"rejected", "unverified", "failed"}
@@ -257,6 +257,50 @@ class CleanupRaceTests(unittest.TestCase):
             )
             self.assertEqual(result["files"][0]["code"], "not_owned")
             self.assertTrue(sibling.exists())
+
+    def test_new_file_after_quarantine_survives(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service, task, target = _written(root)
+            decision = _plan(service, task, "a.txt", root)
+
+            def checkpoint(stage: str) -> None:
+                if stage == "before_unlink":
+                    target.write_text("recreated by someone else\n")
+
+            outcome = execute_cleanup(
+                decision,
+                workspace_root=root / "artifacts" / task.task_id,
+                checkpoint=checkpoint,
+            )
+            self.assertEqual(outcome["status"], "completed")
+            self.assertTrue(target.exists())
+            self.assertEqual(
+                target.read_text(), "recreated by someone else\n"
+            )
+
+    def test_quarantine_object_modified_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service, task, target = _written(root)
+            task_dir = root / "artifacts" / task.task_id
+            decision = _plan(service, task, "a.txt", root)
+
+            def checkpoint(stage: str) -> None:
+                if stage != "after_quarantine":
+                    return
+                for path in (task_dir / ".quarantine").rglob("a.txt"):
+                    path.write_text("changed in quarantine\n")
+
+            outcome = execute_cleanup(
+                decision,
+                workspace_root=task_dir,
+                checkpoint=checkpoint,
+            )
+            self.assertEqual(outcome["status"], "unverified")
+            self.assertEqual(outcome["code"], "quarantine_mismatch")
+            self.assertFalse(outcome["removed"])
+            self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":

@@ -273,6 +273,8 @@ def run_audit() -> dict[str, Any]:
 
 
 def _cleanup_scenarios() -> list[dict[str, Any]]:
+    import os
+
     from zevorinth.models import TaskRequest as _Request
 
     results: list[dict[str, Any]] = []
@@ -353,6 +355,63 @@ def _cleanup_scenarios() -> list[dict[str, Any]]:
                 "status": batch["batch_status"],
                 "passed": batch["batch_status"] == "partial",
             }
+        )
+        traversal = service.cleanup_workspace_file(
+            task.task_id, "../x", enabled=True, authorized=True
+        )
+        absolute = service.cleanup_workspace_file(
+            task.task_id, "/etc/passwd", enabled=True, authorized=True
+        )
+        sister = root / "artifacts" / task.task_id / "sister.txt"
+        sister.write_text("mine\n")
+        not_owned = service.cleanup_workspace_file(
+            task.task_id, "sister.txt", enabled=True, authorized=True
+        )
+        symlink_task = service.submit(
+            _Request(
+                goal="write symlink target",
+                operation="write_text_artifact",
+                parameters={"artifact_path": "s.txt", "content": "s\n"},
+            )
+        )
+        symlink_dir = root / "artifacts" / symlink_task.task_id
+        outside = root / "outside-s.txt"
+        outside.write_text("s\n")
+        (symlink_dir / "s.txt").unlink()
+        os.symlink(outside, symlink_dir / "s.txt")
+        symlinked = service.cleanup_workspace_file(
+            symlink_task.task_id, "s.txt", enabled=True, authorized=True
+        )
+        from zevorinth.workspace_cleanup import plan_cleanup
+
+        stale_decision = plan_cleanup(
+            effects=task.tool_result.workspace_effects,
+            workspace_root=root / "artifacts" / task.task_id,
+            relative_path="a.txt",
+            current_generation=task.claim_generation + 1,
+            enabled=True,
+            authorized=True,
+        )
+        stale = {"status": "rejected", "code": stale_decision.code}
+        reconciled = service.reconcile_cleanup_operation(
+            task.task_id, completed["operation_id"]
+        )
+        results.extend(
+            [
+                {"id": "C-9-traversal", "status": traversal["status"],
+                 "code": traversal["code"], "passed": traversal["code"] == "invalid_path"},
+                {"id": "C-10-absolute", "status": absolute["status"],
+                 "code": absolute["code"], "passed": absolute["code"] == "invalid_path"},
+                {"id": "C-11-not-owned", "status": not_owned["status"],
+                 "code": not_owned["code"], "passed": not_owned["code"] == "not_owned"},
+                {"id": "C-12-symlink", "status": symlinked["status"],
+                 "code": symlinked["code"], "passed": symlinked["code"] in {"unsafe_path", "target_replaced"}},
+                {"id": "C-13-stale", "status": stale["status"],
+                 "code": stale["code"], "passed": stale["code"] == "stale_generation"},
+                {"id": "C-14-reconcile", "status": reconciled["state"],
+                 "code": reconciled.get("reason"),
+                 "passed": reconciled["state"] == "reconciled_completed"},
+            ]
         )
         results.append(
             {
@@ -484,6 +543,25 @@ def _report(
         ),
         "cleanup_unverified": sum(
             1 for item in cleanup if item.get("status") == "unverified"
+        ),
+        "cleanup_intents_created": len(cleanup),
+        "quarantine_operations_completed": sum(
+            1 for item in cleanup if item.get("status") == "completed"
+        ),
+        "quarantine_identity_mismatches": sum(
+            1 for item in cleanup if item.get("code") == "quarantine_mismatch"
+        ),
+        "reconciliation_completed": sum(
+            1 for item in cleanup if item.get("status") == "reconciled_completed"
+        ),
+        "reconciliation_pending": sum(
+            1 for item in cleanup if item.get("status") == "reconciled_pending"
+        ),
+        "reconciliation_conflicts": sum(
+            1 for item in cleanup if item.get("status") == "reconciled_conflict"
+        ),
+        "reconciliation_unverified": sum(
+            1 for item in cleanup if item.get("status") == "reconciled_unverified"
         ),
     }
     metric_audit = {

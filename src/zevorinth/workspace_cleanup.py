@@ -26,6 +26,15 @@ from .workspace_snapshot import EffectPolicy, SnapshotError
 
 MAX_CLEANUP_BYTES = 1024 * 1024
 CHECKPOINTS = ("opened", "verified", "before_unlink", "after_unlink")
+QUARANTINE_DIR = ".quarantine"
+QUARANTINE_CHECKPOINTS = (
+    "opened",
+    "before_quarantine",
+    "after_quarantine",
+    "quarantine_verified",
+    "before_unlink",
+    "after_unlink",
+)
 
 
 class CleanupError(RuntimeError):
@@ -229,8 +238,14 @@ def execute_cleanup(
     *,
     workspace_root: Path | None = None,
     checkpoint: Callable[[str], None] | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Delete the planned target through directory handles."""
+    """Move the verified target into quarantine, re-verify it, then unlink.
+
+    ``rename`` keeps the file on the same filesystem, so no copy fallback is
+    needed.  The object is re-opened **from the quarantine directory** and its
+    inode and hash are checked again before deletion.
+    """
     if not decision.allowed or not decision._parts:
         return {
             "status": "rejected",
@@ -246,9 +261,12 @@ def execute_cleanup(
             "reason": "workspace root is required",
             "removed": False,
         }
-    root_fd = None
-    parent_fd = None
-    file_fd = None
+    op_id = operation_id or f"op-{os.getpid()}-{id(decision):x}"
+    base = {
+        "relative_path": decision.relative_path,
+        "operation_id": op_id,
+    }
+    root_fd = parent_fd = file_fd = qdir_fd = opdir_fd = qfile_fd = None
     try:
         root_fd = os.open(
             workspace_root,
@@ -266,101 +284,197 @@ def execute_cleanup(
             checkpoint("opened")
         info = os.fstat(file_fd)
         if not stat.S_ISREG(info.st_mode):
-            return {
-                "status": "rejected",
-                "code": "not_a_file",
-                "reason": "target is not a regular file",
-                "removed": False,
-                "relative_path": decision.relative_path,
-            }
+            return {**base, "status": "rejected", "code": "not_a_file",
+                    "reason": "target is not a regular file", "removed": False}
         data = _read_fd(file_fd)
         actual = hashlib.sha256(data).hexdigest()
         if actual != decision.expected_sha256:
-            return {
-                "status": "rejected",
-                "code": "hash_mismatch",
-                "reason": "content does not match the ownership record",
-                "removed": False,
-                "relative_path": decision.relative_path,
-            }
+            return {**base, "status": "rejected", "code": "hash_mismatch",
+                    "reason": "content does not match the ownership record",
+                    "removed": False}
         if checkpoint is not None:
             checkpoint("verified")
-            checkpoint("before_unlink")
-        # Narrow the window: the name must still refer to the same inode.
+            checkpoint("before_quarantine")
         try:
-            current = os.stat(
-                name, dir_fd=parent_fd, follow_symlinks=False
-            )
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             current = None
         if current is None or (current.st_dev, current.st_ino) != (
             info.st_dev,
             info.st_ino,
         ):
+            return {**base, "status": "unverified", "code": "target_replaced",
+                    "reason": "target changed between verification and move",
+                    "removed": False}
+        try:
+            os.mkdir(QUARANTINE_DIR, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        qdir_fd = os.open(
+            QUARANTINE_DIR,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        os.mkdir(op_id, 0o700, dir_fd=qdir_fd)
+        opdir_fd = os.open(
+            op_id,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=qdir_fd,
+        )
+        os.rename(
+            name, name, src_dir_fd=parent_fd, dst_dir_fd=opdir_fd
+        )
+        if checkpoint is not None:
+            checkpoint("after_quarantine")
+        # Re-open the object from quarantine and verify identity + content.
+        qfile_fd = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=opdir_fd,
+        )
+        qinfo = os.fstat(qfile_fd)
+        qdata = _read_fd(qfile_fd)
+        qdigest = hashlib.sha256(qdata).hexdigest()
+        identity_ok = (qinfo.st_dev, qinfo.st_ino) == (info.st_dev, info.st_ino)
+        if not identity_ok or qdigest != decision.expected_sha256:
             return {
+                **base,
                 "status": "unverified",
-                "code": "target_replaced",
-                "reason": "target changed between verification and unlink",
+                "code": "quarantine_mismatch",
+                "reason": "quarantined object does not match the record",
                 "removed": False,
-                "relative_path": decision.relative_path,
+                "quarantine_path": f"{QUARANTINE_DIR}/{op_id}/{name}",
+                "identity_verified": identity_ok,
+                "hash_verified": qdigest == decision.expected_sha256,
             }
-        os.unlink(name, dir_fd=parent_fd)
+        if checkpoint is not None:
+            checkpoint("quarantine_verified")
+            checkpoint("before_unlink")
+        os.unlink(name, dir_fd=opdir_fd)
         if checkpoint is not None:
             checkpoint("after_unlink")
         try:
-            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            os.stat(name, dir_fd=opdir_fd, follow_symlinks=False)
             gone = False
         except FileNotFoundError:
             gone = True
         return {
+            **base,
             "status": "completed" if gone else "unverified",
             "code": "removed" if gone else "removal_unconfirmed",
             "reason": "file removed" if gone else "file still present",
             "removed": gone,
-            "relative_path": decision.relative_path,
             "sha256": decision.expected_sha256,
             "device": info.st_dev,
             "inode": info.st_ino,
+            "quarantine_path": f"{QUARANTINE_DIR}/{op_id}/{name}",
+            "identity_verified": True,
+            "hash_verified": True,
         }
     except CleanupError as exc:
-        return {
-            "status": "rejected",
-            "code": exc.code,
-            "reason": exc.message,
-            "removed": False,
-            "relative_path": decision.relative_path,
-        }
+        return {**base, "status": "rejected", "code": exc.code,
+                "reason": exc.message, "removed": False}
     except FileNotFoundError:
-        return {
-            "status": "rejected",
-            "code": "missing_target",
-            "reason": "target does not exist",
-            "removed": False,
-            "relative_path": decision.relative_path,
-        }
+        return {**base, "status": "rejected", "code": "missing_target",
+                "reason": "target does not exist", "removed": False}
+    except FileExistsError:
+        return {**base, "status": "unverified",
+                "code": "quarantine_conflict",
+                "reason": "quarantine entry already exists", "removed": False}
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-            return {
-                "status": "rejected",
-                "code": "unsafe_path",
-                "reason": "path component is a symlink or not a directory",
-                "removed": False,
-                "relative_path": decision.relative_path,
-            }
-        return {
-            "status": "failed",
-            "code": "unlink_failed",
-            "reason": type(exc).__name__,
-            "removed": False,
-            "relative_path": decision.relative_path,
-        }
+            return {**base, "status": "rejected", "code": "unsafe_path",
+                    "reason": "path component is a symlink or not a directory",
+                    "removed": False}
+        return {**base, "status": "failed", "code": "quarantine_failed",
+                "reason": type(exc).__name__, "removed": False}
     finally:
-        for fd in (file_fd, parent_fd, root_fd):
+        for fd in (qfile_fd, opdir_fd, qdir_fd, file_fd, parent_fd, root_fd):
             if fd is not None:
                 try:
                     os.close(fd)
                 except OSError:
                     pass
+
+
+def reconcile_cleanup(
+    *,
+    workspace_root: Path,
+    relative_path: str,
+    operation_id: str,
+    expected_sha256: str,
+    intent_persisted: bool,
+    completed_event: bool,
+    current_generation: int,
+    record_generation: int,
+) -> dict[str, Any]:
+    """Read-only reconciliation of one cleanup operation."""
+    if current_generation != record_generation:
+        return {
+            "operation_id": operation_id,
+            "state": "reconciled_conflict",
+            "reason": "generation no longer matches the ownership record",
+        }
+    if not intent_persisted:
+        return {
+            "operation_id": operation_id,
+            "state": "reconciled_unverified",
+            "reason": "no persisted cleanup intent",
+        }
+    parts = tuple(p for p in relative_path.split("/") if p)
+    original = workspace_root.joinpath(*parts)
+    quarantine = (
+        workspace_root.joinpath(*parts[:-1], QUARANTINE_DIR, operation_id, parts[-1])
+    )
+    original_exists = original.exists() or original.is_symlink()
+    quarantine_exists = quarantine.exists() or quarantine.is_symlink()
+    quarantine_hash = None
+    if quarantine_exists and quarantine.is_file() and not quarantine.is_symlink():
+        quarantine_hash = hashlib.sha256(quarantine.read_bytes()).hexdigest()
+    base = {
+        "operation_id": operation_id,
+        "relative_path": relative_path,
+        "original_exists": original_exists,
+        "quarantine_exists": quarantine_exists,
+        "quarantine_sha256": quarantine_hash,
+    }
+    if completed_event:
+        if not original_exists and not quarantine_exists:
+            return {**base, "state": "reconciled_completed"}
+        return {
+            **base,
+            "state": "reconciled_conflict",
+            "reason": "completion recorded but filesystem disagrees",
+        }
+    if original_exists and quarantine_exists:
+        return {
+            **base,
+            "state": "reconciled_conflict",
+            "reason": "both the original and the quarantined copy exist",
+        }
+    if original_exists and not quarantine_exists:
+        return {**base, "state": "reconciled_not_executed"}
+    if quarantine_exists:
+        if quarantine_hash != expected_sha256:
+            return {
+                **base,
+                "state": "reconciled_conflict",
+                "reason": "quarantined content does not match the record",
+            }
+        return {
+            **base,
+            "state": "reconciled_pending",
+            "reason": "file is quarantined and verified but not deleted",
+        }
+    return {
+        **base,
+        "state": "reconciled_unverified",
+        "reason": "neither the original nor the quarantined object exists",
+    }
 
 
 def summarize_batch(results: list[dict[str, Any]]) -> str:

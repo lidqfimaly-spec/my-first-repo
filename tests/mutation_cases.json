@@ -379,6 +379,39 @@
         "tests.test_workspace_cleanup.CleanupTests.test_protected_path_is_refused"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "quarantine_hash_skipped",
+      "property": "quarantined content is re-hashed",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "        if not identity_ok or qdigest != decision.expected_sha256:\n",
+      "new": "        if not identity_ok:\n",
+      "tests": [
+        "tests.test_cleanup_races.CleanupRaceTests.test_quarantine_object_modified_before_verification"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "reconcile_completed_ignores_fs",
+      "property": "completion must agree with the filesystem",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "        if not original_exists and not quarantine_exists:\n            return {**base, \"state\": \"reconciled_completed\"}\n",
+      "new": "        if True:\n            return {**base, \"state\": \"reconciled_completed\"}\n",
+      "tests": [
+        "tests.test_cleanup_reconciliation.ReconciliationTests.test_completed_event_with_existing_file_is_conflict"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "reconcile_pending_as_completed",
+      "property": "pending operations are not reported complete",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "            \"state\": \"reconciled_pending\",\n",
+      "new": "            \"state\": \"reconciled_completed\",\n",
+      "tests": [
+        "tests.test_cleanup_reconciliation.ReconciliationTests.test_quarantined_but_not_deleted_is_pending"
+      ],
+      "expected": "killed"
     }
   ]
 }
