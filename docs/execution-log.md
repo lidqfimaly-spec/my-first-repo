@@ -682,6 +682,44 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.42 阶段执行记录
+
+## 调查
+
+- `type` 来自模型 `output_text` 解析出的候选顶层对象，不是 SDK 包装字段；
+- 原始候选未持久化，`type` 的值和语义无法确定；
+- 无跨供应商证据，不能断言是 DeepSeek 特有兼容字段。
+
+## 实现
+
+- 失败路径增加安全形状摘要：`candidate_fields`、`candidate_field_count`、
+  `candidate_classification`、`candidate_operation`；
+- 字段名限长并脱敏，不保存原始候选文本或任意字段值；
+- 未实施 `type` 规范化，未知字段仍 fail-closed。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 新增诊断专项 | 12/12 |
+| Planner / run_tests / 证据 / 执行器专项 | 118/118 |
+| 系统 Python 全量 unittest（单独） | 571/571，exit 0 |
+| `.venv` 全量 unittest（单独） | 571/571，exit 0 |
+| Mutation runner | 60 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+并行运行两套全量测试时，`test_cancel_during_container_run_stops_it` 因全局
+`docker ps --filter name=zv-` 误判另一套测试的容器而失败；单独运行通过，未修改断言。
+
+## 边界
+
+- 真实模型 API 请求：0；
+- `type` 值/语义未确定；
+- 详见 `docs/phase-3.42-candidate-diagnostics-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现

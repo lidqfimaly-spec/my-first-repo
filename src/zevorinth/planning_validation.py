@@ -78,12 +78,14 @@ class PlanningCandidateValidator:
                 "planner candidate must be an object",
                 base_metadata,
             )
+        candidate_shape = _candidate_shape(candidate)
+        diagnostic_metadata = {**base_metadata, **candidate_shape}
         unknown_fields = sorted(set(candidate) - CANDIDATE_FIELDS)
         if unknown_fields:
             return self._failed(
                 "unknown_candidate_fields",
                 "planner candidate contains fields outside the local contract",
-                base_metadata,
+                diagnostic_metadata,
                 extra={"candidate_unknown_fields": _safe_field_names(unknown_fields)},
             )
         try:
@@ -92,13 +94,13 @@ class PlanningCandidateValidator:
             return self._failed(
                 "invalid_candidate",
                 "planner candidate is not JSON serializable",
-                base_metadata,
+                diagnostic_metadata,
             )
         if len(encoded) > MAX_MODEL_RESPONSE_BYTES:
             return self._failed(
                 "candidate_too_large",
                 "planner candidate exceeds the response size limit",
-                {**base_metadata, "candidate_bytes": len(encoded)},
+                {**diagnostic_metadata, "candidate_bytes": len(encoded)},
             )
 
         classification = candidate.get("classification")
@@ -107,7 +109,7 @@ class PlanningCandidateValidator:
                 "invalid_candidate_classification",
                 "classification must be plan, clarification, or unsupported",
                 {
-                    **base_metadata,
+                    **diagnostic_metadata,
                     "candidate_classification": "invalid",
                 },
             )
@@ -122,20 +124,25 @@ class PlanningCandidateValidator:
                 "missing_candidate_fields",
                 "planner candidate is missing category-specific fields",
                 {
-                    **base_metadata,
+                    **diagnostic_metadata,
                     "candidate_classification": classification,
                     "candidate_missing_fields": list(missing_fields),
                 },
             )
         if classification == "clarification":
-            return self._clarification(normalized, base_request, base_metadata)
+            return self._clarification(
+                normalized,
+                base_request,
+                base_metadata,
+                candidate_shape,
+            )
         if classification == "unsupported":
             reason = normalized.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 return self._failed(
                     "invalid_unsupported_reason",
                     "unsupported candidate must contain a reason",
-                    base_metadata,
+                    diagnostic_metadata,
                 )
             return PlanningOutcome(
                 classification=PlanningClassification.UNSUPPORTED,
@@ -147,17 +154,29 @@ class PlanningCandidateValidator:
                     "candidate_validation": "passed",
                 },
             )
-        return self._plan(normalized, base_request, base_metadata)
+        return self._plan(
+            normalized,
+            base_request,
+            base_metadata,
+            candidate_shape,
+        )
 
     def _plan(
         self,
         candidate: Mapping[str, Any],
         base_request: TaskRequest,
         metadata: dict[str, Any],
+        candidate_shape: Mapping[str, Any],
     ) -> PlanningOutcome:
+        failure_metadata = {**metadata, **candidate_shape}
         operation = candidate.get("operation")
         if operation == RUN_TESTS:
-            return self._plan_test(candidate, base_request, metadata)
+            return self._plan_test(
+                candidate,
+                base_request,
+                metadata,
+                candidate_shape,
+            )
         if operation != WRITE_TEXT_ARTIFACT:
             return PlanningOutcome(
                 classification=PlanningClassification.UNSUPPORTED,
@@ -165,7 +184,7 @@ class PlanningCandidateValidator:
                 error_code="unsupported_operation",
                 error_message="candidate operation is not locally allowed",
                 metadata={
-                    **metadata,
+                    **failure_metadata,
                     "candidate_validation": "rejected",
                     "validation_error_code": "unsupported_operation",
                 },
@@ -180,7 +199,7 @@ class PlanningCandidateValidator:
                 "missing_candidate_fields",
                 "planner candidate is missing category-specific fields",
                 {
-                    **metadata,
+                    **failure_metadata,
                     "candidate_classification": "plan",
                     "candidate_missing_fields": missing,
                 },
@@ -194,7 +213,7 @@ class PlanningCandidateValidator:
                 error_code=exc.code,
                 error_message=exc.message,
                 metadata={
-                    **metadata,
+                    **failure_metadata,
                     "candidate_validation": "rejected",
                     "validation_error_code": exc.code,
                 },
@@ -204,7 +223,7 @@ class PlanningCandidateValidator:
             return self._failed(
                 "invalid_candidate_content",
                 "candidate content must be a non-empty string",
-                metadata,
+                failure_metadata,
             )
         if not base_request.goal or not base_request.goal.strip():
             return self._clarification(
@@ -214,6 +233,7 @@ class PlanningCandidateValidator:
                 },
                 base_request,
                 metadata,
+                candidate_shape,
             )
         request = TaskRequest(
             goal=base_request.goal,
@@ -244,6 +264,7 @@ class PlanningCandidateValidator:
         candidate: Mapping[str, Any],
         base_request: TaskRequest,
         metadata: dict[str, Any],
+        candidate_shape: Mapping[str, Any],
     ) -> PlanningOutcome:
         """Accept only a bounded ``test_target`` from the model.
 
@@ -255,7 +276,11 @@ class PlanningCandidateValidator:
             return self._failed(
                 "invalid_test_target",
                 "test_target must be a dotted identifier",
-                {**metadata, "validation_error_code": "invalid_test_target"},
+                {
+                    **metadata,
+                    **candidate_shape,
+                    "validation_error_code": "invalid_test_target",
+                },
             )
         parameters = dict(base_request.parameters)
         if not parameters.get("workspace"):
@@ -266,6 +291,7 @@ class PlanningCandidateValidator:
                 },
                 base_request,
                 metadata,
+                candidate_shape,
             )
         parameters["target"] = target
         parameters.setdefault("runner", "unittest")
@@ -292,6 +318,7 @@ class PlanningCandidateValidator:
                 error_message=message,
                 metadata={
                     **metadata,
+                    **candidate_shape,
                     "candidate_validation": "rejected",
                     "validation_error_code": code,
                 },
@@ -308,20 +335,22 @@ class PlanningCandidateValidator:
         candidate: Mapping[str, Any],
         base_request: TaskRequest,
         metadata: dict[str, Any],
+        candidate_shape: Mapping[str, Any],
     ) -> PlanningOutcome:
+        failure_metadata = {**metadata, **candidate_shape}
         questions_raw = candidate.get("clarification_questions")
         missing_raw = candidate.get("missing_fields")
         if not isinstance(questions_raw, list) or not questions_raw:
             return self._failed(
                 "invalid_clarification",
                 "clarification requires at least one question",
-                metadata,
+                failure_metadata,
             )
         if len(questions_raw) > MAX_CLARIFICATION_QUESTIONS:
             return self._failed(
                 "too_many_clarification_questions",
                 "clarification question count exceeds the local limit",
-                metadata,
+                failure_metadata,
             )
         questions: list[str] = []
         for item in questions_raw:
@@ -329,14 +358,14 @@ class PlanningCandidateValidator:
                 return self._failed(
                     "invalid_clarification_question",
                     "clarification questions must be short non-empty strings",
-                    metadata,
+                    failure_metadata,
                 )
             questions.append(item.strip())
         if not isinstance(missing_raw, list):
             return self._failed(
                 "invalid_missing_fields",
                 "missing_fields must be an array",
-                metadata,
+                failure_metadata,
             )
         missing_fields: list[str] = []
         for item in missing_raw:
@@ -344,7 +373,7 @@ class PlanningCandidateValidator:
                 return self._failed(
                     "invalid_missing_field",
                     "candidate requested an unknown clarification field",
-                    metadata,
+                    failure_metadata,
                 )
             if item not in missing_fields:
                 missing_fields.append(item)
@@ -386,3 +415,37 @@ def _safe_field_names(names: list[object]) -> list[str]:
         value = str(raw)
         safe.append(value if _SAFE_FIELD_NAME.fullmatch(value) else "<redacted>")
     return safe
+
+
+def _candidate_shape(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """Return bounded, non-sensitive metadata about a candidate.
+
+    Field names are sanitized and capped. Only the two safe enumerations are
+    recorded as values; no free-form model content is copied into diagnostics.
+    """
+    try:
+        keys = sorted(candidate, key=str)
+        shape: dict[str, Any] = {
+            "candidate_fields": _safe_field_names(keys),
+            "candidate_field_count": len(keys),
+        }
+        classification = candidate.get("classification")
+        if isinstance(classification, str):
+            shape["candidate_classification"] = (
+                classification
+                if classification in REQUIRED_FIELDS_BY_CLASSIFICATION
+                else "invalid"
+            )
+        operation = candidate.get("operation")
+        if isinstance(operation, str):
+            shape["candidate_operation"] = (
+                operation
+                if operation in {WRITE_TEXT_ARTIFACT, RUN_TESTS}
+                else "invalid"
+            )
+        return shape
+    except Exception:
+        return {
+            "candidate_fields": ["<unavailable>"],
+            "candidate_field_count": -1,
+        }

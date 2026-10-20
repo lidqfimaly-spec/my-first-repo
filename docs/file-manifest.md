@@ -48,7 +48,28 @@
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/stable-summary.json`
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/mutations.json`
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/mutations-rerun.json`
+
+---
+
+# 第 3.42 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_candidate_diagnostics.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.42-candidate-diagnostics-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/planning_validation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.42/pilot-result.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.42/stable-summary.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.42/mutations.json`
 
 ---
 
