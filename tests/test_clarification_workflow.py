@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
+import json
 import multiprocessing
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from zevorinth.conversation_service import ConversationService  # noqa: E402
 from zevorinth.event_store import ClarificationConflict, EventStore  # noqa: E402
-from zevorinth.models import IntentKind, TaskStatus  # noqa: E402
+from zevorinth.models import (  # noqa: E402
+    ClarificationAnswerStatus,
+    IntentKind,
+    TaskStatus,
+)
 
 
 NOW = "2026-10-20T00:00:00.000+00:00"
@@ -252,6 +257,87 @@ class ClarificationWorkflowTests(unittest.TestCase):
                     normalized_value="wrong",
                     now=NOW,
                 )
+
+    def test_clarification_events_carry_question_association(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = ConversationService(root)
+
+            for index, (status, terminal_event) in enumerate(
+                (
+                    (
+                        ClarificationAnswerStatus.APPLIED,
+                        "clarification_applied",
+                    ),
+                    (
+                        ClarificationAnswerStatus.REJECTED,
+                        "clarification_rejected",
+                    ),
+                ),
+                start=1,
+            ):
+                with self.subTest(status=status.value):
+                    conversation_id = f"conversation-{index}"
+                    service.create_conversation(
+                        conversation_id=conversation_id,
+                        now=NOW,
+                    )
+                    created = service.process_message(
+                        conversation_id,
+                        "创建一个文件",
+                        client_message_id=f"m{index}",
+                        now=NOW,
+                    )
+                    question = created.clarifications[0]
+                    message = service.history(conversation_id)[0]
+                    answer = service.store.record_clarification_answer(
+                        question_id=question.question_id,
+                        message_id=message.message_id,
+                        normalized_value="answer",
+                        now=NOW,
+                    )
+                    service.store.mark_clarification_answer(
+                        answer.answer_id,
+                        status,
+                        now=NOW,
+                    )
+
+                    connection = sqlite3.connect(
+                        root / "data" / "zevorinth.sqlite3"
+                    )
+                    connection.row_factory = sqlite3.Row
+                    try:
+                        rows = connection.execute(
+                            """
+                            SELECT event_type, turn_id, task_id, payload_json
+                            FROM conversation_events
+                            WHERE conversation_id = ?
+                              AND event_type IN (
+                                  'clarification_answered', ?
+                              )
+                            ORDER BY sequence
+                            """,
+                            (conversation_id, terminal_event),
+                        ).fetchall()
+                    finally:
+                        connection.close()
+
+                    self.assertEqual(
+                        [row["event_type"] for row in rows],
+                        ["clarification_answered", terminal_event],
+                    )
+                    for row in rows:
+                        self.assertEqual(row["turn_id"], question.turn_id)
+                        self.assertEqual(row["task_id"], question.task_id)
+                        payload = json.loads(row["payload_json"])
+                        self.assertEqual(
+                            payload["question_id"],
+                            question.question_id,
+                        )
+                        self.assertEqual(
+                            payload["answer_id"],
+                            answer.answer_id,
+                        )
 
     def test_concurrent_answers_accept_only_one(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

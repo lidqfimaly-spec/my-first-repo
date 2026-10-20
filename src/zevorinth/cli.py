@@ -294,6 +294,7 @@ def _print_history(messages: list[object], as_json: bool) -> None:
 
 CONVERSATION_EXIT_CODES = {
     "completed": 0,
+    "succeeded": 0,
     "status": 0,
     "already_processed": 0,
     "awaiting_clarification": 3,
@@ -302,6 +303,12 @@ CONVERSATION_EXIT_CODES = {
     "requires_structured_update": 3,
     "requires_confirmation": 4,
     "active_task_conflict": 4,
+    "blocked": 4,
+    "failed": 1,
+    "planning_failed": 7,
+    "simulated": 3,
+    "interrupted": 5,
+    "cancelled": 5,
     "question_not_found": 2,
     "question_mismatch": 2,
     "answer_conflict": 2,

@@ -534,7 +534,7 @@ class ConversationService:
                 now=now,
             )
             return self._result(
-                "already_processed",
+                task.status.value,
                 turn,
                 message,
                 classification,

@@ -303,5 +303,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 2.7 阶段定向复测结果](docs/phase-2.7-results.md)
 - [第 3 阶段会话与任务关联设计](docs/phase-3-design.md)
 - [第 3.3 阶段多轮意图与安全编排设计](docs/phase-3.3-design.md)
+- [第 3.4.1 阶段可靠性审计](docs/phase-3.4.1-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

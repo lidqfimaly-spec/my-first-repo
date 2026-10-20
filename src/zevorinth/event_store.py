@@ -1273,7 +1273,8 @@ class EventStore:
             cursor = connection.execute(
                 """
                 UPDATE conversation_turns
-                SET status = ?, intent_kind = ?, updated_at = ?
+                SET status = ?, intent_kind = COALESCE(?, intent_kind),
+                    updated_at = ?
                 WHERE turn_id = ?
                 """,
                 (status.value, intent_kind, timestamp, turn_id),
@@ -1496,7 +1497,7 @@ class EventStore:
             connection.execute("BEGIN IMMEDIATE")
             question = connection.execute(
                 """
-                SELECT conversation_id, status
+                SELECT conversation_id, turn_id, task_id, status
                 FROM clarification_requests
                 WHERE question_id = ?
                 """,
@@ -1564,8 +1565,8 @@ class EventStore:
             self._insert_conversation_event(
                 connection,
                 answer.conversation_id,
-                turn_id=None,
-                task_id=None,
+                turn_id=str(question["turn_id"]),
+                task_id=str(question["task_id"]),
                 event_type="clarification_answered",
                 occurred_at=timestamp,
                 payload={
@@ -1589,11 +1590,14 @@ class EventStore:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT answer_id, question_id, message_id, conversation_id,
-                       normalized_value_json, validation_status,
-                       created_at, applied_at
-                FROM clarification_answers
-                WHERE answer_id = ?
+                SELECT a.answer_id, a.question_id, a.message_id,
+                       a.conversation_id, a.normalized_value_json,
+                       a.validation_status, a.created_at, a.applied_at,
+                       r.turn_id, r.task_id
+                FROM clarification_answers AS a
+                JOIN clarification_requests AS r
+                  ON r.question_id = a.question_id
+                WHERE a.answer_id = ?
                 """,
                 (answer_id,),
             ).fetchone()
@@ -1620,8 +1624,8 @@ class EventStore:
             self._insert_conversation_event(
                 connection,
                 str(row["conversation_id"]),
-                turn_id=None,
-                task_id=None,
+                turn_id=str(row["turn_id"]),
+                task_id=str(row["task_id"]),
                 event_type=event_type,
                 occurred_at=timestamp,
                 payload={

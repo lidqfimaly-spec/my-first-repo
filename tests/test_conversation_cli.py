@@ -321,6 +321,55 @@ class ConversationCliTests(unittest.TestCase):
             self.assertEqual(final["outcome"], "completed")
             self.assertEqual(final["task"]["status"], "succeeded")
 
+    def test_process_cli_reports_blocked_task_status_consistently(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with redirect_stdout(StringIO()):
+                self.assertEqual(
+                    main(
+                        [
+                            "--home",
+                            temp_dir,
+                            "conversation",
+                            "create",
+                            "--conversation-id",
+                            "conversation-1",
+                        ]
+                    ),
+                    0,
+                )
+            arguments = [
+                "--home",
+                temp_dir,
+                "conversation",
+                "process",
+                "conversation-1",
+                "--content",
+                "run a shell command",
+                "--client-message-id",
+                "m1",
+                "--operation",
+                "shell",
+                "--artifact-path",
+                "result.txt",
+                "--task-content",
+                "x",
+                "--json",
+            ]
+            output = StringIO()
+            with redirect_stdout(output):
+                first_code = main(arguments)
+            first = json.loads(output.getvalue())
+            self.assertEqual(first_code, 4)
+            self.assertEqual(first["outcome"], "blocked")
+            self.assertEqual(first["task"]["status"], "blocked")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                repeated_code = main(arguments)
+            repeated = json.loads(output.getvalue())
+            self.assertEqual(repeated_code, 4)
+            self.assertEqual(repeated["outcome"], "blocked")
+
     def test_conflict_and_missing_conversation_have_explicit_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with redirect_stdout(StringIO()):

@@ -598,6 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.4.1 阶段执行记录
+
+## 审计与修复
+
+- 发现并修复 blocked/failed/planning_failed/simulated 的 CLI outcome 退出码不一致；
+- 重复处理已失败任务不再误报 `already_processed` 成功；
+- 澄清 answered/applied/rejected 事件补齐 task/turn 关联；
+- 验证 pending answer 恢复和 Turn 早期状态窗口；
+- 审计 Schema v4 迁移、Policy、Verifier、Lease/Fencing 和并发路径。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 154/154 通过，exit 0 |
+| 隔离环境完整 unittest | 154/154 通过，exit 0 |
+| 并发初始化 | 100/100，0 失败 |
+| 并发澄清答案 | 20/20，0 失败 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version 4；
+- 真实模型 API 请求：0；
+- 未接入 LLM；
+- 未覆盖所有故障时点，详见 `docs/phase-3.4.1-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.3 阶段执行记录
 
 ## 实现范围
