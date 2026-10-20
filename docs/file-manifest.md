@@ -143,6 +143,34 @@
 
 ---
 
+# 第 3.46 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.46-real-model-end-to-end-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 真实调用结果
+
+- 真实模型 API 请求：1（授权上限 1）；
+- 候选：`run_tests` / `test_ok`，校验通过；
+- provisioning：7 项探针；
+- 容器：`zv-049b3b52ef37-02542e1d`，退出码 0；
+- `TestResultVerifier`：`tests_passed`；
+- 任务：`succeeded`。
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.46/pilot-result.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.46/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增
