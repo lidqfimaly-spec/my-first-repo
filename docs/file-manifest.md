@@ -34,6 +34,7 @@
 
 - `/Users/lidequan/PythonProject/Zevorinth/tests/test_llm_planner_instructions.py`
 - `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.41-llm-planner-instructions-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.41-post-fix-single-call-verification.md`
 
 ## 修改
 
@@ -47,6 +48,7 @@
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/stable-summary.json`
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/mutations.json`
 - `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/mutations-rerun.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.42/pilot-result.json`
 
 ---
 

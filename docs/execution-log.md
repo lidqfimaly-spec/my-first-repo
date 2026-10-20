@@ -659,6 +659,29 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.41 阶段修复后单次真实调用
+
+## 授权与边界
+
+1 次真实模型请求，0 重试；固定 `demo/test_ok` 目标，不允许宿主机回退。
+
+## 实际结果
+
+- DeepSeek 返回结构化候选，`candidate_received=true`；
+- 候选包含契约外字段 `type`，本地校验拒绝（`unknown_candidate_fields`）；
+- 任务停在 `planning_failed`；
+- 未 provisioning、未启动容器、无文件副作用；
+- 与 3.40 的 `unsupported` 相比，输出形态已改变，但仍未进入执行链。
+
+## 边界
+
+- 真实模型 API 请求：1（授权上限 1）；
+- 原始候选未持久化，无法证明模型选择了 `run_tests`；
+- 详见 `docs/phase-3.41-post-fix-single-call-verification.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现
