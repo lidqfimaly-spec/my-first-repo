@@ -1001,6 +1001,29 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.51 阶段执行记录
+
+## 真实调用
+
+1 次真实模型请求，0 重试；固定 `demo/test_ok`，仅容器后端。
+
+- 候选通过严格校验：`run_tests` / `test_ok`；
+- 最终执行计划与证据一致；
+- 容器 `zv-f107b7fcb71d-b94c99f0` 退出码 0；
+- `TestResultVerifier` 返回 `tests_passed`；
+- 任务 `succeeded`，workspace diff 全零；
+- 随后受控清理 `probe-written.txt`：completed；
+- `inside.txt` 保留；
+- 重复清理返回 `already_cleaned`；
+- 清理后任务仍为 `succeeded`。
+
+## 结论
+
+**PASS**。详见
+`docs/phase-3.51-real-model-cleanup-verification.md`；未推送。
+
+---
+
 
 
 ## 实现

@@ -276,6 +276,36 @@
 
 ---
 
+# 第 3.51 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.51-real-model-cleanup-verification.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 真实调用结果
+
+- 真实模型 API 请求：1（授权上限 1）；
+- 候选：`run_tests` / `test_ok`，校验通过；
+- 容器：`zv-f107b7fcb71d-b94c99f0`，退出码 0；
+- `TestResultVerifier`：`tests_passed`；
+- `probe-written.txt`：受控清理完成；
+- `inside.txt`：保留；
+- 重复清理：`already_cleaned`；
+- 任务状态清理前后：`succeeded` / `succeeded`。
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.51/pilot-result.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.51/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增
