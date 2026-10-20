@@ -67,6 +67,63 @@ class ArtifactToolTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "artifact_exists")
             self.assertEqual((root / task_id / "result.txt").read_text(), "first")
 
+    def test_authorized_writer_uses_staging_and_records_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            task_id = str(uuid4())
+            attempt_id = str(uuid4())
+            stages: list[str] = []
+            authorizations: list[tuple[str, int]] = []
+
+            def checkpoint(
+                stage: str,
+                _task_id: str,
+                _attempt_id: str,
+                _generation: int | None,
+            ) -> None:
+                stages.append(stage)
+                if stage == "after_staging_write":
+                    self.assertFalse(
+                        (root / task_id / "result.txt").exists()
+                    )
+
+            writer = RealArtifactWriter(
+                root,
+                checkpoint_hook=checkpoint,
+            )
+            result = writer.write(
+                task_id=task_id,
+                attempt_id=attempt_id,
+                artifact_path="result.txt",
+                content="fenced",
+                started_at="a",
+                finished_at="b",
+                lease_token="lease-1",
+                claim_generation=1,
+                authorize=lambda token, generation: (
+                    authorizations.append((token, generation))
+                ),
+            )
+
+            self.assertEqual(
+                stages,
+                [
+                    "after_staging_write",
+                    "after_publish_authority",
+                    "after_publish",
+                ],
+            )
+            self.assertEqual(authorizations, [("lease-1", 1)])
+            self.assertEqual(result.artifact.attempt_id, attempt_id)
+            self.assertEqual(result.artifact.claim_generation, 1)
+            self.assertEqual(
+                (root / task_id / "result.txt").read_text(),
+                "fenced",
+            )
+            self.assertFalse(
+                any((root / task_id / ".staging").iterdir())
+            )
+
     def test_invalid_and_unsafe_names_are_rejected(self) -> None:
         invalid = ["", "../x", "/tmp/x", "a/b", r"a\b", ".env", ".", "..", "x\x00y"]
         for value in invalid:

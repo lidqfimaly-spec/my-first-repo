@@ -32,7 +32,11 @@ class ArtifactVerifier:
         expected_content: str,
         tool_result: ToolResult,
         checked_at: str,
+        expected_attempt_id: str | None = None,
+        require_provenance: bool = False,
+        maximum_claim_generation: int | None = None,
     ) -> VerificationResult:
+        """Verify bytes and attempt/generation provenance without trust."""
         if tool_result.execution_mode is not ExecutionMode.REAL:
             return VerificationResult(
                 verifier_name=self.name,
@@ -93,6 +97,12 @@ class ArtifactVerifier:
             relative_path=artifact_path,
             byte_count=len(raw),
             sha256=hashlib.sha256(raw).hexdigest(),
+            attempt_id=expected_attempt_id or tool_result.attempt_id,
+            claim_generation=(
+                tool_result.artifact.claim_generation
+                if tool_result.artifact is not None
+                else None
+            ),
         )
         content_matches = raw == expected
         reported = tool_result.artifact
@@ -101,6 +111,21 @@ class ArtifactVerifier:
             and reported.relative_path == actual_evidence.relative_path
             and reported.byte_count == actual_evidence.byte_count
             and reported.sha256 == actual_evidence.sha256
+            and reported.attempt_id == actual_evidence.attempt_id
+            and (
+                not require_provenance
+                or (
+                    reported.claim_generation is not None
+                    and reported.claim_generation > 0
+                )
+            )
+            and (
+                maximum_claim_generation is None
+                or (
+                    reported.claim_generation is not None
+                    and reported.claim_generation <= maximum_claim_generation
+                )
+            )
         )
         passed = content_matches and evidence_matches
         if not content_matches:

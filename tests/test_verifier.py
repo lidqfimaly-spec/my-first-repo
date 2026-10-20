@@ -90,6 +90,53 @@ class VerifierTests(unittest.TestCase):
             self.assertFalse(verification.passed)
             self.assertEqual(verification.reason, "tool_evidence_mismatch")
 
+    def test_attempt_and_generation_provenance_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "artifacts"
+            task_id = str(uuid4())
+            result = RealArtifactWriter(root).write(
+                task_id=task_id,
+                attempt_id=str(uuid4()),
+                artifact_path="artifact.txt",
+                content="expected",
+                started_at="a",
+                finished_at="b",
+                lease_token="lease",
+                claim_generation=1,
+                authorize=lambda _token, _generation: None,
+            )
+            verifier = ArtifactVerifier(root)
+
+            wrong_attempt = ToolResult.from_dict(result.to_dict())
+            wrong_attempt.artifact.attempt_id = str(uuid4())
+            mismatch = verifier.verify(
+                task_id=task_id,
+                artifact_path="artifact.txt",
+                expected_content="expected",
+                tool_result=wrong_attempt,
+                checked_at="checked",
+                expected_attempt_id=result.attempt_id,
+                require_provenance=True,
+                maximum_claim_generation=1,
+            )
+            self.assertFalse(mismatch.passed)
+            self.assertEqual(mismatch.reason, "tool_evidence_mismatch")
+
+            future_generation = ToolResult.from_dict(result.to_dict())
+            future_generation.artifact.claim_generation = 2
+            future = verifier.verify(
+                task_id=task_id,
+                artifact_path="artifact.txt",
+                expected_content="expected",
+                tool_result=future_generation,
+                checked_at="checked",
+                expected_attempt_id=result.attempt_id,
+                require_provenance=True,
+                maximum_claim_generation=1,
+            )
+            self.assertFalse(future.passed)
+            self.assertEqual(future.reason, "tool_evidence_mismatch")
+
     def test_simulated_result_cannot_be_verified_as_real(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "artifacts"

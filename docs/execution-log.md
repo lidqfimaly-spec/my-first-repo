@@ -598,6 +598,43 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.4.3 阶段执行记录
+
+## 审计与修复
+
+- 文件写入改为 attempt 专属 staging，最终发布前执行 SQLite authority 复查；
+- 增加每 Task 本地 `flock` 发布锁和有界锁等待；
+- 最终文件保持不可覆盖 hard-link 发布；
+- ArtifactEvidence 记录 attempt_id 与 claim_generation；
+- Verifier 拒绝跨 attempt 或未来 generation 的 evidence；
+- 确定性竞态覆盖旧执行者覆盖、发布窗口冲突和同路径不同 Task。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 178/178 通过，exit 0 |
+| 隔离环境完整 unittest | 178/178 通过，exit 0 |
+| 文件副作用 fencing 专项 | 6/6，连续 10 轮 0 失败 |
+| 崩溃一致性专项 | 15/15，连续 10 轮 0 失败 |
+| 并发任务专项 | 3/3，连续 10 轮 0 失败 |
+| 并发初始化 | 100/100，0 失败 |
+| 并发澄清答案 | 20/20，0 失败 |
+| 隔离副本变异 | 7/7 被捕获 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version 4；
+- SQLite 与文件系统仍不能共同原子提交；
+- authority 通过后、link 前仍存在短窗口；新执行者会 fail closed 且不覆盖；
+- `flock` 保证仅适用于协作的单机本地文件系统；
+- 详见 `docs/phase-3.4.3-side-effect-fencing-audit.md`；
+- 真实模型 API 请求：0，未推送。
+
+---
+
 # 第 3.4.2 阶段执行记录
 
 ## 审计与修复

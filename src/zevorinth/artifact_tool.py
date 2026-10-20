@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import os
 import stat
+import time
 from pathlib import Path
-from typing import Protocol
-from uuid import UUID, uuid4
+from typing import Callable, Protocol
+from uuid import UUID
 
 from .models import (
     ArtifactEvidence,
@@ -19,6 +21,8 @@ from .models import (
 
 MAX_ARTIFACT_BYTES = 64 * 1024
 _FORBIDDEN_FILENAME_CHARS = frozenset('/\\<>:"|?*')
+AuthorityCheck = Callable[[str, int], None]
+CheckpointHook = Callable[[str, str, str, int | None], None]
 
 
 class ArtifactToolError(Exception):
@@ -41,6 +45,9 @@ class ArtifactWriter(Protocol):
         content: str,
         started_at: str,
         finished_at: str,
+        lease_token: str | None = None,
+        claim_generation: int | None = None,
+        authorize: AuthorityCheck | None = None,
     ) -> ToolResult: ...
 
 
@@ -72,6 +79,22 @@ def _validated_task_id(task_id: str) -> str:
     return task_id
 
 
+def _validated_attempt_id(attempt_id: str) -> str:
+    try:
+        parsed = UUID(attempt_id)
+    except (ValueError, AttributeError) as exc:
+        raise ArtifactToolError(
+            "invalid_attempt_id",
+            "attempt_id is not a valid UUID",
+        ) from exc
+    if str(parsed) != attempt_id:
+        raise ArtifactToolError(
+            "invalid_attempt_id",
+            "attempt_id must use canonical UUID form",
+        )
+    return attempt_id
+
+
 def _ensure_task_directory(root: Path, task_id: str, *, create: bool) -> Path:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink():
@@ -92,6 +115,28 @@ def _ensure_task_directory(root: Path, task_id: str, *, create: bool) -> Path:
     elif not task_dir.exists():
         raise FileNotFoundError(errno.ENOENT, "task artifact directory does not exist", task_dir)
     return task_dir
+
+
+def _ensure_staging_directory(task_dir: Path) -> Path:
+    staging_dir = task_dir / ".staging"
+    if staging_dir.exists() or staging_dir.is_symlink():
+        if staging_dir.is_symlink() or not staging_dir.is_dir():
+            raise ArtifactToolError(
+                "unsafe_staging_directory",
+                "artifact staging path is not a safe directory",
+            )
+        resolved = staging_dir.resolve(strict=True)
+        if resolved.parent != task_dir.resolve(strict=True):
+            raise ArtifactToolError(
+                "path_escape",
+                "artifact staging directory escapes task directory",
+            )
+    else:
+        try:
+            staging_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            return _ensure_staging_directory(task_dir)
+    return staging_dir
 
 
 def _open_directory(path: Path) -> int:
@@ -149,12 +194,61 @@ def _fsync_directory(directory_fd: int) -> None:
         pass
 
 
+def _acquire_publish_lock(lock_fd: int, timeout_seconds: float) -> None:
+    """Acquire the per-task publish lock without waiting indefinitely."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise ArtifactToolError(
+                    "publish_lock_timeout",
+                    "timed out waiting for the artifact publish lock",
+                )
+            time.sleep(0.01)
+
+
 class RealArtifactWriter:
+    """Publish immutable staged content with single-host authority checks.
+
+    The writer can only reduce stale-writer risk; it cannot make SQLite and
+    the filesystem atomic. The final hard link is never overwritten and is
+    created only after the caller's authority callback succeeds under the
+    same per-task lock used by all publishers.
+    """
+
     tool_name = "write_text_artifact"
     execution_mode = ExecutionMode.REAL
 
-    def __init__(self, artifacts_root: Path) -> None:
+    def __init__(
+        self,
+        artifacts_root: Path,
+        *,
+        publish_lock_timeout_seconds: float = 10.0,
+        checkpoint_hook: CheckpointHook | None = None,
+    ) -> None:
+        if publish_lock_timeout_seconds <= 0:
+            raise ValueError("publish_lock_timeout_seconds must be positive")
         self.artifacts_root = artifacts_root.absolute()
+        self.publish_lock_timeout_seconds = publish_lock_timeout_seconds
+        self.checkpoint_hook = checkpoint_hook
+
+    def _checkpoint(
+        self,
+        stage: str,
+        task_id: str,
+        attempt_id: str,
+        claim_generation: int | None,
+    ) -> None:
+        if self.checkpoint_hook is not None:
+            self.checkpoint_hook(
+                stage,
+                task_id,
+                attempt_id,
+                claim_generation,
+            )
 
     def write(
         self,
@@ -165,8 +259,13 @@ class RealArtifactWriter:
         content: str,
         started_at: str,
         finished_at: str,
+        lease_token: str | None = None,
+        claim_generation: int | None = None,
+        authorize: AuthorityCheck | None = None,
     ) -> ToolResult:
+        """Stage, authorize, and atomically publish one artifact."""
         name = validate_artifact_name(artifact_path)
+        attempt_id = _validated_attempt_id(attempt_id)
         if not isinstance(content, str):
             raise ArtifactToolError("invalid_content", "content must be text")
         if not content:
@@ -174,42 +273,96 @@ class RealArtifactWriter:
         encoded = content.encode("utf-8")
         if len(encoded) > MAX_ARTIFACT_BYTES:
             raise ArtifactToolError("content_too_large", "content exceeds the 64 KiB limit")
+        if authorize is not None and (
+            lease_token is None or claim_generation is None
+        ):
+            raise ArtifactToolError(
+                "authority_context_missing",
+                "authorized publication requires lease token and generation",
+            )
 
         task_dir = _ensure_task_directory(self.artifacts_root, task_id, create=True)
+        staging_dir = _ensure_staging_directory(task_dir)
         directory_fd = _open_directory(task_dir)
-        temp_name = f".{name}.{uuid4().hex}.tmp"
+        staging_fd: int | None = None
+        staging_name = f"{attempt_id}.part"
+        publish_name = ".publish.lock"
         file_fd: int | None = None
+        lock_fd: int | None = None
+        published = False
         try:
+            staging_fd = _open_directory(staging_dir)
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             flags |= getattr(os, "O_NOFOLLOW", 0)
-            file_fd = os.open(temp_name, flags, 0o600, dir_fd=directory_fd)
+            file_fd = os.open(staging_name, flags, 0o600, dir_fd=staging_fd)
             view = memoryview(encoded)
             while view:
                 written = os.write(file_fd, view)
                 view = view[written:]
+            self._checkpoint(
+                "after_staging_write",
+                task_id,
+                attempt_id,
+                claim_generation,
+            )
             os.fsync(file_fd)
             os.close(file_fd)
             file_fd = None
+            _fsync_directory(staging_fd)
 
+            lock_flags = os.O_RDWR | os.O_CREAT
+            lock_flags |= getattr(os, "O_NOFOLLOW", 0)
+            lock_fd = os.open(
+                publish_name,
+                lock_flags,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            _acquire_publish_lock(
+                lock_fd,
+                self.publish_lock_timeout_seconds,
+            )
+            if authorize is not None:
+                authorize(lease_token, claim_generation)
+            self._checkpoint(
+                "after_publish_authority",
+                task_id,
+                attempt_id,
+                claim_generation,
+            )
             try:
                 os.link(
-                    temp_name,
+                    staging_name,
                     name,
-                    src_dir_fd=directory_fd,
+                    src_dir_fd=staging_fd,
                     dst_dir_fd=directory_fd,
                     follow_symlinks=False,
                 )
             except FileExistsError as exc:
-                raise ArtifactToolError("artifact_exists", "refusing to overwrite an existing artifact") from exc
+                raise ArtifactToolError(
+                    "artifact_exists",
+                    "refusing to overwrite an existing artifact",
+                ) from exc
+            published = True
             _fsync_directory(directory_fd)
-            os.unlink(temp_name, dir_fd=directory_fd)
-            temp_name = ""
+            try:
+                os.unlink(staging_name, dir_fd=staging_fd)
+            except FileNotFoundError:
+                pass
+            self._checkpoint(
+                "after_publish",
+                task_id,
+                attempt_id,
+                claim_generation,
+            )
             actual = _read_artifact_from_dir(directory_fd, name)
             actual_sha = hashlib.sha256(actual).hexdigest()
             evidence = ArtifactEvidence(
                 relative_path=name,
                 byte_count=len(actual),
                 sha256=actual_sha,
+                attempt_id=attempt_id,
+                claim_generation=claim_generation,
             )
             return ToolResult(
                 attempt_id=attempt_id,
@@ -227,11 +380,18 @@ class RealArtifactWriter:
         finally:
             if file_fd is not None:
                 os.close(file_fd)
-            if temp_name:
+            if not published and staging_fd is not None:
                 try:
-                    os.unlink(temp_name, dir_fd=directory_fd)
+                    os.unlink(staging_name, dir_fd=staging_fd)
                 except FileNotFoundError:
                     pass
+            if lock_fd is not None:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(lock_fd)
+            if staging_fd is not None:
+                os.close(staging_fd)
             os.close(directory_fd)
 
 
@@ -250,6 +410,9 @@ class SimulatedArtifactWriter:
         content: str,
         started_at: str,
         finished_at: str,
+        lease_token: str | None = None,
+        claim_generation: int | None = None,
+        authorize: AuthorityCheck | None = None,
     ) -> ToolResult:
         return ToolResult(
             attempt_id=attempt_id,

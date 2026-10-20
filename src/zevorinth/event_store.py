@@ -1857,6 +1857,34 @@ class EventStore:
             raise TaskNotFound(task_id)
         return task
 
+    def assert_task_authority(
+        self,
+        task_id: str,
+        *,
+        lease_token: str,
+        attempt_id: str,
+        claim_generation: int,
+        now: str,
+    ) -> Task:
+        """Fail closed unless the caller still owns the active run."""
+        with self._connection() as connection:
+            task = self._load_task(connection, task_id)
+        if (
+            task.lease_token != lease_token
+            or task.attempt_id != attempt_id
+            or task.claim_generation != claim_generation
+            or task.status is not TaskStatus.RUNNING
+        ):
+            raise ClaimLost(
+                f"task {task_id} no longer belongs to the calling attempt"
+            )
+        if (
+            task.lease_expires_at is None
+            or not self._lease_is_active(task.lease_expires_at, now)
+        ):
+            raise ClaimLost(f"task {task_id} lease is no longer active")
+        return task
+
     def list_events(self, task_id: str) -> list[Event]:
         self.require_task(task_id)
         with self._connection() as connection:

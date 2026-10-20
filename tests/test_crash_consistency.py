@@ -12,6 +12,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -453,6 +454,93 @@ class CrashConsistencyTests(unittest.TestCase):
             self.assertEqual(writer.calls, 0)
             self.assertEqual(self._count(root, "tasks"), 1)
 
+    def test_sigkill_after_staging_leaves_no_published_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = self._run_until_checkpoint(
+                "writer_after_staging",
+                root,
+            )
+            task_id = checkpoint["task_id"]
+            task_dir = root / "artifacts" / task_id
+            artifact = task_dir / ARTIFACT_PATH
+
+            self._assert_database_consistent(root)
+            task = EventStore(self._db(root)).require_task(task_id)
+            self.assertEqual(task.status, TaskStatus.RUNNING)
+            self.assertFalse(artifact.exists())
+            staging_files = list((task_dir / ".staging").glob("*.part"))
+            self.assertEqual(len(staging_files), 1)
+            event_types = self._task_event_types(root, task_id)
+            self.assertNotIn("tool_succeeded", event_types)
+
+            recovery_time = (
+                datetime.fromisoformat(str(task.lease_expires_at))
+                + timedelta(seconds=1)
+            ).isoformat(timespec="milliseconds")
+            writer = CountingWriter(root / "artifacts")
+            restarted = TaskService(
+                root,
+                writer=writer,
+                clock=lambda: recovery_time,
+            )
+            recovered = restarted.resume(task_id)
+
+            self.assertEqual(recovered.status, TaskStatus.SUCCEEDED)
+            self.assertEqual(writer.calls, 1)
+            self.assertEqual(artifact.read_text(), ARTIFACT_CONTENT)
+            self.assertEqual(recovered.artifact.claim_generation, 2)
+            self.assertEqual(
+                self._task_event_types(root, task_id).count("tool_started"),
+                2,
+            )
+            self.assertTrue(staging_files[0].exists())
+            self.assertFalse((task_dir / ".publish.lock").is_symlink())
+
+    def test_sigkill_after_publish_blocks_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            checkpoint = self._run_until_checkpoint(
+                "writer_after_publish",
+                root,
+            )
+            task_id = checkpoint["task_id"]
+            artifact = root / "artifacts" / task_id / ARTIFACT_PATH
+
+            self._assert_database_consistent(root)
+            task = EventStore(self._db(root)).require_task(task_id)
+            self.assertEqual(task.status, TaskStatus.RUNNING)
+            self.assertIsNone(task.tool_result)
+            self.assertEqual(artifact.read_text(), ARTIFACT_CONTENT)
+            before_inode = artifact.stat().st_ino
+            self.assertFalse(
+                any(
+                    (root / "artifacts" / task_id / ".staging").glob("*.part")
+                )
+            )
+
+            recovery_time = (
+                datetime.fromisoformat(str(task.lease_expires_at))
+                + timedelta(seconds=1)
+            ).isoformat(timespec="milliseconds")
+            no_write = NoWriteWriter()
+            restarted = TaskService(
+                root,
+                writer=no_write,
+                clock=lambda: recovery_time,
+            )
+            recovered = restarted.resume(task_id)
+
+            self.assertEqual(recovered.status, TaskStatus.BLOCKED)
+            self.assertEqual(recovered.error.code, "artifact_exists")
+            self.assertEqual(no_write.calls, 0)
+            self.assertEqual(artifact.stat().st_ino, before_inode)
+            self.assertEqual(artifact.read_text(), ARTIFACT_CONTENT)
+            self.assertNotIn(
+                "task_succeeded",
+                self._task_event_types(root, task_id),
+            )
+
     def test_sigkill_inside_final_success_transaction_rolls_back_together(
         self,
     ) -> None:
@@ -518,8 +606,11 @@ class CrashConsistencyTests(unittest.TestCase):
             self.assertEqual(task.claim_generation, checkpoint["claim_generation"])
             self.assertIsNone(task.lease_token)
             artifacts = list((root / "artifacts" / task_id).iterdir())
-            self.assertEqual([item.name for item in artifacts], [ARTIFACT_PATH])
-            self.assertEqual(artifacts[0].read_text(), ARTIFACT_CONTENT)
+            visible = [
+                item for item in artifacts if not item.name.startswith(".")
+            ]
+            self.assertEqual([item.name for item in visible], [ARTIFACT_PATH])
+            self.assertEqual(visible[0].read_text(), ARTIFACT_CONTENT)
 
             no_write = NoWriteWriter()
             restarted = TaskService(root, writer=no_write)
@@ -727,6 +818,8 @@ class CrashConsistencyTests(unittest.TestCase):
             t0 = "2026-10-20T00:00:00.000+00:00"
             expires = "2026-10-20T00:00:01.000+00:00"
             takeover = "2026-10-20T00:00:02.000+00:00"
+            first_attempt = str(uuid4())
+            second_attempt = str(uuid4())
             service = TaskService(root, clock=lambda: t0, lease_seconds=30)
             task = service.enqueue(
                 TaskRequest(
@@ -742,7 +835,7 @@ class CrashConsistencyTests(unittest.TestCase):
                 task.task_id,
                 owner_id="owner-a",
                 lease_token="lease-a",
-                attempt_id="attempt-a",
+                attempt_id=first_attempt,
                 now=t0,
                 expires_at=expires,
                 allowed_statuses=TaskService.RUNNABLE_STATUSES,
@@ -787,7 +880,7 @@ class CrashConsistencyTests(unittest.TestCase):
                 task.task_id,
                 owner_id="owner-b",
                 lease_token="lease-b",
-                attempt_id="attempt-b",
+                attempt_id=second_attempt,
                 now=takeover,
                 expires_at="2026-10-20T00:01:00.000+00:00",
                 allowed_statuses=TaskService.RESUMABLE_STATUSES,

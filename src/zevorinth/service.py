@@ -8,7 +8,7 @@ from typing import Callable, Mapping
 from uuid import uuid4
 
 from .artifact_tool import ArtifactToolError, ArtifactWriter, RealArtifactWriter
-from .event_store import EventStore
+from .event_store import ClaimLost, EventStore
 from .models import (
     ClaimResult,
     Event,
@@ -583,7 +583,20 @@ class TaskService:
                 content=content,
                 started_at=started_at,
                 finished_at=self.clock(),
+                lease_token=lease_token,
+                claim_generation=task.claim_generation,
+                authorize=lambda token, generation: (
+                    self.store.assert_task_authority(
+                        task.task_id,
+                        lease_token=token,
+                        attempt_id=task.attempt_id,
+                        claim_generation=generation,
+                        now=self.clock(),
+                    )
+                ),
             )
+        except ClaimLost:
+            raise
         except ArtifactToolError as exc:
             return self._finish_tool_failure(
                 task,
@@ -772,6 +785,9 @@ class TaskService:
                     expected_content=content,
                     tool_result=result,
                     checked_at=self.clock(),
+                    expected_attempt_id=result.attempt_id,
+                    require_provenance=True,
+                    maximum_claim_generation=task.claim_generation,
                 )
             except Exception as exc:
                 verification = VerificationResult(

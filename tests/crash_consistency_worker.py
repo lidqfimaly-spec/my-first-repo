@@ -12,6 +12,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from zevorinth.artifact_tool import RealArtifactWriter  # noqa: E402
 from zevorinth.conversation_service import ConversationService  # noqa: E402
 from zevorinth.event_store import EventStore  # noqa: E402
 from zevorinth.models import (  # noqa: E402
@@ -331,6 +332,31 @@ def _execution_checkpoint(root: Path, mode: str) -> None:
     service = TaskService(root)
     store = CheckpointStore(database, mode)
     service.store = store
+    if mode in {"writer_after_staging", "writer_after_publish"}:
+        checkpoint_stage = (
+            "after_staging_write"
+            if mode == "writer_after_staging"
+            else "after_publish"
+        )
+
+        def writer_checkpoint(
+            stage: str,
+            task_id: str,
+            attempt_id: str,
+            claim_generation: int | None,
+        ) -> None:
+            if stage == checkpoint_stage:
+                _checkpoint(
+                    mode,
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    claim_generation=claim_generation,
+                )
+
+        service.writer = RealArtifactWriter(
+            root / "artifacts",
+            checkpoint_hook=writer_checkpoint,
+        )
     service.submit(_request())
 
 
@@ -394,7 +420,12 @@ def main() -> int:
         _task_link_checkpoint(root)
     elif mode == "task_after_commit":
         _queued_task_checkpoint(root)
-    elif mode in {"success_before_commit", "success_after_commit"}:
+    elif mode in {
+        "success_before_commit",
+        "success_after_commit",
+        "writer_after_staging",
+        "writer_after_publish",
+    }:
         _execution_checkpoint(root, mode)
     elif mode in {"answer_after_commit", "answer_before_applied"}:
         _answer_checkpoint(root, mode)

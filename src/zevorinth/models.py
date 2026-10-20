@@ -209,12 +209,16 @@ class ArtifactEvidence:
     relative_path: str
     byte_count: int
     sha256: str
+    attempt_id: str | None = None
+    claim_generation: int | None = None
 
     def to_dict(self) -> JsonObject:
         return {
             "relative_path": self.relative_path,
             "byte_count": self.byte_count,
             "sha256": self.sha256,
+            "attempt_id": self.attempt_id,
+            "claim_generation": self.claim_generation,
         }
 
     @classmethod
@@ -223,6 +227,16 @@ class ArtifactEvidence:
             relative_path=str(data["relative_path"]),
             byte_count=int(data["byte_count"]),
             sha256=str(data["sha256"]),
+            attempt_id=(
+                str(data["attempt_id"])
+                if data.get("attempt_id") is not None
+                else None
+            ),
+            claim_generation=(
+                int(data["claim_generation"])
+                if data.get("claim_generation") is not None
+                else None
+            ),
         )
 
 
