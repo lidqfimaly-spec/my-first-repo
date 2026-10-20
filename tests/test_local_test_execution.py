@@ -74,6 +74,7 @@ def _request(
         "runner": "unittest",
         "target": target,
         "workspace": workspace,
+        "execution_backend": "host",
     }
     parameters.update(extra)
     return TaskRequest(
@@ -443,6 +444,7 @@ class TestVerifierBoundaryTests(unittest.TestCase):
             "runner": "unittest",
             "target": "test_demo",
             "workspace": "demo",
+            "execution_backend": "host",
         }
         expected.update(params)
         return TestResultVerifier().verify(

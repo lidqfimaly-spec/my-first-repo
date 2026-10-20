@@ -70,6 +70,7 @@ def _request(target: str = "test_demo", **extra: Any) -> TaskRequest:
         "runner": "unittest",
         "target": target,
         "workspace": "demo",
+        "execution_backend": "host",
     }
     parameters.update(extra)
     return TaskRequest(
