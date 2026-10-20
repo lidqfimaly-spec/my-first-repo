@@ -81,7 +81,7 @@ class CleanupTests(unittest.TestCase):
                 task.task_id, "a.txt", enabled=True, authorized=True
             )
             self.assertEqual(again["status"], "rejected")
-            self.assertEqual(again["code"], "missing_target")
+            self.assertEqual(again["code"], "already_cleaned")
             self.assertFalse(target.exists())
 
     def test_modified_file_is_not_removed(self) -> None:
@@ -201,9 +201,11 @@ class CleanupTests(unittest.TestCase):
             )
             self.assertTrue(decision.allowed)
             target.write_text("changed after plan\n")
-            outcome = execute_cleanup(decision)
+            outcome = execute_cleanup(
+                decision, workspace_root=root / "artifacts" / task.task_id
+            )
             self.assertEqual(outcome["status"], "rejected")
-            self.assertEqual(outcome["code"], "target_changed")
+            self.assertEqual(outcome["code"], "hash_mismatch")
             self.assertTrue(target.exists())
 
     def test_cleanup_evidence_is_recorded(self) -> None:

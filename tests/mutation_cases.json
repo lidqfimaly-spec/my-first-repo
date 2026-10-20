@@ -285,10 +285,10 @@
       "id": "cleanup_hash_check_removed",
       "property": "modified files are never deleted",
       "path": "src/zevorinth/workspace_cleanup.py",
-      "old": "    if actual != record.created_sha256:\n",
-      "new": "    if False:\n",
+      "old": "        if actual != decision.expected_sha256:\n",
+      "new": "        if False:\n",
       "tests": [
-        "tests.test_workspace_cleanup.CleanupTests.test_modified_file_is_not_removed"
+        "tests.test_cleanup_races.CleanupRaceTests.test_content_changed_before_verification"
       ],
       "expected": "killed"
     },
@@ -304,13 +304,13 @@
       "expected": "killed"
     },
     {
-      "id": "cleanup_delete_race_check_removed",
-      "property": "content changed after planning is refused",
+      "id": "cleanup_inode_check_removed",
+      "property": "a replaced file is never deleted",
       "path": "src/zevorinth/workspace_cleanup.py",
-      "old": "    if digest != decision.expected_sha256:\n",
-      "new": "    if False:\n",
+      "old": "        if current is None or (current.st_dev, current.st_ino) != (\n",
+      "new": "        if current is None or False and (current.st_dev, current.st_ino) != (\n",
       "tests": [
-        "tests.test_workspace_cleanup.CleanupTests.test_change_between_plan_and_delete_is_refused"
+        "tests.test_cleanup_races.CleanupRaceTests.test_replaced_by_another_regular_file"
       ],
       "expected": "killed"
     },
@@ -333,6 +333,50 @@
       "new": "    detail_complete = True\n",
       "tests": [
         "tests.test_workspace_side_effects.DiffPolicyTests.test_large_diff_is_truncated_and_not_claimed_complete"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cleanup_nofollow_removed",
+      "property": "symlinked targets are refused",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "        file_fd = os.open(\n            name,\n            os.O_RDONLY | getattr(os, \"O_NOFOLLOW\", 0),\n",
+      "new": "        file_fd = os.open(\n            name,\n            os.O_RDONLY,\n",
+      "tests": [
+        "tests.test_workspace_cleanup.CleanupTests.test_symlink_target_is_refused"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cleanup_batch_partial_as_completed",
+      "property": "partial batches are not reported complete",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "    if any(status == \"completed\" for status in statuses):\n        return \"partial\"\n",
+      "new": "    if any(status == \"completed\" for status in statuses):\n        return \"completed\"\n",
+      "tests": [
+        "tests.test_cleanup_races.CleanupRaceTests.test_batch_reports_partial_completion"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cleanup_already_cleaned_removed",
+      "property": "repeat requests are idempotent",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "    if cleaned_paths and normalized in cleaned_paths:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_cleanup_races.CleanupRaceTests.test_repeat_request_is_idempotent"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cleanup_protected_check_removed",
+      "property": "protected paths are never deleted",
+      "path": "src/zevorinth/workspace_cleanup.py",
+      "old": "    if policy._matches(normalized, policy.protected_prefixes):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_workspace_cleanup.CleanupTests.test_protected_path_is_refused"
       ],
       "expected": "killed"
     }

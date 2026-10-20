@@ -61,7 +61,11 @@ from .workspace_snapshot import (
     scan_workspace,
 )
 from .workspace_effects import build_workspace_effects, validate_workspace_effects
-from .workspace_cleanup import execute_cleanup, plan_cleanup
+from .workspace_cleanup import (
+    execute_cleanup,
+    plan_cleanup,
+    summarize_batch,
+)
 
 
 def utc_now() -> str:
@@ -310,52 +314,112 @@ class TaskService:
         *,
         enabled: bool = False,
         authorized: bool = False,
+        checkpoint: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Delete one file this task provably created, if strictly allowed."""
+        return self.cleanup_workspace_files(
+            task_id,
+            [relative_path],
+            enabled=enabled,
+            authorized=authorized,
+            checkpoint=checkpoint,
+        )["files"][0]
+
+    def cleanup_workspace_files(
+        self,
+        task_id: str,
+        relative_paths: list[str],
+        *,
+        enabled: bool = False,
+        authorized: bool = False,
+        checkpoint: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Delete several owned files, validating each one independently."""
         task = self.store.require_task(task_id)
-        record: dict[str, Any] = {
-            "task_id": task_id,
-            "relative_path": relative_path,
-            "enabled": enabled,
-            "authorized": authorized,
-        }
         effects = (
             task.tool_result.workspace_effects
             if task.tool_result is not None
             else None
         )
+        cleaned = {
+            str(event.payload.get("relative_path"))
+            for event in self.store.list_events(task_id)
+            if event.event_type == "cleanup_completed"
+            and event.payload.get("relative_path")
+        }
+        results: list[dict[str, Any]] = []
         if effects is None:
-            record.update(status="rejected", code="no_effects", removed=False)
-            return record
+            results = [
+                {
+                    "relative_path": path,
+                    "status": "rejected",
+                    "code": "no_effects",
+                    "removed": False,
+                }
+                for path in relative_paths
+            ]
+            return {
+                "task_id": task_id,
+                "batch_status": summarize_batch(results),
+                "files": results,
+            }
         if task.lease_token is not None:
-            record.update(
-                status="rejected", code="active_lease", removed=False
-            )
-            return record
+            results = [
+                {
+                    "relative_path": path,
+                    "status": "rejected",
+                    "code": "active_lease",
+                    "removed": False,
+                }
+                for path in relative_paths
+            ]
+            return {
+                "task_id": task_id,
+                "batch_status": summarize_batch(results),
+                "files": results,
+            }
         workspace = str(effects.get("workspace"))
-        if effects.get("operation") == RUN_TESTS_TOOL:
-            root = resolve_workspace(self.project_root, workspace)
-        else:
-            root = self.artifacts_root / workspace
-        decision = plan_cleanup(
-            effects=effects,
-            workspace_root=root,
-            relative_path=relative_path,
-            current_generation=task.claim_generation,
-            enabled=enabled,
-            authorized=authorized,
+        root = (
+            resolve_workspace(self.project_root, workspace)
+            if effects.get("operation") == RUN_TESTS_TOOL
+            else self.artifacts_root / workspace
         )
-        record["decision"] = decision.to_dict()
-        if not decision.allowed:
-            record.update(
-                status="rejected", code=decision.code, removed=False
+        for path in relative_paths:
+            decision = plan_cleanup(
+                effects=effects,
+                workspace_root=root,
+                relative_path=path,
+                current_generation=task.claim_generation,
+                enabled=enabled,
+                authorized=authorized,
+                cleaned_paths=cleaned,
             )
+            record: dict[str, Any] = {
+                "task_id": task_id,
+                "relative_path": path,
+                "decision": decision.to_dict(),
+            }
+            if not decision.allowed:
+                record.update(
+                    status="rejected", code=decision.code, removed=False
+                )
+            else:
+                record.update(
+                    execute_cleanup(
+                        decision,
+                        workspace_root=root,
+                        checkpoint=checkpoint,
+                    )
+                )
+            if record.get("status") == "completed":
+                cleaned.add(decision.relative_path or path)
             self._record_cleanup_event(task, record)
-            return record
-        outcome = execute_cleanup(decision)
-        record.update(outcome)
-        self._record_cleanup_event(task, record)
-        return record
+            results.append(record)
+        return {
+            "task_id": task_id,
+            "batch_status": summarize_batch(results),
+            "files": results,
+        }
 
     def _record_cleanup_event(
         self, task: Task, record: dict[str, Any]

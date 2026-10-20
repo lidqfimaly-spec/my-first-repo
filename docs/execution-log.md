@@ -598,6 +598,39 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.19 阶段执行记录
+
+## 实现
+
+- `execute_cleanup` 改为目录句柄相对解析 + `O_NOFOLLOW` + `fstat` + fd 哈希 + inode 复核；
+- 新增确定性检查点（opened/verified/before_unlink/after_unlink）供竞态注入；
+- 新增 `cleanup_workspace_files` 批量接口与 `summarize_batch`；
+- 重复请求返回 `already_cleaned`，同名新文件不被删除；
+- 清理事件逐文件持久化，失败标记 `evidence_persisted=false`。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 418/418，exit 0 |
+| 竞态专项 | 12/12 |
+| 清理专项 | 16/16 |
+| 稳定结果复现 | `d3050abe…` 两次一致 |
+| Mutation runner | 32 killed |
+| 覆盖率门禁 | 418 项通过，11/11 PASS |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- TOCTOU 未消除（无 compare-and-unlink）；
+- 仅 macOS/POSIX 验证；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.19-hardened-cleanup-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.18 阶段执行记录
 
 ## 实现

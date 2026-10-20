@@ -332,6 +332,28 @@ def _cleanup_scenarios() -> list[dict[str, Any]]:
                 "passed": not target.exists(),
             }
         )
+        batch_service = TaskService(root)
+        batch_task = batch_service.submit(
+            _Request(
+                goal="write batch",
+                operation="write_text_artifact",
+                parameters={"artifact_path": "b.txt", "content": "b\n"},
+            )
+        )
+        batch = batch_service.cleanup_workspace_files(
+            batch_task.task_id,
+            ["b.txt", "missing.txt"],
+            enabled=True,
+            authorized=True,
+        )
+        results.append(
+            {
+                "id": "C-8-batch",
+                "expected": "partial",
+                "status": batch["batch_status"],
+                "passed": batch["batch_status"] == "partial",
+            }
+        )
         results.append(
             {
                 "id": "C-7-evidence",
@@ -439,7 +461,30 @@ def _report(
         "cleanup_rejected": sum(
             1 for item in cleanup if item.get("status") == "rejected"
         ),
-        "cleanup_duplicates": 0,
+        "cleanup_duplicates": sum(
+            1 for item in cleanup if item.get("code") == "already_cleaned"
+        ),
+        "cleanup_partial_batches": sum(
+            1 for item in cleanup if item.get("status") == "partial"
+        ),
+        "cleanup_stale_generation": sum(
+            1 for item in cleanup if item.get("code") == "stale_generation"
+        ),
+        "cleanup_hash_mismatch": sum(
+            1 for item in cleanup if item.get("code") == "hash_mismatch"
+        ),
+        "cleanup_path_rejections": sum(
+            1
+            for item in cleanup
+            if item.get("code")
+            in {"unsafe_path", "protected_path", "not_owned", "invalid_path"}
+        ),
+        "cleanup_completed_total": sum(
+            1 for item in cleanup if item.get("status") == "completed"
+        ),
+        "cleanup_unverified": sum(
+            1 for item in cleanup if item.get("status") == "unverified"
+        ),
     }
     metric_audit = {
         "complete_snapshot_rate": {
