@@ -1198,8 +1198,8 @@
       "id": "controlled_crash_reconcile_manual_review_bypass",
       "property": "claimed controlled operations require manual review",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": True,\n",
-      "new": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": False,\n",
+      "old": "            **audit,\n            \"status\": \"unverified\",\n            \"reason\": reason,\n            \"manual_review\": True,\n            \"execution_supported\": True,\n",
+      "new": "            **audit,\n            \"status\": \"unverified\",\n            \"reason\": reason,\n            \"manual_review\": False,\n            \"execution_supported\": True,\n",
       "tests": [
         "tests.test_controlled_recovery.ControlledRecoveryTests.test_crash_after_side_effect_is_not_marked_completed"
       ],
@@ -1209,10 +1209,87 @@
       "id": "controlled_crash_reconcile_allows_retry",
       "property": "claimed controlled operations are never auto-retryable",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n",
-      "new": "            \"reason\": \"claimed_controlled_operation_requires_manual_review\",\n            \"manual_review\": True,\n            \"safe_to_retry\": True,\n",
+      "old": "            **audit,\n            \"status\": \"unverified\",\n            \"reason\": reason,\n            \"manual_review\": True,\n            \"execution_supported\": True,\n",
+      "new": "            **audit,\n            \"status\": \"unverified\",\n            \"reason\": reason,\n            \"manual_review\": True,\n            \"safe_to_retry\": True,\n            \"execution_supported\": True,\n",
       "tests": [
         "tests.test_controlled_recovery.ControlledRecoveryTests.test_crash_before_side_effect_is_manual_review_only"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_second_verification_bypass",
+      "property": "the final completion decision uses a post-boundary re-read",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    verification = verify_controlled_restore(root)\n    if checkpoint is not None:\n        checkpoint(\"before_completion_write\")\n",
+      "new": "    verification = first_verification\n    if checkpoint is not None:\n        checkpoint(\"before_completion_write\")\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_target_replacement_after_first_verification_is_caught"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_evidence_digest_bypass",
+      "property": "stored recovery evidence digest is verified",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if approval.result.get(\"evidence_digest\") != digest:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_audit_rejects_tampered_stored_evidence_digest"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_verification_binding_bypass",
+      "property": "verification result remains bound to evidence digest",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if f\"evidence_sha256={digest}\" not in (\n        approval.verification_result or \"\"\n    ):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_audit_rejects_missing_verification_binding"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_verification_state_bypass",
+      "property": "stored verification must have verified state",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if verification.get(\"state\") != \"verified\":\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_audit_rejects_stored_unverified_state"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_current_content_bypass",
+      "property": "current file must still satisfy completion evidence",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if not observation[\"verified\"]:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_audit_detects_same_inode_content_replacement"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_current_identity_bypass",
+      "property": "current file inode must match completion evidence",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "    if (\n        observation.get(\"device\"),\n        observation.get(\"inode\"),\n    ) != (\n        verification.get(\"device\"),\n        verification.get(\"inode\"),\n    ):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_audit_detects_inode_replacement_with_identical_content"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "controlled_audit_claims_security_certification",
+      "property": "consistency audit is not a security certification",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"security_certification\": False,\n",
+      "new": "        \"security_certification\": True,\n",
+      "tests": [
+        "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_success_audit_is_consistent_and_read_only"
       ],
       "expected": "killed"
     }

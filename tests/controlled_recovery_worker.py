@@ -30,14 +30,18 @@ def main() -> int:
     preview = RecoveryPreview.from_dict(
         json.loads(preview_path.read_text(encoding="utf-8"))
     )
+    crash_stage = {
+        "crash-claim": "after_claim",
+        "crash-before": "after_intent",
+        "crash-during": "during_side_effect",
+        "crash-after": "after_side_effect",
+        "crash-after-verification": "after_verification",
+        "crash-before-completion": "before_completion_write",
+        "crash-after-completion": "after_completion_write",
+    }.get(mode)
 
     def checkpoint(stage: str) -> None:
-        expected = (
-            "after_intent"
-            if mode == "crash-before"
-            else "after_side_effect"
-        )
-        if stage == expected:
+        if stage == crash_stage:
             ready_path.write_text(stage, encoding="utf-8")
             time.sleep(60)
 
@@ -47,7 +51,7 @@ def main() -> int:
         preview,
         workspace,
         now="2026-10-20T00:03:00.000+00:00",
-        checkpoint=checkpoint if mode.startswith("crash") else None,
+        checkpoint=checkpoint if crash_stage is not None else None,
     )
     print(json.dumps(result, sort_keys=True), flush=True)
     return 0

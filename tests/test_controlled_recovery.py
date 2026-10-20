@@ -465,7 +465,7 @@ class ControlledRecoveryTests(unittest.TestCase):
         self.assertEqual(reconciled["status"], "unverified")
         self.assertEqual(
             reconciled["reason"],
-            "terminal_state_differs_from_current_observation",
+            "historical_success_current_observation_diverged",
         )
         self.assertTrue(reconciled["manual_review"])
         self.assertFalse(reconciled["safe_to_retry"])

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
 import stat
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +17,7 @@ from .recovery_preview import (
     RecoveryAction,
     RecoveryApprovalStore,
     RecoveryPreview,
+    approval_record_digest,
 )
 
 
@@ -31,6 +34,43 @@ CONTROLLED_RESTORE_SHA256 = hashlib.sha256(
 CONTROLLED_RESTORE_MODE = 0o600
 MAX_VERIFICATION_BYTES = 4096
 Checkpoint = Callable[[str], None]
+
+
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def controlled_recovery_evidence_digest(
+    intent: dict[str, Any],
+    execution: dict[str, Any],
+    verification: dict[str, Any],
+) -> str:
+    return _canonical_digest(
+        {
+            "intent": intent,
+            "execution": execution,
+            "verification": verification,
+        }
+    )
+
+
+def _seal_recovery_result(result: dict[str, Any]) -> dict[str, Any]:
+    sealed = dict(result)
+    intent = sealed.get("intent")
+    execution = sealed.get("execution")
+    verification = sealed.get("verification")
+    if (
+        isinstance(intent, dict)
+        and isinstance(execution, dict)
+        and isinstance(verification, dict)
+    ):
+        sealed["evidence_digest"] = controlled_recovery_evidence_digest(
+            intent, execution, verification
+        )
+    return sealed
 
 
 def _workspace_root(path: Path | str) -> Path:
@@ -279,6 +319,7 @@ def _materialize_controlled_restore(
     workspace_root: Path | str,
     *,
     precondition: dict[str, Any],
+    checkpoint: Checkpoint | None = None,
 ) -> dict[str, Any]:
     root = _workspace_root(workspace_root)
     base = {
@@ -354,6 +395,8 @@ def _materialize_controlled_restore(
             if count <= 0:
                 raise OSError(errno.EIO, "marker write made no progress")
             written += count
+        if checkpoint is not None:
+            checkpoint("during_side_effect")
         os.fsync(target_fd)
         file_info = os.fstat(target_fd)
         os.close(target_fd)
@@ -410,6 +453,7 @@ def _completion_failure(
     now: str | None,
     observation: dict[str, Any],
 ) -> dict[str, Any]:
+    result = _seal_recovery_result(result)
     try:
         store.complete(
             approval_id,
@@ -501,6 +545,8 @@ def execute_controlled_restore(
             **claim,
             "general_recovery_supported": False,
         }
+    if checkpoint is not None:
+        checkpoint("after_claim")
     attempt_id = str(claim["execution_attempt_id"])
 
     before = verify_controlled_restore(root)
@@ -572,10 +618,17 @@ def execute_controlled_restore(
     execution = _materialize_controlled_restore(
         root,
         precondition=intent["precondition"],
+        checkpoint=checkpoint,
     )
     if checkpoint is not None:
         checkpoint("after_side_effect")
+    first_verification = verify_controlled_restore(root)
+    if checkpoint is not None:
+        checkpoint("after_verification")
+    # Re-read after the interruption hook; only the final read is evidence.
     verification = verify_controlled_restore(root)
+    if checkpoint is not None:
+        checkpoint("before_completion_write")
     result = {
         "operation": CONTROLLED_RESTORE_ACTION,
         "target": target,
@@ -593,6 +646,8 @@ def execute_controlled_restore(
             now=now,
             observation=verification,
         )
+    result = _seal_recovery_result(result)
+    evidence_digest = str(result["evidence_digest"])
     try:
         completed = store.complete(
             approval_id,
@@ -601,7 +656,8 @@ def execute_controlled_restore(
             verification_passed=True,
             verification_result=(
                 "independent no-follow readback verified "
-                f"sha256={CONTROLLED_RESTORE_SHA256}"
+                f"sha256={CONTROLLED_RESTORE_SHA256} "
+                f"evidence_sha256={evidence_digest}"
             ),
             now=now,
         )
@@ -617,6 +673,8 @@ def execute_controlled_restore(
             "execution_supported": True,
             "general_recovery_supported": False,
         }
+    if checkpoint is not None:
+        checkpoint("after_completion_write")
     return {
         "status": "succeeded",
         "code": "controlled_marker_restored",
@@ -625,8 +683,219 @@ def execute_controlled_restore(
         "execution_attempt_id": attempt_id,
         "approval_status": completed["approval_status"],
         "observation": verification,
+        "evidence_digest": evidence_digest,
         "execution_supported": True,
         "general_recovery_supported": False,
+    }
+
+
+def _audit_stored_evidence(approval: Any) -> list[str]:
+    issues: list[str] = []
+    if not isinstance(approval.result, dict):
+        return ["result_missing"]
+    intent = approval.execution_intent
+    execution = approval.result.get("execution")
+    verification = approval.result.get("verification")
+    if not isinstance(intent, dict):
+        issues.append("intent_missing")
+        return issues
+    if not isinstance(execution, dict):
+        issues.append("execution_evidence_missing")
+    if not isinstance(verification, dict):
+        issues.append("verification_evidence_missing")
+    if issues:
+        return issues
+    if approval.result.get("intent") != intent:
+        issues.append("result_intent_mismatch")
+    digest = controlled_recovery_evidence_digest(
+        intent, execution, verification
+    )
+    if approval.result.get("evidence_digest") != digest:
+        issues.append("evidence_digest_mismatch")
+    if f"evidence_sha256={digest}" not in (
+        approval.verification_result or ""
+    ):
+        issues.append("verification_result_binding_missing")
+    if (
+        intent.get("execution_attempt_id")
+        != approval.execution_attempt_id
+        or intent.get("action") != approval.action
+        or intent.get("target") != approval.target
+        or intent.get("action_digest") != approval.action_digest
+    ):
+        issues.append("intent_identity_mismatch")
+    expected = {
+        "sha256": CONTROLLED_RESTORE_SHA256,
+        "size": len(CONTROLLED_RESTORE_CONTENT),
+        "mode": CONTROLLED_RESTORE_MODE,
+    }
+    for field, value in expected.items():
+        if verification.get(field) != value:
+            issues.append(f"verification_{field}_mismatch")
+        if (
+            field == "sha256"
+            and execution.get(field) != value
+        ):
+            issues.append("execution_sha256_mismatch")
+    if verification.get("state") != "verified":
+        issues.append("verification_not_verified")
+    if execution.get("status") != "materialized":
+        issues.append("execution_not_materialized")
+    if (
+        execution.get("device"),
+        execution.get("inode"),
+    ) != (
+        verification.get("device"),
+        verification.get("inode"),
+    ):
+        issues.append("execution_verification_identity_mismatch")
+    if not approval.verification_passed:
+        issues.append("approval_verification_not_passed")
+    return list(dict.fromkeys(issues))
+
+
+def audit_controlled_recovery(
+    store: RecoveryApprovalStore,
+    approval_id: str,
+    workspace_root: Path | str,
+    *,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Audit persisted approval evidence against the current real file."""
+    root = _workspace_root(workspace_root)
+    target = controlled_restore_target(root)
+    checked_at = (
+        datetime.fromisoformat(now)
+        if now is not None
+        else datetime.now(timezone.utc)
+    )
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    audit = {
+        "auditor_version": "controlled-recovery-audit-v1",
+        "checked_at": checked_at.isoformat(timespec="milliseconds"),
+        "scope": "controlled_recovery_consistency_only",
+        "security_certification": False,
+        "approval_id": approval_id,
+        "target": target,
+        "manual_review": False,
+        "safe_to_retry": False,
+        "execution_supported": False,
+        "general_recovery_supported": False,
+    }
+    try:
+        approval = store.load(approval_id)
+    except ApprovalStoreError as exc:
+        return {
+            **audit,
+            "status": "unverified",
+            "manual_review": True,
+            "reason": "approval_store_unreadable",
+            "code": exc.code,
+        }
+    if (
+        approval.action != CONTROLLED_RESTORE_ACTION
+        or approval.target != target
+    ):
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": "controlled_action_binding_mismatch",
+            "manual_review": True,
+            "approval_status": approval.status,
+            "observation": verify_controlled_restore(root),
+        }
+    observation = verify_controlled_restore(root)
+    audit.update(
+        approval_status=approval.status,
+        approval_record_digest=approval_record_digest(approval),
+        approval_state_digest=approval.state_digest,
+        execution_attempt_id=approval.execution_attempt_id,
+        intent_recorded=approval.execution_intent is not None,
+        observation=observation,
+        observation_digest=_canonical_digest(observation),
+    )
+    if approval.execution_intent is not None:
+        audit["intent_digest"] = _canonical_digest(
+            approval.execution_intent
+        )
+    if approval.status == "approved":
+        return {**audit, "status": "not_claimed"}
+    if approval.status in {"revoked", "rejected"}:
+        return {**audit, "status": "denied"}
+    if approval.status == "consuming":
+        if approval.execution_intent is None:
+            reason = "claimed_without_persisted_intent"
+        elif observation["state"] == "target_absent":
+            reason = "interrupted_before_or_during_side_effect"
+        elif observation["verified"]:
+            reason = "side_effect_observed_without_persisted_completion"
+        else:
+            reason = "side_effect_state_uncertain"
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": reason,
+            "manual_review": True,
+            "execution_supported": True,
+        }
+    if approval.status == "failed":
+        return {
+            **audit,
+            "status": "verified_failure",
+            "reason": (
+                "failed_attempt_with_currently_verified_target"
+                if observation["verified"]
+                else "failed_attempt_recorded"
+            ),
+            "manual_review": True,
+            "execution_supported": True,
+        }
+    if approval.status != "consumed":
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": "approval_status_unknown",
+            "manual_review": True,
+        }
+    evidence_issues = _audit_stored_evidence(approval)
+    if evidence_issues:
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": "stored_evidence_inconsistent",
+            "manual_review": True,
+            "evidence_issues": evidence_issues,
+        }
+    if not observation["verified"]:
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": "historical_success_current_observation_diverged",
+            "manual_review": True,
+            "execution_supported": True,
+        }
+    verification = approval.result["verification"]
+    if (
+        observation.get("device"),
+        observation.get("inode"),
+    ) != (
+        verification.get("device"),
+        verification.get("inode"),
+    ):
+        return {
+            **audit,
+            "status": "unverified",
+            "reason": "current_file_identity_differs_from_completion_evidence",
+            "manual_review": True,
+            "execution_supported": True,
+        }
+    return {
+        **audit,
+        "status": "consistent",
+        "reason": "stored_evidence_and_current_file_match",
+        "evidence_digest": approval.result.get("evidence_digest"),
+        "execution_supported": True,
     }
 
 
@@ -636,49 +905,7 @@ def reconcile_controlled_restore(
     workspace_root: Path | str,
 ) -> dict[str, Any]:
     """Read-only crash reconciliation for the controlled operation."""
-    approval = store.load(approval_id)
-    root = _workspace_root(workspace_root)
-    target = controlled_restore_target(root)
-    base = store.reconcile(approval_id)
-    if (
-        approval.action != CONTROLLED_RESTORE_ACTION
-        or approval.target != target
-    ):
-        return {
-            **base,
-            "status": "unverified",
-            "reason": "controlled_action_binding_mismatch",
-            "manual_review": True,
-            "safe_to_retry": False,
-            "execution_supported": False,
-            "general_recovery_supported": False,
-        }
-    observation = verify_controlled_restore(root)
-    if approval.status == "consuming":
-        return {
-            **base,
-            "status": "unverified",
-            "reason": "claimed_controlled_operation_requires_manual_review",
-            "manual_review": True,
-            "safe_to_retry": False,
-            "observation": observation,
-            "execution_supported": True,
-            "general_recovery_supported": False,
-        }
-    if approval.status == "consumed" and not observation["verified"]:
-        return {
-            **base,
-            "status": "unverified",
-            "reason": "terminal_state_differs_from_current_observation",
-            "manual_review": True,
-            "safe_to_retry": False,
-            "observation": observation,
-            "execution_supported": True,
-            "general_recovery_supported": False,
-        }
-    return {
-        **base,
-        "observation": observation,
-        "execution_supported": approval.status in {"consumed", "failed"},
-        "general_recovery_supported": False,
-    }
+    audit = audit_controlled_recovery(store, approval_id, workspace_root)
+    if audit["status"] == "consistent":
+        return {**audit, "status": "completed"}
+    return audit
