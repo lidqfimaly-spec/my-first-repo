@@ -1358,6 +1358,61 @@
         "tests.test_controlled_recovery_phase368.ControlledRecoveryPhase368Tests.test_result_envelope_mismatch_is_never_consistent"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "evidence_trust_claims_authenticity",
+      "property": "consistency audit does not claim authenticity",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"authenticity\": \"not_authenticated\",\n        \"trust_root\": \"none\",\n",
+      "new": "        \"authenticity\": \"authenticated\",\n        \"trust_root\": \"none\",\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_audit_distinguishes_consistency_from_authenticity"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_trust_root_overclaimed",
+      "property": "no trust root is implemented",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"trust_root\": \"none\",\n",
+      "new": "        \"trust_root\": \"local_digest\",\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_missing_trust_root_is_reported_for_all_decisions"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_same_privilege_rewrite_overclaimed",
+      "property": "same-privilege rewrite is not defended",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "        \"same_privilege_rewrite_protected\": False,\n",
+      "new": "        \"same_privilege_rewrite_protected\": True,\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_full_same_privilege_rewrite_is_not_authenticated"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_same_privilege_claim_overclaimed",
+      "property": "same-privilege tamper remains outside protection",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "            \"same_privilege_tamper\": \"not_defended\",\n",
+      "new": "            \"same_privilege_tamper\": \"defended\",\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_audit_distinguishes_consistency_from_authenticity"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "evidence_source_authentication_overclaimed",
+      "property": "local evidence sources are not authenticated",
+      "path": "src/zevorinth/controlled_recovery.py",
+      "old": "            \"intent\": {\n                \"source\": \"executor_persisted_local\",\n                \"authenticated\": False,\n            },\n",
+      "new": "            \"intent\": {\n                \"source\": \"executor_persisted_local\",\n                \"authenticated\": True,\n            },\n",
+      "tests": [
+        "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_audit_distinguishes_consistency_from_authenticity"
+      ],
+      "expected": "killed"
     }
   ]
 }

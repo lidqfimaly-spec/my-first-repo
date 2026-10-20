@@ -44,6 +44,46 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _evidence_trust_boundary() -> dict[str, Any]:
+    return {
+        "authenticity": "not_authenticated",
+        "trust_root": "none",
+        "same_privilege_rewrite_protected": False,
+        "evidence_claims": {
+            "integrity": "digest_detects_corruption_only",
+            "consistency": "audited",
+            "authenticity": "not_authenticated",
+            "same_privilege_tamper": "not_defended",
+        },
+        "evidence_sources": {
+            "approval_record": {
+                "source": "local_file_store",
+                "authenticated": False,
+            },
+            "intent": {
+                "source": "executor_persisted_local",
+                "authenticated": False,
+            },
+            "execution": {
+                "source": "executor_reported_local",
+                "authenticated": False,
+            },
+            "verification": {
+                "source": "independent_runtime_verifier_local",
+                "authenticated": False,
+            },
+            "completion": {
+                "source": "local_file_store",
+                "authenticated": False,
+            },
+            "current_observation": {
+                "source": "audit_process_recomputed",
+                "authenticated": False,
+            },
+        },
+    }
+
+
 def controlled_recovery_evidence_digest(
     intent: dict[str, Any],
     execution: dict[str, Any],
@@ -919,6 +959,7 @@ def audit_controlled_recovery(
         "checked_at": checked_at.isoformat(timespec="milliseconds"),
         "scope": "controlled_recovery_consistency_only",
         "security_certification": False,
+        **_evidence_trust_boundary(),
         "approval_id": approval_id,
         "target": target,
         "manual_review": False,
