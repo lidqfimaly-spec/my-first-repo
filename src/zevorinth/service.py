@@ -19,7 +19,12 @@ from .artifact_tool import (
     RealArtifactWriter,
     task_publication_lock,
 )
-from .event_store import ClaimLost, EventStore, StoreBusyError
+from .event_store import (
+    ClaimLost,
+    EventStore,
+    PlanRevisionConflict,
+    StoreBusyError,
+)
 from .lease_renewal import LeaseRenewer
 from .models import (
     ClaimResult,
@@ -34,6 +39,7 @@ from .models import (
     VerificationResult,
     PlanningClassification,
     PlanningOutcome,
+    PlanRevision,
 )
 from .planner import DeterministicPlanner, Planner
 from .policy import ArtifactPolicy, missing_required_fields
@@ -279,6 +285,140 @@ class TaskService:
 
     def events(self, task_id: str) -> list[Event]:
         return self.store.list_events(task_id)
+
+    def cancel(self, task_id: str) -> Task:
+        return self.store.cancel_task(task_id, now=self.clock())
+
+    def revise_plan(
+        self,
+        task_id: str,
+        patch: Mapping[str, object],
+        *,
+        source_id: str,
+        expected_plan_version: int,
+        confirmed: bool,
+    ) -> Task:
+        """Revise an unexecuted task with an optimistic version check."""
+        if not source_id.strip():
+            raise ValueError("source_id must not be empty")
+        if not confirmed:
+            raise PlanRevisionConflict(
+                "plan revision requires explicit confirmation"
+            )
+        current = self.store.require_task(task_id)
+        for revision in current.plan_revisions:
+            if revision.source_id == source_id:
+                return current
+        if current.plan_version != expected_plan_version:
+            raise PlanRevisionConflict(
+                "expected plan version does not match current version"
+            )
+        if (
+            current.status
+            not in {
+                TaskStatus.QUEUED,
+                TaskStatus.AWAITING_CLARIFICATION,
+                TaskStatus.BLOCKED,
+                TaskStatus.INTERRUPTED,
+            }
+            or current.tool_result is not None
+            or current.artifact is not None
+            or current.execution_mode is not ExecutionMode.NOT_EXECUTED
+        ):
+            raise PlanRevisionConflict(
+                "task cannot be revised after execution evidence"
+            )
+        unknown = set(patch) - {"goal", "operation", "parameters"}
+        if unknown:
+            raise ValueError(f"unsupported request fields: {sorted(unknown)}")
+        new_request = current.request.merged(patch)
+        outcome = self.planner.plan_request(new_request)
+        if outcome.classification not in {
+            PlanningClassification.PLANNED,
+            PlanningClassification.CLARIFICATION,
+        }:
+            raise PlanRevisionConflict(
+                "revised request could not produce a safe plan"
+            )
+        new_version = current.plan_version + 1
+        new_plan = outcome.plan
+        new_status = (
+            TaskStatus.AWAITING_CLARIFICATION
+            if outcome.classification is PlanningClassification.CLARIFICATION
+            else TaskStatus.QUEUED
+        )
+        new_missing = (
+            outcome.missing_fields
+            or missing_required_fields(outcome.request or new_request)
+        )
+        new_questions = outcome.clarification_questions
+        changed_steps = self._changed_plan_steps(
+            current.plan,
+            new_plan,
+        )
+        revision = PlanRevision(
+            revision_id=str(uuid4()),
+            from_version=current.plan_version,
+            to_version=new_version,
+            source_id=source_id,
+            changed_at=self.clock(),
+            confirmed=True,
+            old_request=current.request.to_dict(),
+            new_request=new_request.to_dict(),
+            old_plan=current.plan.to_dict() if current.plan else None,
+            new_plan=new_plan.to_dict() if new_plan else None,
+            changed_steps=changed_steps,
+        )
+        metadata = {
+            "classification": outcome.classification.value,
+            **dict(outcome.metadata),
+        }
+        current.status = new_status
+        current.request = outcome.request or new_request
+        current.plan = new_plan
+        current.missing_fields = list(new_missing)
+        current.clarification_questions = list(new_questions)
+        current.planning_metadata = metadata
+        current.planner_mode = self.planner.mode
+        current.plan_version = new_version
+        current.plan_revisions.append(revision)
+        current.phase = "plan_revised"
+        current.error = None
+        current.execution_mode = ExecutionMode.NOT_EXECUTED
+        current.updated_at = revision.changed_at
+        current.execution_owner = None
+        current.lease_token = None
+        current.lease_expires_at = None
+        return self.store.apply_plan_revision(
+            task_id,
+            expected_plan_version=expected_plan_version,
+            updated_task=current,
+            event=Event.new(
+                task_id,
+                EventType.PLAN_REVISED,
+                revision.changed_at,
+                {
+                    "revision": revision.to_dict(),
+                    "classification": outcome.classification.value,
+                },
+            ),
+        )
+
+    @staticmethod
+    def _changed_plan_steps(old_plan, new_plan) -> list[str]:
+        if old_plan is None or new_plan is None:
+            return ["plan"]
+        old_steps = {step.step_id: step for step in old_plan.steps}
+        new_steps = {step.step_id: step for step in new_plan.steps}
+        changed = []
+        for step_id in sorted(set(old_steps) | set(new_steps)):
+            old_step = old_steps.get(step_id)
+            new_step = new_steps.get(step_id)
+            if old_step is None or new_step is None:
+                changed.append(step_id)
+            elif old_step.to_dict() != new_step.to_dict():
+                changed.append(step_id)
+        return changed
 
     def cleanup_staging(self, *, now: str | None = None) -> dict[str, object]:
         """Remove only staging files with provable, non-active ownership."""

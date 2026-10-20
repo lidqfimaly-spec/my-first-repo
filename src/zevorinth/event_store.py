@@ -69,6 +69,10 @@ class LeaseRenewalError(EventStoreError):
         self.code = code
 
 
+class PlanRevisionConflict(EventStoreError):
+    pass
+
+
 class MessageConflict(EventStoreError):
     pass
 
@@ -1230,6 +1234,58 @@ class EventStore:
             for row in rows
         ]
 
+    def list_conversation_turns(
+        self,
+        conversation_id: str,
+    ) -> list[ConversationTurn]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT turn_id, conversation_id, turn_index, status,
+                       intent_kind, task_id, created_at, updated_at
+                FROM conversation_turns
+                WHERE conversation_id = ?
+                ORDER BY turn_index ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [
+            ConversationTurn(
+                turn_id=str(row["turn_id"]),
+                conversation_id=str(row["conversation_id"]),
+                turn_index=int(row["turn_index"]),
+                status=TurnStatus(row["status"]),
+                intent_kind=(
+                    str(row["intent_kind"])
+                    if row["intent_kind"] is not None
+                    else None
+                ),
+                task_id=(
+                    str(row["task_id"])
+                    if row["task_id"] is not None
+                    else None
+                ),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    def list_tasks_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> list[Task]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT task_json FROM tasks
+                WHERE conversation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [Task.from_dict(json.loads(row["task_json"])) for row in rows]
+
     def find_active_task_for_conversation(
         self,
         conversation_id: str,
@@ -1987,6 +2043,84 @@ class EventStore:
             stored = self._insert_event(connection, event)
             connection.commit()
         return stored
+
+    def apply_plan_revision(
+        self,
+        task_id: str,
+        *,
+        expected_plan_version: int,
+        updated_task: Task,
+        event: Event,
+    ) -> Task:
+        """Apply an optimistic, side-effect-free plan revision."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._load_task(connection, task_id)
+            if current.plan_version != expected_plan_version:
+                raise PlanRevisionConflict(
+                    "task plan version changed before revision committed"
+                )
+            if current.status not in {
+                TaskStatus.QUEUED,
+                TaskStatus.AWAITING_CLARIFICATION,
+                TaskStatus.BLOCKED,
+                TaskStatus.INTERRUPTED,
+            }:
+                raise PlanRevisionConflict(
+                    "task state does not allow safe plan revision"
+                )
+            if (
+                current.tool_result is not None
+                or current.artifact is not None
+                or current.execution_mode.value != "not_executed"
+            ):
+                raise PlanRevisionConflict(
+                    "task already produced execution evidence"
+                )
+            if updated_task.status is not current.status:
+                ensure_transition(current.status, updated_task.status)
+            self._update_task(connection, updated_task)
+            self._insert_event(connection, event)
+            connection.commit()
+        return updated_task
+
+    def cancel_task(self, task_id: str, *, now: str) -> Task:
+        """Cancel only a task without an active execution Lease."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            if is_terminal(task.status):
+                connection.commit()
+                return task
+            if (
+                task.lease_token is not None
+                and task.lease_expires_at is not None
+                and self._lease_is_active(task.lease_expires_at, now)
+            ):
+                raise PlanRevisionConflict(
+                    "task has an active execution lease"
+                )
+            ensure_transition(task.status, TaskStatus.CANCELLED)
+            task.status = TaskStatus.CANCELLED
+            task.phase = "cancelled"
+            task.updated_at = now
+            task.execution_owner = None
+            task.lease_token = None
+            task.lease_expires_at = None
+            task.error = TaskError(
+                "cancelled",
+                "task was explicitly cancelled",
+            )
+            event = Event.new(
+                task_id,
+                EventType.TASK_CANCELLED,
+                now,
+                {"reason": "explicit_user_cancellation"},
+            )
+            self._update_task(connection, task)
+            self._insert_event(connection, event)
+            connection.commit()
+        return task
 
     def transition(
         self,

@@ -59,6 +59,7 @@ class IntentKind(str, Enum):
     CLARIFICATION_ANSWER = "clarification_answer"
     STATUS_QUERY = "status_query"
     AMBIGUOUS = "ambiguous"
+    CANCEL_REQUEST = "cancel_request"
 
 
 class ClarificationStatus(str, Enum):
@@ -112,6 +113,8 @@ class EventType(str, Enum):
     TASK_RESUMED = "task_resumed"
     TASK_SUCCEEDED = "task_succeeded"
     TASK_FAILED = "task_failed"
+    TASK_CANCELLED = "task_cancelled"
+    PLAN_REVISED = "plan_revised"
     STAGING_CLEANED = "staging_cleaned"
 
 
@@ -253,6 +256,62 @@ class TaskError:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "TaskError":
         return cls(code=str(data["code"]), message=str(data["message"]))
+
+
+@dataclass(slots=True)
+class PlanRevision:
+    revision_id: str
+    from_version: int
+    to_version: int
+    source_id: str
+    changed_at: str
+    confirmed: bool
+    old_request: JsonObject
+    new_request: JsonObject
+    old_plan: JsonObject | None
+    new_plan: JsonObject | None
+    changed_steps: list[str]
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "revision_id": self.revision_id,
+            "from_version": self.from_version,
+            "to_version": self.to_version,
+            "source_id": self.source_id,
+            "changed_at": self.changed_at,
+            "confirmed": self.confirmed,
+            "old_request": self.old_request,
+            "new_request": self.new_request,
+            "old_plan": self.old_plan,
+            "new_plan": self.new_plan,
+            "changed_steps": list(self.changed_steps),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "PlanRevision":
+        return cls(
+            revision_id=str(data["revision_id"]),
+            from_version=int(data["from_version"]),
+            to_version=int(data["to_version"]),
+            source_id=str(data["source_id"]),
+            changed_at=str(data["changed_at"]),
+            confirmed=bool(data["confirmed"]),
+            old_request=dict(data.get("old_request", {})),
+            new_request=dict(data.get("new_request", {})),
+            old_plan=(
+                dict(data["old_plan"])
+                if data.get("old_plan") is not None
+                else None
+            ),
+            new_plan=(
+                dict(data["new_plan"])
+                if data.get("new_plan") is not None
+                else None
+            ),
+            changed_steps=[
+                str(item) for item in data.get("changed_steps", [])
+            ],
+        )
 
 
 @dataclass(slots=True)
@@ -400,6 +459,8 @@ class Task:
     conversation_id: str | None = None
     execution_started_at: str | None = None
     execution_deadline_at: str | None = None
+    plan_version: int = 0
+    plan_revisions: list[PlanRevision] = field(default_factory=list)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -424,6 +485,10 @@ class Task:
             "claim_generation": self.claim_generation,
             "execution_started_at": self.execution_started_at,
             "execution_deadline_at": self.execution_deadline_at,
+            "plan_version": self.plan_version,
+            "plan_revisions": [
+                revision.to_dict() for revision in self.plan_revisions
+            ],
             "planner_mode": self.planner_mode.value,
             "planning_metadata": self.planning_metadata,
             "clarification_questions": list(self.clarification_questions),
@@ -470,6 +535,11 @@ class Task:
                 if data.get("execution_deadline_at") is not None
                 else None
             ),
+            plan_version=int(data.get("plan_version", 0)),
+            plan_revisions=[
+                PlanRevision.from_dict(item)
+                for item in data.get("plan_revisions", [])
+            ],
             planner_mode=PlannerMode(data.get("planner_mode", "deterministic")),
             planning_metadata=dict(data.get("planning_metadata", {})),
             clarification_questions=[

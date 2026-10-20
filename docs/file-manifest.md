@@ -155,6 +155,31 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 
 ---
 
+# 第 3.5 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.5-design.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/context.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_context_continuity.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/cli.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/conversation_service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/event_store.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/intent.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/models.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/service.py`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/state_machine.py`
+
+Schema version 保持 4；运行产物和 `.idea/` 不纳入源码清单。
+
+---
+
 # 第 3.4.6 阶段新增与修改
 
 ## 新增

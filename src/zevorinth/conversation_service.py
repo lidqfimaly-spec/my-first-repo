@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from .context import ConversationContext, ConversationContextBuilder
 from .event_store import (
     ClarificationConflict,
     ClarificationNotFound,
@@ -48,6 +49,7 @@ class ConversationService:
         self.store = store
         self.task_service = task_service or TaskService(self.project_root)
         self.intent_classifier = IntentClassifier()
+        self.context_builder = ConversationContextBuilder(self.store)
 
     def create_conversation(
         self,
@@ -91,6 +93,17 @@ class ConversationService:
         return self.store.list_conversation_messages(
             conversation_id,
             limit=limit,
+        )
+
+    def context(
+        self,
+        conversation_id: str,
+        *,
+        summary: str | None = None,
+    ) -> ConversationContext:
+        return self.context_builder.build(
+            conversation_id,
+            summary=summary,
         )
 
     def process_message(
@@ -253,6 +266,21 @@ class ConversationService:
                 classification=classification,
                 task=task,
                 now=now,
+            )
+
+        if classification.kind is IntentKind.CANCEL_REQUEST:
+            turn = self.store.update_conversation_turn(
+                turn.turn_id,
+                status=TurnStatus.NEEDS_ATTENTION,
+                intent_kind=classification.kind.value,
+                now=now,
+            )
+            return self._result(
+                "requires_cancel_confirmation",
+                turn,
+                message,
+                classification,
+                active_task,
             )
 
         # Supplement and modify_pending are deliberately not applied from

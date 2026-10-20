@@ -598,6 +598,42 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.5 阶段执行记录
+
+## 实现
+
+- 新增可持久化重建的 ConversationContext；
+- 区分原始消息、约束、确认决定、完成工作、待办和未确认假设；
+- 摘要固定标记为非权威；
+- 新增显式 cancel request 与 idle-task cancel；
+- Task JSON 增加 plan_version 和 revision history；
+- 新增乐观版本检查的安全计划修订；
+- 已执行任务拒绝修订，修订不会重跑已完成副作用；
+- CLI 增加 context、cancel 和 revise。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 209/209 通过，exit 0 |
+| 隔离环境完整 unittest | 209/209 通过，exit 0 |
+| context continuity 专项 | 8/8 |
+| 并发计划修订竞态 | 20/20 轮 0 失败 |
+| Lease renewal / fencing / recovery | 全部通过 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema 保持 v4；
+- 不自动从自由文本生成完整任务参数；
+- 已执行任务仍需显式取消/新建；
+- 不接入真实 LLM；
+- 详见 `docs/phase-3.5-design.md`；
+- 真实模型 API 请求：0，未推送。
+
+---
+
 # 第 3.4.6 阶段执行记录
 
 ## 审计与修复

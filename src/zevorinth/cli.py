@@ -19,6 +19,7 @@ from .event_store import (
     ConversationTurnNotFound,
     EventStoreError,
     MessageConflict,
+    PlanRevisionConflict,
     TaskLinkConflict,
     TaskNotFound,
 )
@@ -305,6 +306,7 @@ CONVERSATION_EXIT_CODES = {
     "requires_structured_update": 3,
     "requires_confirmation": 4,
     "active_task_conflict": 4,
+    "requires_cancel_confirmation": 4,
     "blocked": 4,
     "failed": 1,
     "planning_failed": 7,
@@ -390,6 +392,10 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("conversation_id")
     history.add_argument("--limit", type=int, default=50)
     history.add_argument("--json", action="store_true")
+    context = conversation_sub.add_parser("context")
+    context.add_argument("conversation_id")
+    context.add_argument("--summary", default=None)
+    context.add_argument("--json", action="store_true")
     process = conversation_sub.add_parser("process")
     process.add_argument("conversation_id")
     process.add_argument("--content", required=True)
@@ -477,6 +483,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="remove provably inactive staging files",
     )
     cleanup.add_argument("--json", action="store_true")
+
+    cancel = subparsers.add_parser(
+        "cancel",
+        help="cancel a task that has no active execution lease",
+    )
+    cancel.add_argument("task_id")
+    cancel.add_argument("--json", action="store_true")
+
+    revise = subparsers.add_parser(
+        "revise",
+        help="apply a confirmed plan revision without executing it",
+    )
+    revise.add_argument("task_id")
+    revise.add_argument("--expected-plan-version", type=int, required=True)
+    revise.add_argument("--source-id", required=True)
+    revise.add_argument("--confirm", action="store_true")
+    revise.add_argument("--goal", default=None)
+    revise.add_argument("--operation", default=None)
+    revise.add_argument("--artifact-path", default=None)
+    revise.add_argument("--content", default=None)
+    revise.add_argument("--json", action="store_true")
 
     resume = subparsers.add_parser(
         "resume",
@@ -574,6 +601,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 task = service.recover_task(args.task_id)
                 _print_task(task, args.json)
                 return _exit_code(task)
+            if args.conversation_command == "context":
+                context_report = service.context(
+                    args.conversation_id,
+                    summary=args.summary,
+                )
+                if args.json:
+                    print(
+                        json.dumps(
+                            context_report.to_dict(),
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Conversation: {context_report.conversation_id}")
+                    print(f"Version: {context_report.version}")
+                    print(f"Goal: {context_report.goal or 'none'}")
+                    print(f"Constraints: {len(context_report.constraints)}")
+                    print(
+                        "Confirmed decisions: "
+                        f"{len(context_report.confirmed_decisions)}"
+                    )
+                    print(
+                        "Pending steps: "
+                        f"{len(context_report.pending_steps)}"
+                    )
+                    print(
+                        "Unresolved questions: "
+                        f"{len(context_report.unresolved_questions)}"
+                    )
+                    if context_report.summary:
+                        print(
+                            "Summary (derived, non-authoritative): "
+                            f"{context_report.summary}"
+                        )
+                return 0
             messages = service.history(
                 args.conversation_id,
                 limit=args.limit,
@@ -585,6 +649,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         except TaskNotFound:
             print(f"task not found: {args.task_id}", file=sys.stderr)
+            return 2
+        except PlanRevisionConflict as exc:
+            print(f"plan revision conflict: {exc}", file=sys.stderr)
             return 2
         except MessageConflict as exc:
             print(f"message conflict: {exc}", file=sys.stderr)
@@ -775,6 +842,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"{event.event_type} {json.dumps(event.payload, ensure_ascii=False, sort_keys=True)}"
                     )
             return 0
+        if args.command == "cancel":
+            task = service.cancel(args.task_id)
+            _print_task(task, args.json)
+            return _exit_code(task)
+        if args.command == "revise":
+            patch = _patch_from_args(args)
+            if patch is None:
+                raise ValueError("revise requires at least one changed field")
+            task = service.revise_plan(
+                args.task_id,
+                patch,
+                source_id=args.source_id,
+                expected_plan_version=args.expected_plan_version,
+                confirmed=args.confirm,
+            )
+            _print_task(task, args.json)
+            return _exit_code(task)
         if args.command == "cleanup-staging":
             report = service.cleanup_staging()
             if args.json:
@@ -820,6 +904,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except (TaskLinkConflict, ActiveTaskConflict) as exc:
         print(f"task conversation conflict: {exc}", file=sys.stderr)
+        return 2
+    except PlanRevisionConflict as exc:
+        print(f"plan revision conflict: {exc}", file=sys.stderr)
         return 2
     except ValueError as exc:
         print(f"invalid request: {exc}", file=sys.stderr)

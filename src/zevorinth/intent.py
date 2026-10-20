@@ -37,6 +37,7 @@ _MODIFY_MARKERS = (
     "modify",
     "update",
 )
+_CANCEL_MARKERS = ("取消", "cancel")
 
 
 class IntentClassifier:
@@ -81,6 +82,14 @@ class IntentClassifier:
             return IntentClassification(
                 kind=IntentKind.NEW_TASK,
                 reason="no active task in this conversation",
+            )
+
+        if any(marker in text for marker in _CANCEL_MARKERS):
+            return IntentClassification(
+                kind=IntentKind.CANCEL_REQUEST,
+                reason="message requests cancellation of the active task",
+                target_task_id=active_task.task_id,
+                requires_confirmation=True,
             )
 
         has_new_marker = any(marker in text for marker in _NEW_TASK_MARKERS)
