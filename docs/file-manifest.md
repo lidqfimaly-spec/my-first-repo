@@ -28,6 +28,28 @@
 
 ---
 
+# 第 3.41 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_llm_planner_instructions.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.41-llm-planner-instructions-audit.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/llm_planner.py`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/stable-summary.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.41/mutations-rerun.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增

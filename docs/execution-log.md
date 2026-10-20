@@ -622,6 +622,43 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.41 阶段执行记录
+
+## 审计发现
+
+- `PLANNER_INSTRUCTIONS` 仍声称唯一操作是 `write_text_artifact`，与已支持
+  `run_tests` 的 schema/校验器矛盾；
+- OpenAI 与 DeepSeek 共用同一份 instructions，无供应商覆盖；
+- `missing_fields` schema 枚举缺少校验器已允许的 `workspace`、`test_target`。
+
+## 最小修复
+
+- instructions 增加 `run_tests` 适用条件、`test_target` 格式、写测试与跑测试的区分、
+  可信字段禁填与不承诺成功；
+- `missing_fields` 枚举与 `ALLOWED_MISSING_FIELDS` 对齐；
+- 未修改 policy、证据门禁、执行器或独立验证器。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 新增指令专项 | 12/12 |
+| Planner / run_tests / 证据 / 执行器专项 | 106/106 |
+| 系统 Python 全量 unittest | 559/559，exit 0 |
+| `.venv` 全量 unittest | 559/559，exit 0 |
+| Mutation runner（单独复跑） | 60 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 真实模型 API 请求：0；
+- 修改后的模型行为未验证；
+- 首轮变异在并行负载下有 1 个时序存活项，单独复跑被杀；
+- 详见 `docs/phase-3.41-llm-planner-instructions-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现
