@@ -696,6 +696,28 @@
         "tests.test_llm_run_tests_capability.ValidatorTests.test_run_tests_without_workspace_needs_clarification"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "auto_provision_isolation_forced_false",
+      "property": "trusted auto-provision flag survives normalization",
+      "path": "src/zevorinth/local_test_runner.py",
+      "old": "        \"auto_provision_isolation\": auto_provision,\n",
+      "new": "        \"auto_provision_isolation\": False,\n",
+      "tests": [
+        "tests.test_trusted_test_parameters.ParameterNormalizationTests.test_auto_provision_is_preserved"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "run_tests_failure_tool_name_reverted",
+      "property": "run_tests failures record the run_tests tool name",
+      "path": "src/zevorinth/service.py",
+      "old": "                exc.message,\n                started_at,\n                tool_name=RUN_TESTS_TOOL,\n            )\n        except Exception as exc:\n",
+      "new": "                exc.message,\n                started_at,\n                tool_name=self.writer.tool_name,\n            )\n        except Exception as exc:\n",
+      "tests": [
+        "tests.test_trusted_test_parameters.ExecutionWiringTests.test_run_tests_failure_records_run_tests_tool_name"
+      ],
+      "expected": "killed"
     }
   ]
 }

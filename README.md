@@ -350,5 +350,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.43 阶段诊断契约与测试隔离审计](docs/phase-3.43-diagnostics-contract-test-isolation-audit.md)
 - [第 3.44 阶段端到端验证任务书](docs/phase-3.44-end-to-end-verification-taskbook.md)
 - [第 3.44 阶段端到端验证审计（BLOCKED）](docs/phase-3.44-end-to-end-verification-audit.md)
+- [第 3.45 阶段可信参数契约与离线执行闭环](docs/phase-3.45-trusted-parameter-contract-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

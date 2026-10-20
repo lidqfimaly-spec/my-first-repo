@@ -785,6 +785,48 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.45 阶段执行记录
+
+## 修复
+
+- `validate_parameters()` 保留并校验 `auto_provision_isolation`、evidence/image/
+  digest/authorization/artifacts/disk/budget 等可信字段；
+- 计划构建后逐字段检查，丢失时返回 `trusted_parameter_loss`；
+- `_finish_tool_failure()` 使用真实工具名，缺失上下文使用 `unknown_tool`；
+- provisioning 移到执行前快照之前，探针产物不再被误判为测试副作用；
+- provisioning 失败返回 `provisioning_failed`，容器不启动。
+
+## 离线闭环
+
+伪候选 + 真实 provisioning + 真实容器：
+
+- 任务 `succeeded`；
+- 容器 `zv-f5677fffc44b-189a94a0`，退出码 0；
+- evidence 独立复核 `verified`；
+- `TestResultVerifier` 返回 `tests_passed`；
+- 任务内 workspace diff 全零；
+- 真实模型 API 请求：0。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 新增可信参数/执行契约测试 | 19/19 |
+| 相关专项 | 162/162 |
+| 系统 Python 全量 | 597/597 |
+| `.venv` 全量 | 597/597 |
+| Mutation runner | 62 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 未调用真实模型；
+- `type` 语义仍未确定；
+- 详见 `docs/phase-3.45-trusted-parameter-contract-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现

@@ -35,6 +35,12 @@ TARGET_PATTERN = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$"
 )
 WORKSPACE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+EVIDENCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+IMAGE_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,254}$")
+AUTH_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+MAX_REQUIRED_ARTIFACTS = 64
+MIN_DISK_LIMIT_BYTES = 1024 * 1024
 
 
 class TestExecutionError(RuntimeError):
@@ -45,7 +51,13 @@ class TestExecutionError(RuntimeError):
 
 
 def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
-    """Validate and normalize structured test parameters."""
+    """Validate and normalize structured test parameters.
+
+    This function validates shape and range only.  Provenance is the caller's
+    responsibility: model candidates may contribute ``test_target``, while
+    workspace, image, backend, evidence, budget and authorization fields must
+    come from trusted task parameters or executor derivation.
+    """
     unknown = set(parameters) - {
         "runner",
         "target",
@@ -131,6 +143,119 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
             "invalid_execution_backend",
             "execution_backend must be 'container' or 'host'",
         )
+
+    evidence_id = parameters.get("evidence_id")
+    if evidence_id is not None and (
+        not isinstance(evidence_id, str)
+        or not EVIDENCE_ID_PATTERN.fullmatch(evidence_id)
+    ):
+        raise TestExecutionError(
+            "invalid_evidence_id",
+            "evidence_id must be 1-128 chars of [A-Za-z0-9_-]",
+        )
+
+    image = parameters.get("image")
+    if image is not None and (
+        not isinstance(image, str)
+        or not IMAGE_REFERENCE_PATTERN.fullmatch(image)
+        or (":" not in image and "@" not in image)
+    ):
+        raise TestExecutionError(
+            "invalid_image",
+            "image must be a pinned tag or digest reference",
+        )
+
+    digests: dict[str, str | None] = {}
+    for field in ("config_digest", "command_digest"):
+        value = parameters.get(field)
+        if value is not None and (
+            not isinstance(value, str)
+            or not SHA256_PATTERN.fullmatch(value)
+        ):
+            raise TestExecutionError(
+                f"invalid_{field}",
+                f"{field} must be a lowercase sha256 hex digest",
+            )
+        digests[field] = value
+
+    host_authorization = parameters.get("host_authorization")
+    if host_authorization is not None and (
+        not isinstance(host_authorization, str)
+        or not AUTH_TOKEN_PATTERN.fullmatch(host_authorization)
+    ):
+        raise TestExecutionError(
+            "invalid_host_authorization",
+            "host_authorization must be a bounded token",
+        )
+
+    required_raw = parameters.get("required_artifacts") or []
+    if isinstance(required_raw, str) or not isinstance(
+        required_raw, (list, tuple)
+    ):
+        raise TestExecutionError(
+            "invalid_required_artifacts",
+            "required_artifacts must be an array of paths",
+        )
+    if len(required_raw) > MAX_REQUIRED_ARTIFACTS:
+        raise TestExecutionError(
+            "invalid_required_artifacts",
+            f"required_artifacts exceeds {MAX_REQUIRED_ARTIFACTS} entries",
+        )
+    required_artifacts: list[str] = []
+    for item in required_raw:
+        if not isinstance(item, str):
+            raise TestExecutionError(
+                "invalid_required_artifacts",
+                "required artifact paths must be strings",
+            )
+        try:
+            normalized_item = _normalize_prefix(item)
+        except SnapshotError as exc:
+            raise TestExecutionError(
+                "invalid_required_artifacts",
+                f"{exc.code}: {exc.message}",
+            ) from exc
+        if not normalized_item:
+            raise TestExecutionError(
+                "invalid_required_artifacts",
+                "required artifact paths must not be empty",
+            )
+        required_artifacts.append(normalized_item)
+
+    disk_limit = parameters.get("disk_limit_bytes")
+    if disk_limit is not None and (
+        not isinstance(disk_limit, int)
+        or isinstance(disk_limit, bool)
+        or disk_limit < MIN_DISK_LIMIT_BYTES
+    ):
+        raise TestExecutionError(
+            "invalid_disk_limit",
+            f"disk_limit_bytes must be an integer >= {MIN_DISK_LIMIT_BYTES}",
+        )
+
+    workspace_budget = parameters.get("workspace_budget_bytes")
+    if workspace_budget is not None and (
+        not isinstance(workspace_budget, int)
+        or isinstance(workspace_budget, bool)
+        or workspace_budget < 0
+    ):
+        raise TestExecutionError(
+            "invalid_workspace_budget",
+            "workspace_budget_bytes must be a non-negative integer",
+        )
+
+    auto_provision = parameters.get("auto_provision_isolation", False)
+    if not isinstance(auto_provision, bool):
+        raise TestExecutionError(
+            "invalid_auto_provision_isolation",
+            "auto_provision_isolation must be a boolean",
+        )
+    if auto_provision and backend != "container":
+        raise TestExecutionError(
+            "invalid_auto_provision_isolation",
+            "auto_provision_isolation requires the container backend",
+        )
+
     return {
         "runner": runner,
         "target": target,
@@ -140,6 +265,15 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         "execution_backend": backend,
         "allowed_side_effects": policies["allowed_side_effects"],
         "protected_paths": policies["protected_paths"],
+        "evidence_id": evidence_id,
+        "image": image,
+        "config_digest": digests["config_digest"],
+        "command_digest": digests["command_digest"],
+        "host_authorization": host_authorization,
+        "required_artifacts": required_artifacts,
+        "disk_limit_bytes": disk_limit,
+        "workspace_budget_bytes": workspace_budget,
+        "auto_provision_isolation": auto_provision,
     }
 
 

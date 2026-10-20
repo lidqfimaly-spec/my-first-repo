@@ -1594,6 +1594,7 @@ class TaskService:
                 exc.code,
                 exc.message,
                 started_at,
+                tool_name=self.writer.tool_name,
             )
         except Exception as exc:
             return self._finish_tool_failure(
@@ -1602,6 +1603,7 @@ class TaskService:
                 "tool_exception",
                 f"tool execution raised {type(exc).__name__}: {exc}",
                 started_at,
+                tool_name=self.writer.tool_name,
             )
 
         after_write = scan_workspace(
@@ -1651,6 +1653,7 @@ class TaskService:
                 result.error_message or "tool reported failure",
                 started_at,
                 result=result,
+                tool_name=result.tool_name,
             )
         if result.execution_mode is ExecutionMode.SIMULATED:
             simulated, _ = self.store.record_event_and_update(
@@ -2100,7 +2103,12 @@ class TaskService:
             )
         except (SnapshotError, TestExecutionError) as exc:
             return self._finish_tool_failure(
-                task, lease_token, exc.code, exc.message, started_at
+                task,
+                lease_token,
+                exc.code,
+                exc.message,
+                started_at,
+                tool_name=RUN_TESTS_TOOL,
             )
         cancelled = self._cancel_if_requested(
             task,
@@ -2150,6 +2158,49 @@ class TaskService:
             return self._verify_test_and_finish(
                 verifying, lease_token, parameters
             )
+
+        def cancel_check() -> bool:
+            try:
+                current = self.store.require_task(task.task_id)
+            except Exception:
+                return True
+            return current.cancel_requested_at is not None
+
+        if (
+            parameters.get("execution_backend", "host") == "container"
+            and not parameters.get("evidence_id")
+            and parameters.get("auto_provision_isolation")
+        ):
+            from .evidence_provisioning import provision_evidence
+
+            evidence_id = f"auto-{task.task_id}"
+            try:
+                provision_evidence(
+                    self.project_root,
+                    image=str(
+                        parameters.get("image") or "python:3.13-alpine"
+                    ),
+                    workspace_name=str(parameters["workspace"]),
+                    target=str(parameters["target"]),
+                    request_id=task.task_id,
+                    evidence_id=evidence_id,
+                )
+            except Exception as exc:
+                code = getattr(exc, "code", None) or "provisioning_failed"
+                message = getattr(exc, "message", None) or (
+                    f"provisioning raised {type(exc).__name__}"
+                )
+                return self._finish_tool_failure(
+                    task,
+                    lease_token,
+                    "provisioning_failed",
+                    f"{code}: {message}"[:500],
+                    started_at,
+                    tool_name=RUN_TESTS_TOOL,
+                )
+            parameters["evidence_id"] = evidence_id
+            plan_step.parameters["evidence_id"] = evidence_id
+
         before = scan_workspace(
             workspace_path,
             workspace_id=str(parameters["workspace"]),
@@ -2198,32 +2249,6 @@ class TaskService:
             lease_token=lease_token,
         )
 
-        def cancel_check() -> bool:
-            try:
-                current = self.store.require_task(task.task_id)
-            except Exception:
-                return True
-            return current.cancel_requested_at is not None
-
-        if (
-            parameters.get("execution_backend", "host") == "container"
-            and not parameters.get("evidence_id")
-            and parameters.get("auto_provision_isolation")
-        ):
-            from .evidence_provisioning import provision_evidence
-
-            evidence_id = f"auto-{task.task_id}"
-            provision_evidence(
-                self.project_root,
-                image=str(parameters.get("image") or "python:3.13-alpine"),
-                workspace_name=str(parameters["workspace"]),
-                target=str(parameters["target"]),
-                request_id=task.task_id,
-                evidence_id=evidence_id,
-            )
-            parameters["evidence_id"] = evidence_id
-            plan_step.parameters["evidence_id"] = evidence_id
-
         try:
             if parameters.get("execution_backend", "host") == "container":
                 raw = self._run_container_test(task, parameters, cancel_check)
@@ -2235,7 +2260,12 @@ class TaskService:
                 )
         except TestExecutionError as exc:
             return self._finish_tool_failure(
-                task, lease_token, exc.code, exc.message, started_at
+                task,
+                lease_token,
+                exc.code,
+                exc.message,
+                started_at,
+                tool_name=RUN_TESTS_TOOL,
             )
         except Exception as exc:
             return self._finish_tool_failure(
@@ -2244,6 +2274,7 @@ class TaskService:
                 "test_runner_error",
                 f"test runner raised {type(exc).__name__}",
                 started_at,
+                tool_name=RUN_TESTS_TOOL,
             )
         if raw.get("collection_status") == "failed":
             return self._fail(
@@ -2426,10 +2457,12 @@ class TaskService:
         started_at: str,
         *,
         result: ToolResult | None = None,
+        tool_name: str | None = None,
     ) -> Task:
+        resolved_tool = tool_name or "unknown_tool"
         failed_result = result or ToolResult(
             attempt_id=task.attempt_id,
-            tool_name=self.writer.tool_name,
+            tool_name=resolved_tool,
             execution_mode=getattr(
                 self.writer, "execution_mode", ExecutionMode.REAL
             ),

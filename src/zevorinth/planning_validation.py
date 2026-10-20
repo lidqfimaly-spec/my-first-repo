@@ -315,6 +315,18 @@ class PlanningCandidateValidator:
                 ),
                 planner_name=self.planner_name,
             )
+            step_parameters = plan.steps[0].parameters
+            for field, value in normalized.items():
+                if step_parameters.get(field) != value:
+                    return self._failed(
+                        "trusted_parameter_loss",
+                        f"test plan dropped or changed trusted field: {field}",
+                        {
+                            **metadata,
+                            **candidate_shape,
+                            "validation_error_code": "trusted_parameter_loss",
+                        },
+                    )
         except (TestExecutionError, PlanningError) as exc:
             code = getattr(exc, "code", "invalid_test_plan")
             message = getattr(exc, "message", str(exc))
