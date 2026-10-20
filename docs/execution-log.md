@@ -598,7 +598,34 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.35 阶段执行记录
+# 第 3.36 阶段执行记录
+
+## 实现
+
+- 用真实 LLM planner（deepseek-flash）驱动一次完整执行：分类 → 策略 → 原子写入 → 证据 → 独立验证；
+- 1 次模型调用、0 重试、0 unexpected 副作用。
+
+## 结果
+
+| 项 | 值 |
+| --- | --- |
+| classification | planned |
+| status | succeeded |
+| verification | artifact_verified |
+| artifact | hello.txt（sha 与证据一致） |
+| 模型调用（本阶段） | 1 |
+
+## 边界
+
+- 模型只负责分类/规划，产物内容来自请求参数；
+- 未走容器路径；
+- 真实模型 API 请求：1（经授权）；
+- 详见 `docs/phase-3.36-real-model-execution-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 
