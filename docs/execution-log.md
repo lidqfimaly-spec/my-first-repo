@@ -598,6 +598,40 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.15 阶段执行记录
+
+## 实现
+
+- 新增 `tests/user_acceptance_runner.py`：15 个面向用户任务的离线验收场景；
+- 覆盖产物创建/读回/独立验证、已存在目标、路径穿越、发布后篡改；
+- 覆盖代码文件产出（测试由验收器执行）、测试执行请求拒绝、澄清；
+- 覆盖联网检索拒绝、shell 工具策略拒绝、预算、取消；
+- 覆盖四轮澄清、新任务隔离、计划预修订、中断恢复；
+- 稳定结果与元数据分离，双次运行哈希一致。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 318/318，exit 0 |
+| 用户验收场景 | 15/15 符合预期 |
+| 稳定哈希复现 | `fc941714…` 两次一致 |
+| E2E acceptance | 12/12 |
+| Mutation runner | 14 killed |
+| 覆盖率门禁 | 318 项通过，7/7 PASS |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 无 shell / 代码编辑 / 检索能力，均以拒绝路径验证；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.15-offline-user-acceptance-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.14 阶段执行记录
 
 ## 实现

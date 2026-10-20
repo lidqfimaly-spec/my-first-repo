@@ -45,6 +45,9 @@ VOLATILE_PATHS = {
     "acceptance": (
         ("generated_at",),
     ),
+    # The user-acceptance runner never emits wall-clock fields in its result
+    # object; timing lives only in the metadata envelope.
+    "user_acceptance": (),
 }
 CASE_VOLATILE_FIELDS = {
     "safety_gate": ("cases", "duration_ms"),
@@ -54,6 +57,7 @@ CASE_VOLATILE_FIELDS = {
 NONDETERMINISTIC_EFFECT_FIELDS = {
     "safety_gate": ("evidence_attempt_id",),
     "acceptance": ("evidence_attempt_id",),
+    "user_acceptance": ("evidence_attempt_id",),
 }
 #: Absolute paths live under a temporary directory, so only their shape is
 #: stable.  ``effects.relative_path`` carries the meaningful identity.
