@@ -348,5 +348,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.41 阶段修复后单次真实调用验证](docs/phase-3.41-post-fix-single-call-verification.md)
 - [第 3.42 阶段候选诊断与供应商字段兼容性](docs/phase-3.42-candidate-diagnostics-audit.md)
 - [第 3.43 阶段诊断契约与测试隔离审计](docs/phase-3.43-diagnostics-contract-test-isolation-audit.md)
+- [第 3.44 阶段端到端验证任务书（未执行）](docs/phase-3.44-end-to-end-verification-taskbook.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)
