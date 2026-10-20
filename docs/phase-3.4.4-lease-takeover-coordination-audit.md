@@ -188,7 +188,7 @@ authority 与最终 link 之间没有提前释放。
 | --- | --- |
 | 系统 Python 完整 unittest | 182/182，exit 0 |
 | 隔离环境完整 unittest | 182/182，exit 0 |
-| side-effect fencing 专项 | 8/8，连续 10 轮 0 失败 |
+| side-effect fencing 专项 | 9/9，连续 10 轮 0 失败 |
 | crash consistency 专项 | 16/16，连续 10 轮 0 失败 |
 | concurrency 专项 | 3/3，连续 10 轮 0 失败 |
 | 并发初始化 | 100/100 |
