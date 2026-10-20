@@ -80,7 +80,14 @@ class PlanningCandidateValidator:
             )
         candidate_shape = _candidate_shape(candidate)
         diagnostic_metadata = {**base_metadata, **candidate_shape}
-        unknown_fields = sorted(set(candidate) - CANDIDATE_FIELDS)
+        try:
+            unknown_fields = sorted(set(candidate) - CANDIDATE_FIELDS)
+        except Exception:
+            return self._failed(
+                "invalid_candidate",
+                "planner candidate fields are not readable",
+                diagnostic_metadata,
+            )
         if unknown_fields:
             return self._failed(
                 "unknown_candidate_fields",

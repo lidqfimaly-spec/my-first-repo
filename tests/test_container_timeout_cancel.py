@@ -47,13 +47,27 @@ NOISY = (
 )
 
 
-def _cleanup_containers() -> None:
-    listed = subprocess.run(
-        ["docker", "ps", "--filter", "name=zv-", "--format", "{{.Names}}"],
-        capture_output=True,
-        text=True,
-    )
-    for name in listed.stdout.split():
+def _container_prefix(task_id: str) -> str:
+    """Return the task-specific prefix used by the service's container names."""
+    return "zv-" + task_id.replace("-", "")[:12]
+
+
+def _container_names(task_id: str, *, include_stopped: bool = False) -> list[str]:
+    prefix = _container_prefix(task_id)
+    command = ["docker", "ps"]
+    if include_stopped:
+        command.append("-a")
+    command.extend(["--filter", f"name={prefix}", "--format", "{{.Names}}"])
+    listed = subprocess.run(command, capture_output=True, text=True)
+    return [
+        name
+        for name in listed.stdout.split()
+        if name.startswith(prefix + "-")
+    ]
+
+
+def _remove_containers_for(task_id: str) -> None:
+    for name in _container_names(task_id, include_stopped=True):
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
@@ -129,10 +143,11 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _ready():
             self.skipTest("python:3.13-alpine not available")
-        _cleanup_containers()
+        self.task_ids: list[str] = []
 
     def tearDown(self) -> None:
-        _cleanup_containers()
+        for task_id in self.task_ids:
+            _remove_containers_for(task_id)
 
     def _run(self, module: str, content: str, *, timeout: float = 60, cancel_after=None, **extra):
         root = Path(tempfile.mkdtemp())
@@ -143,6 +158,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         queued = service.enqueue(
             _request(module, timeout_seconds=timeout, **extra)
         )
+        self.task_ids.append(queued.task_id)
         evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
         _bind_evidence(evidence, workspace, module, queued.task_id)
         EvidenceStore(root).save_evidence(evidence)
@@ -172,12 +188,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         self.assertEqual(result.error.code, "test_timeout")
         self.assertIn("task_failed", events)
         self.assertNotIn("task_succeeded", events)
-        leftovers = subprocess.run(
-            ["docker", "ps", "--filter", "name=zv-", "--format", "{{.ID}}"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(leftovers.stdout.strip(), "")
+        self.assertEqual(_container_names(result.task_id), [])
 
     def test_cancel_during_container_run_stops_it(self) -> None:
         root, service, result, events = self._run(
@@ -185,12 +196,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         )
         self.assertEqual(result.status, TaskStatus.CANCELLED)
         self.assertIn("task_cancelled", events)
-        leftovers = subprocess.run(
-            ["docker", "ps", "--filter", "name=zv-", "--format", "{{.ID}}"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(leftovers.stdout.strip(), "")
+        self.assertEqual(_container_names(result.task_id), [])
 
     def test_disk_quota_blocks_oversized_writes(self) -> None:
         big = (
@@ -207,6 +213,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         queued = service.enqueue(
             _request("test_big", disk_limit_bytes=1024 * 1024)
         )
+        self.task_ids.append(queued.task_id)
         evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
         _bind_evidence(evidence, workspace, "test_big", queued.task_id)
         EvidenceStore(root).save_evidence(evidence)
@@ -237,6 +244,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         (workspace / "test_huge.py").write_text(big, encoding="utf-8")
         service = TaskService(root)
         queued = service.enqueue(_request("test_huge"))
+        self.task_ids.append(queued.task_id)
         evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
         _bind_evidence(evidence, workspace, "test_huge", queued.task_id)
         EvidenceStore(root).save_evidence(evidence)
@@ -258,6 +266,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         (workspace / "test_slow.py").write_text(SLOW, encoding="utf-8")
         service = TaskService(root)
         queued = service.enqueue(_request("test_slow", timeout_seconds=2))
+        self.task_ids.append(queued.task_id)
         evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
         _bind_evidence(evidence, workspace, "test_slow", queued.task_id)
         EvidenceStore(root).save_evidence(evidence)
@@ -273,7 +282,7 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         self.assertEqual(
             result.error.code, "container_termination_unverified"
         )
-        _cleanup_containers()
+        _remove_containers_for(queued.task_id)
 
     def test_repeated_cancel_is_idempotent(self) -> None:
         root = Path(tempfile.mkdtemp())

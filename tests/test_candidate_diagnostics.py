@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,91 @@ class CandidateDiagnosticsTests(unittest.TestCase):
         fields = result.metadata["candidate_fields"]
         self.assertLessEqual(len(fields), 20)
         self.assertIn("<redacted>", fields)
+
+    def test_field_count_reflects_the_full_candidate(self) -> None:
+        extras = {f"extra_{index:02d}": "x" for index in range(30)}
+        candidate = _candidate(**extras)
+
+        result = self._validate(candidate)
+
+        self.assertEqual(
+            result.metadata["candidate_field_count"],
+            len(candidate),
+        )
+        self.assertEqual(len(result.metadata["candidate_fields"]), 20)
+
+    def test_malicious_field_names_are_sanitized(self) -> None:
+        extras = {
+            "bad\nname": "x",
+            "x" * 100: "x",
+            "__proto__": "x",
+            "ok.field-1": "x",
+        }
+
+        result = self._validate(_candidate(**extras))
+
+        fields = result.metadata["candidate_fields"]
+        self.assertNotIn("bad\nname", fields)
+        self.assertNotIn("x" * 100, fields)
+        self.assertNotIn("__proto__", fields)
+        self.assertIn("ok.field-1", fields)
+        self.assertIn("<redacted>", fields)
+        rendered = json.dumps(result.metadata, ensure_ascii=False)
+        self.assertNotIn("\n", rendered)
+
+    def test_unknown_operation_records_only_the_sentinel(self) -> None:
+        result = self._validate(_candidate(operation="shell"))
+
+        self.assertEqual(result.classification.value, "unsupported")
+        self.assertEqual(result.metadata["candidate_operation"], "invalid")
+        self.assertNotIn(
+            "shell",
+            json.dumps(result.metadata, ensure_ascii=False),
+        )
+
+    def test_invalid_test_target_failure_has_shape(self) -> None:
+        result = self._validate(_candidate(test_target="../escape"))
+
+        self.assertEqual(result.error_code, "invalid_test_target")
+        self.assertEqual(result.metadata["candidate_operation"], "run_tests")
+        self.assertIn("test_target", result.metadata["candidate_fields"])
+
+    def test_invalid_clarification_failure_has_shape(self) -> None:
+        result = self._validate(
+            {
+                "classification": "clarification",
+                "missing_fields": ["workspace"],
+                "clarification_questions": "not-a-list",
+            }
+        )
+
+        self.assertEqual(result.error_code, "invalid_clarification")
+        self.assertIn("classification", result.metadata["candidate_fields"])
+
+    def test_missing_workspace_is_a_clarification_without_shape(self) -> None:
+        request = TaskRequest(goal="run test_ok", operation=None, parameters={})
+        result = self.validator.validate(_candidate(), base_request=request)
+
+        self.assertEqual(result.classification.value, "clarification")
+        self.assertIn("workspace", result.missing_fields)
+        self.assertNotIn("candidate_fields", result.metadata)
+
+    def test_unreadable_mapping_fails_closed(self) -> None:
+        class ExplodingMapping(Mapping):
+            def __getitem__(self, key):
+                raise KeyError(key)
+
+            def __iter__(self):
+                raise RuntimeError("boom")
+
+            def __len__(self) -> int:
+                return 1
+
+        result = self._validate(ExplodingMapping())
+
+        self.assertEqual(result.error_code, "invalid_candidate")
+        self.assertEqual(result.metadata["candidate_fields"], ["<unavailable>"])
+        self.assertEqual(result.metadata["candidate_field_count"], -1)
 
     def test_forged_trusted_field_is_rejected_and_named(self) -> None:
         result = self._validate(_candidate(evidence_id="forged"))

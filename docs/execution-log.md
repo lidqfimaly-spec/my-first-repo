@@ -720,6 +720,43 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.43 阶段执行记录
+
+## 诊断契约
+
+- `candidate_field_count` 使用截断前的完整字段数；
+- 字段名限长、脱敏，任意字段值不进入诊断；
+- 不可读 Mapping 安全降级并保持 `invalid_candidate` 拒绝；
+- 合法写文件/`run_tests` 的成功元数据不变。
+
+## 测试隔离
+
+- 移除全局 `docker ps --filter name=zv-` 清理与断言；
+- 改用任务专属前缀 `zv-<task_id12>-`；tearDown 只清理本测试登记任务；
+- 未修改产品容器命名、终止逻辑或安全策略。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 候选诊断专项 | 19/19 |
+| 容器超时/取消专项 | 11/11 |
+| 专项合计 | 136/136 |
+| 两套全量并行 | 578/578 + 578/578 |
+| 系统 Python 全量单独 | 578/578 |
+| `.venv` 全量单独 | 578/578 |
+| Mutation runner | 60 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 真实模型 API 请求：0；
+- `type` 语义仍未确定；
+- 详见 `docs/phase-3.43-diagnostics-contract-test-isolation-audit.md`；
+- 未推送。
+
+---
+
 
 
 ## 实现
