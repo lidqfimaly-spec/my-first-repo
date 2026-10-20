@@ -2082,6 +2082,9 @@ class TaskService:
             "workspace_budget_bytes": plan_step.parameters.get(
                 "workspace_budget_bytes"
             ),
+            "auto_provision_isolation": bool(
+                plan_step.parameters.get("auto_provision_isolation")
+            ),
             "allowed_side_effects": list(
                 plan_step.parameters.get("allowed_side_effects") or []
             ),
@@ -2201,6 +2204,25 @@ class TaskService:
             except Exception:
                 return True
             return current.cancel_requested_at is not None
+
+        if (
+            parameters.get("execution_backend", "host") == "container"
+            and not parameters.get("evidence_id")
+            and parameters.get("auto_provision_isolation")
+        ):
+            from .evidence_provisioning import provision_evidence
+
+            evidence_id = f"auto-{task.task_id}"
+            provision_evidence(
+                self.project_root,
+                image=str(parameters.get("image") or "python:3.13-alpine"),
+                workspace_name=str(parameters["workspace"]),
+                target=str(parameters["target"]),
+                request_id=task.task_id,
+                evidence_id=evidence_id,
+            )
+            parameters["evidence_id"] = evidence_id
+            plan_step.parameters["evidence_id"] = evidence_id
 
         try:
             if parameters.get("execution_backend", "host") == "container":

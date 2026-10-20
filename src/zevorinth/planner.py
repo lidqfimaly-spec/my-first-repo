@@ -129,6 +129,9 @@ def build_test_plan(
                     "workspace_budget_bytes": validation.get(
                         "workspace_budget_bytes"
                     ),
+                    "auto_provision_isolation": bool(
+                        validation.get("auto_provision_isolation")
+                    ),
                 },
             )
         ],

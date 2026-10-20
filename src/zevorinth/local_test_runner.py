@@ -63,6 +63,7 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         "required_artifacts",
         "disk_limit_bytes",
         "workspace_budget_bytes",
+        "auto_provision_isolation",
     }
     if unknown:
         raise TestExecutionError(

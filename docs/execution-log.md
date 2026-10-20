@@ -598,7 +598,31 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.39 阶段执行记录
+# 第 3.40 阶段执行记录
+
+## 授权与边界
+
+真实模型调用上限 1、重试 0、禁止宿主机回退。
+
+## 实际结果
+
+- 1 次调用（deepseek-flash），模型返回 `unsupported`；
+- 系统在规划阶段 BLOCKED（`unsupported_request`）；
+- 未 provisioning、未启动容器、无文件副作用、未重试、未改写模型输出。
+
+## 代码变更
+
+- 新增 `auto_provision_isolation`：执行前由编排层 provisioning 并注入 `evidence_id`（默认关闭）。
+
+## 结论
+
+FAIL（模型行为门禁未通过）；安全边界成立。
+
+详见 `docs/phase-3.40-single-call-real-model-closure-audit.md`；未推送。
+
+---
+
+
 
 ## 实现
 
