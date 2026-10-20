@@ -598,7 +598,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
-# 第 3.28 阶段执行记录
+# 第 3.29 阶段执行记录
+
+## 实现
+
+- `run_tests` 新增 `execution_backend`（container/host），非法值 BLOCKED；
+- 容器分支：从 EvidenceStore 加载并实时重验，非 verified 一律 FAILED `test_isolation_unverified`，不回退宿主机；
+- 修复 planner 丢弃 `execution_backend` 等字段的缺陷；
+- 新增 2 条变异覆盖宿主机回退与非法后端。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 514/514，exit 0 |
+| run_tests 容器门禁专项 | 5/5 |
+| Mutation runner | 54 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| 真实容器化 run_tests | NOT_EXECUTED（无 Python 镜像） |
+
+## 边界
+
+- 默认仍为 host（显式非隔离）；
+- 容器分支未做真实执行验证；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.29-run-tests-container-migration-audit.md`；
+- 未推送。
+
+---
+
+
 
 ## 实现
 

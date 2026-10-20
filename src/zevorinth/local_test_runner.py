@@ -54,6 +54,11 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         "max_output_bytes",
         "allowed_side_effects",
         "protected_paths",
+        "execution_backend",
+        "evidence_id",
+        "image",
+        "config_digest",
+        "command_digest",
     }
     if unknown:
         raise TestExecutionError(
@@ -113,12 +118,21 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
             policies[field] = [_normalize_prefix(str(item)) for item in raw]
         except SnapshotError as exc:
             raise TestExecutionError(exc.code, exc.message) from exc
+    # ``host`` remains the legacy non-isolated mode and must be requested
+    # explicitly; ``container`` requires verified evidence.
+    backend = parameters.get("execution_backend", "host")
+    if backend not in {"container", "host"}:
+        raise TestExecutionError(
+            "invalid_execution_backend",
+            "execution_backend must be 'container' or 'host'",
+        )
     return {
         "runner": runner,
         "target": target,
         "workspace": workspace,
         "timeout_seconds": float(timeout),
         "max_output_bytes": int(limit),
+        "execution_backend": backend,
         "allowed_side_effects": policies["allowed_side_effects"],
         "protected_paths": policies["protected_paths"],
     }

@@ -1728,6 +1728,43 @@ class TaskService:
             self.fault_hook("after_write_before_verification", verifying)
         return self._verify_and_finish(verifying, lease_token)
 
+    def _blocked_container_execution(
+        self, task: Task, lease_token: str, parameters: dict[str, Any]
+    ) -> Task:
+        """run_tests defaults to the container backend; never fall back to host."""
+        from .evidence_store import EvidenceStore
+        from .isolation import _live_image_digest, _live_runtime_identity
+
+        image = str(parameters.get("image", "python:3.13-slim"))
+        evidence_id = parameters.get("evidence_id")
+        store = EvidenceStore(self.project_root)
+        reasons: list[str] = []
+        state = "blocked"
+        if not evidence_id:
+            reasons.append("evidence_id_missing")
+        else:
+            verdict = store.verify_stored_evidence(
+                str(evidence_id),
+                expected_runtime=_live_runtime_identity(),
+                expected_image_digest=_live_image_digest(image),
+                expected_config_digest=str(parameters.get("config_digest", "")),
+                expected_request_id=f"{task.task_id}/{task.attempt_id}",
+                expected_command_digest=str(
+                    parameters.get("command_digest", "")
+                ),
+            )
+            state = verdict["state"]
+            reasons = list(verdict["reasons"])
+        return self._fail(
+            task,
+            lease_token,
+            code="test_isolation_unverified",
+            message="run_tests requires verified container isolation: "
+            + "; ".join(reasons or [state]),
+            phase="blocked_isolation",
+            payload_extra={"isolation_state": state, "reasons": reasons},
+        )
+
     def _execute_test_tool(
         self,
         task: Task,
@@ -1745,6 +1782,9 @@ class TaskService:
             "workspace": plan_step.parameters.get("workspace"),
             "timeout_seconds": plan_step.parameters.get("timeout_seconds", 10.0),
             "max_output_bytes": plan_step.parameters.get("max_output_bytes", 8192),
+            "execution_backend": plan_step.parameters.get(
+                "execution_backend", "host"
+            ),
             "allowed_side_effects": list(
                 plan_step.parameters.get("allowed_side_effects") or []
             ),
@@ -1865,6 +1905,9 @@ class TaskService:
                 return True
             return current.cancel_requested_at is not None
 
+        if parameters.get("execution_backend", "host") == "container":
+            blocked = self._blocked_container_execution(task, lease_token, parameters)
+            return blocked
         try:
             raw = self.test_runner(
                 project_root=self.project_root,

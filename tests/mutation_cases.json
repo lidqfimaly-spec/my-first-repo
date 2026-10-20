@@ -599,6 +599,28 @@
         "tests.test_evidence_store.EvidenceStoreTests.test_invalidation_blocks_verification"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "run_tests_host_fallback_enabled",
+      "property": "container backend never silently falls back to host",
+      "path": "src/zevorinth/service.py",
+      "old": "        if parameters.get(\"execution_backend\", \"host\") == \"container\":\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_run_tests_container.ContainerBackendGateTests.test_container_backend_without_evidence_is_blocked"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "invalid_backend_accepted",
+      "property": "unknown execution backends are refused",
+      "path": "src/zevorinth/local_test_runner.py",
+      "old": "    if backend not in {\"container\", \"host\"}:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_run_tests_container.ContainerBackendGateTests.test_invalid_backend_is_blocked"
+      ],
+      "expected": "killed"
     }
   ]
 }
