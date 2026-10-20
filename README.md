@@ -317,5 +317,6 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 - [第 3.11 阶段指标、覆盖率与变异审计](docs/phase-3.11-metric-coverage-mutation-audit.md)
 - [第 3.12 阶段可复现门禁与证据归属审计](docs/phase-3.12-reproducible-gates-audit.md)
 - [第 3.13 阶段 E2E 证据来源与复合变异审计](docs/phase-3.13-e2e-provenance-compound-mutation-audit.md)
+- [第 3.14 阶段生命周期证据与可复现审计产物](docs/phase-3.14-lifecycle-evidence-reproducibility-audit.md)
 - [执行记录](docs/execution-log.md)
 - [文件清单](docs/file-manifest.md)

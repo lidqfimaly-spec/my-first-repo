@@ -256,6 +256,7 @@ def _evaluate_mutation(
             trace_path, root, mutated_lines
         )
         result, reason = _classify_result(test_result, list(case["tests"]))
+        scope = "in_process" if executed["executed"] else "unverified"
         return {
             "id": case["id"],
             "property": case.get("property"),
@@ -267,6 +268,14 @@ def _evaluate_mutation(
             "result": result,
             "reason": reason,
             "mutated_lines_executed": executed,
+            "execution_evidence": {
+                "scope": scope,
+                "executed_in_process": bool(executed["executed"]),
+                # Child processes are not traced, so this is never claimed.
+                "executed_in_child_process": False,
+                "child_trace_supported": False,
+                "trace_missing": bool(executed.get("trace_missing")),
+            },
             "test": test_result,
         }
 
@@ -289,12 +298,35 @@ def run_mutations(cases_path: Path | None = None) -> dict[str, Any]:
         if item.get("expected") == "killed"
         and item["result"] != "killed"
     ]
+    unverified = [
+        item["id"]
+        for item in results
+        if item.get("execution_evidence", {}).get("scope") != "in_process"
+    ]
+    # A survived result is only meaningful when the mutated line ran; an
+    # untraced survival could simply mean the test never reached the edit.
+    unverified_survivals = [
+        item["id"]
+        for item in results
+        if item["result"] == "survived" and item["id"] in unverified
+    ]
     return {
         "version": payload.get("version", "unknown"),
         "case_count": len(results),
         "counts": counts,
+        "execution_evidence_counts": {
+            "in_process": len(results) - len(unverified),
+            "unverified": len(unverified),
+            "child_process": 0,
+        },
+        "execution_unverified": unverified,
+        "unverified_survivals": unverified_survivals,
         "results": results,
-        "status": "PASS" if not unexpected else "FAIL",
+        "status": (
+            "PASS"
+            if not unexpected and not unverified_survivals
+            else "FAIL"
+        ),
         "unexpected_results": [item["id"] for item in unexpected],
     }
 

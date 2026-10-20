@@ -598,6 +598,40 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.14 阶段执行记录
+
+## 实现
+
+- 新增 `tests/test_lifecycle_provenance.py`：发布前、发布后、证据事务、验证前、成功提交五类故障注入；
+- 通过 `RealArtifactWriter.checkpoint_hook` 与测试专用 `EventStore` 子类注入，生产默认路径不变；
+- 新增 `tests/audit_report.py`：规范化序列化、稳定结果投影、元数据与稳定哈希；
+- 稳定结果双次运行哈希一致，受控变化可见；
+- 变异结果增加 `execution_evidence.scope`，未追踪存活使门禁失败。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest | 309/309，exit 0 |
+| E2E acceptance | 12/12 场景通过 |
+| 生命周期故障注入 | 8/8 通过 |
+| 稳定结果复现 | E2E `1c6e1531…`、Gate `b0a1bef1…` 两次一致 |
+| Mutation runner | 14 killed，14 in_process |
+| Mutation self-test | killed/survived/invalid/error 各 1 |
+| 覆盖率门禁 | 309 项通过，7/7 PASS |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- 子进程变异执行不追踪，标记为不支持；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.14-lifecycle-evidence-reproducibility-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.13 阶段执行记录
 
 ## 实现

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,90 @@ class MutationRunnerTests(unittest.TestCase):
         )
         self.assertEqual(result, "error")
         self.assertIsNotNone(reason)
+
+    def test_killed_mutation_reports_in_process_execution(self) -> None:
+        result = _evaluate_mutation(
+            {
+                "id": "traced_kill",
+                "path": "src/zevorinth/artifact_tool.py",
+                "old": "def validate_artifact_name(value: object) -> str:\n",
+                "new": (
+                    "def validate_artifact_name(value: object) -> str:\n"
+                    "    return str(value)\n"
+                ),
+                "tests": [
+                    "tests.test_artifact_tool.ArtifactToolTests"
+                    ".test_invalid_and_unsafe_names_are_rejected"
+                ],
+                "expected": "killed",
+            }
+        )
+        self.assertEqual(result["result"], "killed")
+        evidence = result["execution_evidence"]
+        self.assertEqual(evidence["scope"], "in_process")
+        self.assertTrue(evidence["executed_in_process"])
+        self.assertFalse(evidence["executed_in_child_process"])
+        self.assertFalse(evidence["child_trace_supported"])
+
+    def test_untraced_run_is_reported_as_unverified(self) -> None:
+        result = _evaluate_mutation(
+            {
+                "id": "untraced",
+                "path": "src/zevorinth/artifact_tool.py",
+                "old": "from __future__ import annotations\n",
+                "new": "from __future__ import annotations  # mutated\n",
+                "tests": [
+                    "tests.test_artifact_tool.ArtifactToolTests"
+                    ".test_writer_refuses_overwrite"
+                ],
+                "expected": "killed",
+            },
+            command_override=[
+                sys.executable,
+                "-m",
+                "unittest",
+                "-q",
+                "tests.test_artifact_tool.ArtifactToolTests"
+                ".test_writer_refuses_overwrite",
+            ],
+        )
+        self.assertEqual(result["result"], "survived")
+        self.assertEqual(
+            result["execution_evidence"]["scope"], "unverified"
+        )
+        self.assertFalse(
+            result["execution_evidence"]["executed_in_process"]
+        )
+
+    def test_unverified_survival_fails_the_gate(self) -> None:
+        cases = {
+            "version": "test",
+            "cases": [
+                {
+                    "id": "untraced_survival",
+                    "path": "src/zevorinth/cli.py",
+                    "old": (
+                        '    raise AssertionError(f"unhandled command: '
+                        '{args.command}")\n'
+                    ),
+                    "new": '    raise AssertionError("mutated")\n',
+                    "tests": [
+                        "tests.test_artifact_tool.ArtifactToolTests"
+                        ".test_writer_refuses_overwrite"
+                    ],
+                    "expected": "killed",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cases.json"
+            path.write_text(json.dumps(cases), encoding="utf-8")
+            report = run_mutations(path)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["unverified_survivals"], ["untraced_survival"])
+        self.assertEqual(report["execution_evidence_counts"]["unverified"], 1)
+        # The gate fails even though the test suite itself passed.
+        self.assertEqual(report["counts"]["survived"], 1)
 
 
 if __name__ == "__main__":
