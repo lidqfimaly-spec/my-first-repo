@@ -598,6 +598,40 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.4.2 阶段执行记录
+
+## 审计与修复
+
+- 为 Message、Turn、Task 关联、澄清问题和最终成功事务增加真实 SIGKILL 边界；
+- 修复 queued/interrupted Task 未进入会话恢复执行的问题；
+- 修复 pending ClarificationAnswer 重放被误判为 `question_mismatch`；
+- 修复每次澄清回答重复创建剩余问题；
+- 验证旧 Lease 执行者无法提交过期数据库状态；
+- Verifier 异常转换为明确的 FAILED，不伪报成功。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统 Python 完整 unittest | 168/168 通过，exit 0 |
+| 隔离环境完整 unittest | 168/168 通过，exit 0 |
+| 崩溃一致性专项 | 13/13 通过，连续 10 轮 0 失败 |
+| 并发初始化 | 100/100，0 失败 |
+| 并发澄清答案 | 20/20，0 失败 |
+| 隔离副本反例 | 8/8 被捕获 |
+| `compileall` | exit 0 |
+| `git diff --check` | exit 0 |
+
+## 边界
+
+- Schema version 4；
+- 真实模型 API 请求：0；
+- 文件写入仍不与 SQLite 事务原子，且文件工具不接收 Lease token；
+- 详见 `docs/phase-3.4.2-crash-consistency-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.4.1 阶段执行记录
 
 ## 审计与修复

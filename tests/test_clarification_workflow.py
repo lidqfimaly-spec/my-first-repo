@@ -174,6 +174,90 @@ class ClarificationWorkflowTests(unittest.TestCase):
                 1,
             )
 
+    def test_answers_do_not_duplicate_remaining_open_questions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = ConversationService(Path(temp_dir))
+            service.create_conversation(
+                conversation_id="conversation-1",
+                now=NOW,
+            )
+            created = service.process_message(
+                "conversation-1",
+                "创建一个文件",
+                client_message_id="m1",
+                now=NOW,
+            )
+            operation = next(
+                item
+                for item in created.clarifications
+                if item.field_name == "operation"
+            )
+            after_operation = service.process_message(
+                "conversation-1",
+                "write_text_artifact",
+                client_message_id="m2",
+                answer_to=operation.question_id,
+                now=NOW,
+            )
+            replayed_operation = service.process_message(
+                "conversation-1",
+                "write_text_artifact",
+                client_message_id="m2",
+                answer_to=operation.question_id,
+                now=NOW,
+            )
+            self.assertEqual(
+                replayed_operation.outcome,
+                "already_processed",
+            )
+            assert created.task is not None
+            self.assertEqual(
+                len(
+                    service.store.list_clarification_requests(
+                        created.task.task_id
+                    )
+                ),
+                3,
+            )
+            path_question = next(
+                item
+                for item in after_operation.clarifications
+                if item.field_name == "artifact_path"
+            )
+            after_path = service.process_message(
+                "conversation-1",
+                "result.txt",
+                client_message_id="m3",
+                answer_to=path_question.question_id,
+                now=NOW,
+            )
+            content_question = next(
+                item
+                for item in after_path.clarifications
+                if item.field_name == "content"
+            )
+            completed = service.process_message(
+                "conversation-1",
+                "verified",
+                client_message_id="m4",
+                answer_to=content_question.question_id,
+                now=NOW,
+            )
+
+            self.assertEqual(completed.outcome, "completed")
+            assert created.task is not None
+            questions = service.store.list_clarification_requests(
+                created.task.task_id
+            )
+            self.assertEqual(
+                [question.field_name for question in questions],
+                ["operation", "artifact_path", "content"],
+            )
+            self.assertEqual(
+                [question.status.value for question in questions],
+                ["answered", "answered", "answered"],
+            )
+
     def test_status_query_does_not_execute_or_create_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = ConversationService(Path(temp_dir))

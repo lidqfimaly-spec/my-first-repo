@@ -308,7 +308,6 @@ class ConversationService:
             active_task is None
             or question.task_id != active_task.task_id
             or question.conversation_id != conversation_id
-            or question.status.value != "open"
         ):
             turn = self.store.update_conversation_turn(
                 turn.turn_id,
@@ -323,14 +322,17 @@ class ConversationService:
                 classification,
                 active_task,
             )
-        try:
-            answer = self.store.record_clarification_answer(
-                question_id=question.question_id,
-                message_id=message.message_id,
-                normalized_value=content,
-                now=now,
-            )
-        except (ClarificationConflict, ClarificationNotFound) as exc:
+
+        answers = self.store.list_clarification_answers(question.question_id)
+        answer = next(
+            (
+                item
+                for item in answers
+                if item.message_id == message.message_id
+            ),
+            None,
+        )
+        if answer is not None and question.status.value != "answered":
             turn = self.store.update_conversation_turn(
                 turn.turn_id,
                 status=TurnStatus.NEEDS_ATTENTION,
@@ -338,12 +340,90 @@ class ConversationService:
                 now=now,
             )
             return self._result(
-                "answer_conflict",
+                "question_mismatch",
                 turn,
                 message,
                 classification,
                 active_task,
-                error=str(exc),
+            )
+        if answer is None:
+            if question.status.value != "open":
+                turn = self.store.update_conversation_turn(
+                    turn.turn_id,
+                    status=TurnStatus.NEEDS_ATTENTION,
+                    intent_kind=classification.kind.value,
+                    now=now,
+                )
+                return self._result(
+                    "question_mismatch",
+                    turn,
+                    message,
+                    classification,
+                    active_task,
+                )
+            try:
+                answer = self.store.record_clarification_answer(
+                    question_id=question.question_id,
+                    message_id=message.message_id,
+                    normalized_value=content,
+                    now=now,
+                )
+            except (ClarificationConflict, ClarificationNotFound) as exc:
+                turn = self.store.update_conversation_turn(
+                    turn.turn_id,
+                    status=TurnStatus.NEEDS_ATTENTION,
+                    intent_kind=classification.kind.value,
+                    now=now,
+                )
+                return self._result(
+                    "answer_conflict",
+                    turn,
+                    message,
+                    classification,
+                    active_task,
+                    error=str(exc),
+                )
+        elif answer.validation_status is ClarificationAnswerStatus.APPLIED:
+            if active_task.status is TaskStatus.SUCCEEDED:
+                turn = self.store.update_conversation_turn(
+                    turn.turn_id,
+                    status=TurnStatus.COMPLETED,
+                    intent_kind=classification.kind.value,
+                    now=now,
+                )
+                return self._result(
+                    "already_processed",
+                    turn,
+                    message,
+                    classification,
+                    active_task,
+                )
+            turn = self.store.update_conversation_turn(
+                turn.turn_id,
+                status=TurnStatus.NEEDS_ATTENTION,
+                intent_kind=classification.kind.value,
+                now=now,
+            )
+            return self._result(
+                "requires_recovery",
+                turn,
+                message,
+                classification,
+                active_task,
+            )
+        elif answer.validation_status is ClarificationAnswerStatus.REJECTED:
+            turn = self.store.update_conversation_turn(
+                turn.turn_id,
+                status=TurnStatus.NEEDS_ATTENTION,
+                intent_kind=classification.kind.value,
+                now=now,
+            )
+            return self._result(
+                "answer_rejected",
+                turn,
+                message,
+                classification,
+                active_task,
             )
 
         patch = self._patch_for_question(question.field_name, content)
@@ -598,14 +678,41 @@ class ConversationService:
     ) -> list[ClarificationRequest]:
         if not task.missing_fields:
             return []
-        return self.store.create_clarification_requests(
+        current_fields = set(task.missing_fields)
+        existing = [
+            question
+            for question in self.store.list_clarification_requests(
+                task.task_id,
+                open_only=True,
+            )
+            if question.field_name in current_fields
+        ]
+        existing_fields = {question.field_name for question in existing}
+        questions_by_field = {
+            field: question
+            for field, question in zip(
+                task.missing_fields,
+                task.clarification_questions,
+                strict=False,
+            )
+        }
+        fields_to_create = [
+            field
+            for field in task.missing_fields
+            if field not in existing_fields
+        ]
+        created = self.store.create_clarification_requests(
             task_id=task.task_id,
             conversation_id=task.conversation_id or "",
             turn_id=turn_id,
-            fields=task.missing_fields,
-            questions=task.clarification_questions,
+            fields=fields_to_create,
+            questions=[
+                questions_by_field.get(field, f"请提供 {field}")
+                for field in fields_to_create
+            ],
             now=now,
         )
+        return sorted(existing + created, key=lambda item: item.ordinal)
 
     @staticmethod
     def _patch_for_question(field_name: str, value: str) -> dict[str, object]:
@@ -645,6 +752,8 @@ class ConversationService:
         task = self.task_service.require_task(task_id)
         pending = self.store.list_pending_clarification_answers(task_id)
         if not pending:
+            if task.status in {TaskStatus.QUEUED, TaskStatus.INTERRUPTED}:
+                return self.task_service.resume(task_id)
             return task
         if task.status is TaskStatus.SUCCEEDED:
             for answer in pending:

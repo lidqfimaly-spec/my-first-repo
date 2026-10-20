@@ -765,11 +765,39 @@ class TaskService:
                 checked_at=self.clock(),
             )
         else:
-            verification = self.verifier.verify(
-                task_id=task.task_id,
-                artifact_path=artifact_path,
-                expected_content=content,
-                tool_result=result,
+            try:
+                verification = self.verifier.verify(
+                    task_id=task.task_id,
+                    artifact_path=artifact_path,
+                    expected_content=content,
+                    tool_result=result,
+                    checked_at=self.clock(),
+                )
+            except Exception as exc:
+                verification = VerificationResult(
+                    verifier_name=self.verifier.name,
+                    passed=False,
+                    exists=False,
+                    path_safe=False,
+                    content_matches=False,
+                    evidence_matches=False,
+                    reason=f"verifier_exception_{type(exc).__name__}",
+                    artifact=None,
+                    checked_at=self.clock(),
+                )
+        if not isinstance(verification, VerificationResult):
+            verification = VerificationResult(
+                verifier_name=self.verifier.name,
+                passed=False,
+                exists=False,
+                path_safe=False,
+                content_matches=False,
+                evidence_matches=False,
+                reason=(
+                    "verifier_invalid_result_"
+                    f"{type(verification).__name__}"
+                ),
+                artifact=None,
                 checked_at=self.clock(),
             )
         task, _ = self.store.record_event_and_update(
