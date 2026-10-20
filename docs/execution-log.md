@@ -1063,6 +1063,40 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.53 阶段执行记录
+
+## 实现
+
+- 独立 Python 进程并发清理同一目标，最多一次删除；
+- SIGKILL 后新进程 reconcile：after_quarantine=pending，after_unlink=unverified；
+- event insert 失败时任务状态更新回滚；
+- 清理结果与任务状态保持分离；
+- 历史无最终计划继续 fail-closed。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 生命周期/进程专项 | 13/13 |
+| 系统 Python 全量 | 619/619 |
+| `.venv` 全量 | 619/619 |
+| Mutation runner | 71 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- Phase 3.52 真实超时基线保留但未重复；
+- 真实模型取消/启动失败/验证器拒绝仍未覆盖；
+- 详见 `docs/phase-3.53-task-lifecycle-process-recovery-audit.md`；
+- 未推送。
+
+## 结论
+
+**PASS WITH LIMITATIONS**。
+
+---
+
 
 
 ## 实现
