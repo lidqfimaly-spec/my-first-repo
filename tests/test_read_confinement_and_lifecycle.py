@@ -29,6 +29,20 @@ from zevorinth.local_test_runner import _terminate  # noqa: E402
 MARKER = "ZV-ORPHAN-MARKER-3-23"
 
 
+def _marker_pids() -> list[int]:
+    pgrep = shutil.which("pgrep")
+    if pgrep is None:
+        return []
+    completed = subprocess.run(
+        [pgrep, "-f", MARKER], capture_output=True, text=True
+    )
+    if completed.returncode != 0:
+        return []
+    return [
+        int(line) for line in completed.stdout.split() if line.strip().isdigit()
+    ]
+
+
 def _leftovers() -> int | None:
     pgrep = shutil.which("pgrep")
     if pgrep is None:
@@ -138,7 +152,13 @@ class ProcessLifecycleTests(unittest.TestCase):
         before = _leftovers()
         if before is None:
             self.skipTest("pgrep is not available to verify descendants")
-        # Deterministic: wait for the tree to appear before killing it.
+        # Clear stragglers from an earlier run of this very test (identified
+        # by the unique marker, never by a broad pattern).
+        for pid in _marker_pids():
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
         self.assertTrue(
             self._wait_for(lambda: (_leftovers() or 0) == 0),
             "pre-existing marker process left over from an earlier run",

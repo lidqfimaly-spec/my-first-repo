@@ -265,3 +265,132 @@ def inventory_quarantine(workspace_root: Path) -> list[dict[str, Any]]:
                 }
             )
     return entries
+
+
+#: Backends we look for locally.  Presence of a binary is *not* evidence of
+#: isolation; each entry keeps its own verification state.
+BACKEND_CANDIDATES = ("seatbelt", "docker", "podman", "low_priv_user")
+
+BOUNDARY_CHECKS = (
+    "read_inside_allowed",
+    "read_outside_denied",
+    "write_inside_allowed",
+    "write_outside_denied",
+    "network_denied",
+    "credential_denied",
+    "subprocess_denied",
+)
+
+
+def detect_backends() -> dict[str, dict[str, Any]]:
+    """Report local backend availability without installing or starting anything."""
+    import shutil
+
+    seatbelt = isolation_available()
+    docker = shutil.which("docker")
+    podman = shutil.which("podman")
+    backends: dict[str, dict[str, Any]] = {
+        "seatbelt": {
+            "binary": SANDBOX_EXEC if seatbelt else None,
+            "available": seatbelt,
+            "state": "probe_required" if seatbelt else "not_executed",
+            "limitation": (
+                "restricted reads abort even /bin/cat on this platform"
+                if seatbelt
+                else "sandbox-exec missing"
+            ),
+        },
+        "docker": {
+            "binary": docker,
+            "available": bool(docker),
+            "state": "not_executed",
+            "limitation": (
+                "daemon not running; starting it is out of scope"
+                if docker
+                else "docker CLI missing"
+            ),
+        },
+        "podman": {
+            "binary": podman,
+            "available": bool(podman),
+            "state": "not_executed" if podman else "not_executed",
+            "limitation": "not installed" if not podman else "not started",
+        },
+        "low_priv_user": {
+            "binary": None,
+            "available": False,
+            "state": "not_executed",
+            "limitation": "creating a system user requires root and is out of scope",
+        },
+    }
+    return backends
+
+
+def verify_boundaries(
+    backend: str,
+    workspace: Path,
+    decoy: Path,
+    credential: Path,
+) -> dict[str, Any]:
+    """Run the unified boundary matrix for one backend.
+
+    Only a full pass of :data:`BOUNDARY_CHECKS` yields ``verified``; any
+    backend that cannot run is reported as ``blocked``/``not_executed``
+    rather than being treated as safe.
+    """
+    if backend != "seatbelt":
+        return {
+            "backend": backend,
+            "state": "not_executed",
+            "reason": f"backend {backend} is not available for execution",
+            "checks": {name: "not_executed" for name in BOUNDARY_CHECKS},
+        }
+    probe = run_probe(workspace, decoy)
+    results = probe.get("results", {})
+    checks: dict[str, str] = {name: "not_executed" for name in BOUNDARY_CHECKS}
+    if results:
+        checks["read_inside_allowed"] = results.get("read_inside", "unknown")
+        checks["write_inside_allowed"] = results.get("write_inside", "unknown")
+        checks["read_outside_denied"] = (
+            "denied" if results.get("read_outside") == "denied" else "allowed"
+        )
+        checks["write_outside_denied"] = (
+            "denied" if results.get("write_outside") == "denied" else "allowed"
+        )
+        checks["network_denied"] = (
+            "denied" if results.get("network") == "denied" else "allowed"
+        )
+    expected = {
+        "read_inside_allowed": "allowed",
+        "read_outside_denied": "denied",
+        "write_inside_allowed": "allowed",
+        "write_outside_denied": "denied",
+        "network_denied": "denied",
+        "credential_denied": "denied",
+        "subprocess_denied": "denied",
+    }
+    failed = [
+        name
+        for name, want in expected.items()
+        if checks.get(name) != want
+    ]
+    if probe.get("state") in {"blocked"}:
+        state = "blocked"
+    elif not results:
+        state = "unverified"
+    elif failed:
+        state = "partial" if any(
+            checks.get(name) == want
+            for name, want in expected.items()
+        ) else "failed"
+    else:
+        state = "verified"
+    return {
+        "backend": backend,
+        "state": state,
+        "reason": "not all boundaries enforced: " + ", ".join(failed),
+        "checks": checks,
+        "unverified_boundaries": failed,
+        "probe_state": probe.get("state"),
+        "kernel_denials": probe.get("kernel_denials", []),
+    }

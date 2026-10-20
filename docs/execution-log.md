@@ -598,6 +598,36 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ---
 
+# 第 3.24 阶段执行记录
+
+## 实现
+
+- 定位 Seatbelt 读取失败：`/bin/cat` 在限制读 profile 下同样 abort（134），非 Python 特有；
+- 新增 `detect_backends()`：如实报告 Seatbelt/Docker/Podman/低权限用户的可用性与限制；
+- 新增 `verify_boundaries()`：7 项统一边界契约，只有全通过才 `verified`；
+- 保持 `run_protected()` 失败关闭；修复生命周期测试的遗留进程偶发问题。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 451/451，exit 0 |
+| 后端边界专项 | 5/5 |
+| Mutation runner | 41 killed |
+| `compileall` / `git diff --check` | exit 0 |
+| 隔离后端 | BLOCKED（本机无可验证后端） |
+
+## 边界
+
+- 读取隔离、凭据不可达、子进程限制均未验证；
+- Docker daemon 未启动；低权限用户需 root；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.24-isolation-backend-decision-audit.md`；
+- 未推送。
+
+---
+
 # 第 3.23 阶段执行记录
 
 ## 实现

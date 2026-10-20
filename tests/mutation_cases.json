@@ -467,6 +467,17 @@
         "tests.test_read_confinement_and_lifecycle.ReadBoundaryMatrixTests.test_classify_never_verifies_a_partial_profile"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "backend_presence_implies_verified",
+      "property": "binary presence never implies a verified backend",
+      "path": "src/zevorinth/isolation.py",
+      "old": "            \"state\": \"probe_required\" if seatbelt else \"not_executed\",\n",
+      "new": "            \"state\": \"verified\" if seatbelt else \"not_executed\",\n",
+      "tests": [
+        "tests.test_backend_boundaries.BackendDetectionTests.test_detection_reports_evidence_state_per_backend"
+      ],
+      "expected": "killed"
     }
   ]
 }
