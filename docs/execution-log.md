@@ -1217,6 +1217,41 @@ evidence。
 
 ---
 
+# 第 3.61 阶段执行记录
+
+## 实现
+
+- tool_started 写失败恢复为未知，不重跑；
+- verification_started 写失败后只读恢复验证；
+- task_succeeded 终态写失败后幂等完成；
+- 旧 worker lease 不能覆盖新 claim；
+- 重复 resume 与双进程并发 resume 均最多执行一次；
+- 旧 attempt/evidence 身份不匹配拒绝。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 持久化边界/恢复矩阵 | 8/8 |
+| 系统 Python 全量 | 644/644 |
+| `.venv` 全量 | 644/644 |
+| Mutation runner | 73 killed / 0 survived |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 本阶段真实模型 API 请求：0；
+- 并发 resume 使用 host backend；
+- 自动恢复/清理队列和历史迁移未实现；
+- 详见 `docs/phase-3.61-result-persistence-recovery-boundaries.md`；
+- 未推送。
+
+## 结论
+
+**PASS**。
+
+---
+
 # 第 3.60 阶段执行记录
 
 ## 运行时故障

@@ -547,6 +547,29 @@
 
 ---
 
+# 第 3.61 阶段新增与修改
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/recovery_resume_worker.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_recovery_boundaries.py`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.61-result-persistence-recovery-boundaries.md`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_lifecycle_audit_coverage.py`
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+
+## 本地审计产物（被 `.gitignore` 排除）
+
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.61/persistence-boundary-recovery-matrix.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.61/mutations.json`
+- `/Users/lidequan/PythonProject/Zevorinth/artifacts/audits/phase-3.61/stable-summary.json`
+
+---
+
 # 第 2.5 阶段新增与修改
 
 ## 新增

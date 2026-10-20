@@ -143,6 +143,20 @@ class LifecycleAuditCoverageTests(unittest.TestCase):
             [item["code"] for item in report["issues"]],
         )
 
+    def test_old_attempt_plan_identity_is_detected(self) -> None:
+        service, task, events = _host_test_task()
+        snapshot = dict(task.execution_plan_snapshot)
+        snapshot["attempt_id"] = "old-attempt"
+        data = task.to_dict()
+        data["execution_plan_snapshot"] = snapshot
+        changed = type(task).from_dict(data)
+        report = audit_task_lifecycle(changed, events)
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "execution_plan_attempt_id_mismatch",
+            [item["code"] for item in report["issues"]],
+        )
+
     def test_interrupted_task_requires_manual_review(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="zv-audit-queued-"))
         service = TaskService(root)
