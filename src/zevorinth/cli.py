@@ -106,6 +106,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "sqlite_execution_leases": True,
             "llm_planner_available": bool(sdk_status["compatible"]),
             "controlled_recovery_audit": True,
+            "task_lifecycle_audit": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
         },
@@ -551,6 +552,14 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="show a persisted task")
     status.add_argument("task_id")
     status.add_argument("--json", action="store_true")
+
+    task_audit = subparsers.add_parser(
+        "task-audit",
+        help="read-only lifecycle consistency audit of a persisted task",
+    )
+    task_audit.add_argument("task_id")
+    task_audit.add_argument("--checked-at", default=None)
+    task_audit.add_argument("--json", action="store_true")
 
     recovery_audit = subparsers.add_parser(
         "recovery-audit",
@@ -1025,8 +1034,64 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _exit_code(task)
         if args.command == "status":
             task = service.require_task(args.task_id)
-            _print_task(task, args.json)
-            return _exit_code(task)
+            audit = service.audit_lifecycle(args.task_id)
+            if args.json:
+                print(
+                    json.dumps(
+                        {**task.to_dict(), "lifecycle_audit": audit},
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                _print_task(task, False)
+                print(
+                    f"Lifecycle audit: "
+                    f"{'ok' if audit['ok'] else 'unverified'} "
+                    f"assurance={audit['assurance_level']} "
+                    f"authenticity={audit['authenticity']} "
+                    f"security_certification="
+                    f"{audit['security_certification']}"
+                )
+            return _exit_code(task) if audit["ok"] else 5
+        if args.command == "task-audit":
+            report = service.audit_lifecycle(
+                args.task_id, now=args.checked_at
+            )
+            if args.json:
+                print(
+                    json.dumps(
+                        report,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                recovery = report["task_recovery"]
+                print(
+                    f"Task audit: {report['status']} "
+                    f"ok={report['ok']}"
+                )
+                print(
+                    f"Assurance: {report['assurance_level']} "
+                    f"({report['assurance']['label']})"
+                )
+                print(f"Authenticity: {report['authenticity']}")
+                print(f"Trust root: {report['trust_root']}")
+                print(
+                    f"Security certification: "
+                    f"{report['security_certification']}"
+                )
+                print(
+                    f"Manual review: "
+                    f"{recovery['manual_intervention']}"
+                )
+                print(f"Safe to retry: {recovery['safe_to_retry']}")
+                for issue in report["issues"]:
+                    print(f"Issue: {issue['code']} {issue['detail']}")
+            return 0 if report["ok"] else 5
         if args.command == "verify-isolation":
             from .evidence_provisioning import provision_evidence
 

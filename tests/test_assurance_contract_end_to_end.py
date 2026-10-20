@@ -206,6 +206,7 @@ class AssuranceContractEndToEndTests(unittest.TestCase):
         report = doctor_report(service.project_root)
         capabilities = report["capabilities"]
         self.assertTrue(capabilities["controlled_recovery_audit"])
+        self.assertTrue(capabilities["task_lifecycle_audit"])
         self.assertEqual(
             capabilities["recovery_assurance_levels"], ["L0", "L1"]
         )

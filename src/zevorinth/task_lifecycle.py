@@ -251,6 +251,88 @@ def audit_task_lifecycle(
     if "task_cancelled" in event_types and task.status is not TaskStatus.CANCELLED:
         issue("cancel_event_without_cancel_state", task.task_id)
 
+    tool_terminals = [
+        event
+        for event in event_list
+        if event.event_type in {"tool_succeeded", "tool_failed"}
+    ]
+    verification_events = [
+        event
+        for event in event_list
+        if event.event_type == "verification_completed"
+    ]
+    if len(tool_terminals) > 1:
+        issue("duplicate_tool_terminal_event", task.task_id)
+    if len(verification_events) > 1:
+        issue("duplicate_verification_completed_event", task.task_id)
+
+    if task.tool_result is not None:
+        matching_terminal = []
+        for event in tool_terminals:
+            payload_result = event.payload.get("tool_result")
+            if not isinstance(payload_result, Mapping):
+                continue
+            if payload_result.get("attempt_id") == task.tool_result.attempt_id:
+                matching_terminal.append(event)
+        if not matching_terminal:
+            issue("tool_result_without_matching_event", task.task_id)
+        else:
+            terminal = matching_terminal[-1]
+            expected_event = (
+                "tool_succeeded"
+                if task.tool_result.success
+                else "tool_failed"
+            )
+            if terminal.event_type != expected_event:
+                issue("tool_result_event_success_mismatch", task.task_id)
+            payload_result = terminal.payload.get("tool_result")
+            if (
+                isinstance(payload_result, Mapping)
+                and payload_result.get("success") != task.tool_result.success
+            ):
+                issue("tool_result_payload_success_mismatch", task.task_id)
+    elif tool_terminals:
+        issue("tool_terminal_event_without_tool_result", task.task_id)
+
+    if task.verification is not None:
+        matching_verification = []
+        for event in verification_events:
+            payload_verification = event.payload.get("verification")
+            if (
+                isinstance(payload_verification, Mapping)
+                and payload_verification.get("verifier_name")
+                == task.verification.verifier_name
+                and payload_verification.get("reason")
+                == task.verification.reason
+                and payload_verification.get("passed")
+                == task.verification.passed
+            ):
+                matching_verification.append(event)
+        if not matching_verification:
+            issue("verification_without_matching_event", task.task_id)
+    elif verification_events:
+        issue("verification_event_without_verification", task.task_id)
+
+    index_by_type: dict[str, list[int]] = {}
+    for index, event in enumerate(event_list):
+        index_by_type.setdefault(event.event_type, []).append(index)
+    if task.tool_result is not None and matching_terminal:
+        started_indexes = index_by_type.get("tool_started", [])
+        if started_indexes and matching_terminal[-1].sequence > 0:
+            terminal_position = event_list.index(matching_terminal[-1])
+            if not any(index < terminal_position for index in started_indexes):
+                issue("tool_terminal_before_tool_started", task.task_id)
+    if verification_events:
+        verification_position = event_list.index(verification_events[-1])
+        started_indexes = index_by_type.get("verification_started", [])
+        if started_indexes and not any(
+            index < verification_position for index in started_indexes
+        ):
+            issue(
+                "verification_completed_before_started",
+                task.task_id,
+            )
+
     if is_test and snapshot is None:
         issue("missing_final_execution_plan", task.task_id)
     if snapshot is not None:

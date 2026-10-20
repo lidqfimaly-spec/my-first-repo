@@ -1534,6 +1534,94 @@
         "tests.test_assurance_contract_end_to_end.AssuranceContractEndToEndTests.test_lifecycle_audit_and_preview_use_shared_contract"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "lifecycle_tool_result_event_missing_bypass",
+      "property": "tool result requires a matching terminal event",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        if not matching_terminal:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_missing_tool_terminal_event_forces_manual_preview"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lifecycle_verification_event_missing_bypass",
+      "property": "verification result requires a matching completed event",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        if not matching_verification:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_missing_verification_event_forces_manual_review"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lifecycle_duplicate_tool_terminal_bypass",
+      "property": "duplicate tool terminal events are rejected",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    if len(tool_terminals) > 1:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_duplicate_tool_and_verification_events_are_detected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lifecycle_duplicate_verification_terminal_bypass",
+      "property": "duplicate verification terminal events are rejected",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    if len(verification_events) > 1:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_duplicate_tool_and_verification_events_are_detected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lifecycle_tool_result_success_event_mismatch_bypass",
+      "property": "tool result success agrees with terminal event type",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "            if terminal.event_type != expected_event:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_tool_and_verification_field_mismatches_are_detected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "preview_lifecycle_inconsistency_hidden",
+      "property": "lifecycle inconsistencies require manual preview",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "    elif not report.get(\"ok\", True):\n",
+      "new": "    elif False:\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_missing_tool_terminal_event_forces_manual_preview"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cli_status_ignores_lifecycle_audit_failure",
+      "property": "status does not return success for an unverified lifecycle",
+      "path": "src/zevorinth/cli.py",
+      "old": "            return _exit_code(task) if audit[\"ok\"] else 5\n",
+      "new": "            return _exit_code(task)\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_status_and_task_audit_fail_closed_on_event_semantic_break"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "cli_task_audit_ignores_failure",
+      "property": "task-audit returns non-zero for lifecycle inconsistencies",
+      "path": "src/zevorinth/cli.py",
+      "old": "            return 0 if report[\"ok\"] else 5\n",
+      "new": "            return 0\n",
+      "tests": [
+        "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_status_and_task_audit_fail_closed_on_event_semantic_break"
+      ],
+      "expected": "killed"
     }
   ]
 }

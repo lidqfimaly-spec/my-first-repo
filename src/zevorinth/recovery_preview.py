@@ -916,6 +916,10 @@ def build_recovery_preview(
             "invalid_cleanup_timestamp",
         }:
             unknown.append(code)
+    if not report.get("ok", True):
+        unknown.extend(
+            str(item.get("code")) for item in report.get("issues", [])
+        )
 
     actions: list[RecoveryAction] = []
     issue_codes = {str(item.get("code")) for item in report.get("issues", [])}
@@ -930,6 +934,20 @@ def build_recovery_preview(
                 expected_result="confirmed diagnosis or not_recoverable",
                 risk="high",
                 verification="independent storage/evidence inspection",
+                requires_approval=True,
+            )
+        )
+    elif not report.get("ok", True):
+        actions.append(
+            RecoveryAction(
+                action="manual_review",
+                target=f"task:{task.task_id}",
+                current_state="lifecycle_inconsistent",
+                operation="inspect lifecycle issues; do not retry",
+                preconditions=("all lifecycle issues are independently reviewed",),
+                expected_result="confirmed diagnosis or not_recoverable",
+                risk="high",
+                verification="lifecycle audit and independent evidence review",
                 requires_approval=True,
             )
         )
