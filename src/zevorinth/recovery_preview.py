@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import fcntl
 
+from .assurance import assurance_level
 from .models import Event, Task, TaskStatus
 from .task_lifecycle import audit_task_lifecycle
 
@@ -96,6 +97,7 @@ class RecoveryPreview:
     audit: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
+        level = str(self.audit.get("assurance_level", "L0"))
         return {
             "preview_id": self.preview_id,
             "preview_version": self.preview_version,
@@ -107,6 +109,15 @@ class RecoveryPreview:
             "actions": [action.to_dict() for action in self.actions],
             "audit": self.audit,
             "execution_authorized": False,
+            "assurance_level": level,
+            "assurance": (
+                self.audit.get("assurance")
+                or assurance_level(level)
+            ),
+            "authenticity": "not_authenticated",
+            "trust_root": "none",
+            "same_privilege_rewrite_protected": False,
+            "security_certification": False,
         }
 
     @classmethod

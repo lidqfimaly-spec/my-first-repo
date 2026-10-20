@@ -1062,8 +1062,8 @@
       "id": "controlled_action_target_binding_bypass",
       "property": "controlled executor requires the exact approved target",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "    if (\n        approval.action != CONTROLLED_RESTORE_ACTION\n        or approval.target != target\n    ):\n        return {\n            \"status\": \"denied\",\n            \"code\": \"controlled_action_binding_mismatch\",\n",
-      "new": "    if False:\n        return {\n            \"status\": \"denied\",\n            \"code\": \"controlled_action_binding_mismatch\",\n",
+      "old": "    if (\n        approval.action != CONTROLLED_RESTORE_ACTION\n        or approval.target != target\n    ):\n        return with_status_assurance({\n            \"status\": \"denied\",\n            \"code\": \"controlled_action_binding_mismatch\",\n",
+      "new": "    if False:\n        return with_status_assurance({\n            \"status\": \"denied\",\n            \"code\": \"controlled_action_binding_mismatch\",\n",
       "tests": [
         "tests.test_controlled_recovery.ControlledRecoveryTests.test_target_must_match_bound_workspace"
       ],
@@ -1095,7 +1095,7 @@
       "id": "controlled_claim_failure_continues_to_side_effect",
       "property": "claim persistence failure prevents the controlled side effect",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "    except ApprovalStoreError as exc:\n        return {\n            \"status\": \"unverified\",\n            \"code\": \"claim_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_supported\": False,\n            \"general_recovery_supported\": False,\n        }\n",
+      "old": "    except ApprovalStoreError as exc:\n        return with_status_assurance({\n            \"status\": \"unverified\",\n            \"code\": \"claim_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_supported\": False,\n            \"general_recovery_supported\": False,\n        })\n",
       "new": "    except ApprovalStoreError as exc:\n        claim = {\"status\": \"claimed\", \"execution_attempt_id\": \"unsafe\"}\n",
       "tests": [
         "tests.test_controlled_recovery.ControlledRecoveryTests.test_claim_persistence_failure_prevents_side_effect"
@@ -1187,8 +1187,8 @@
       "id": "controlled_completion_failure_reported_success",
       "property": "completion persistence failure remains unverified",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "    except ApprovalStoreError as exc:\n        return {\n            \"status\": \"unverified\",\n            \"code\": \"completion_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_attempt_id\": attempt_id,\n            \"observation\": verification,\n",
-      "new": "    except ApprovalStoreError as exc:\n        return {\n            \"status\": \"succeeded\",\n            \"code\": \"completion_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_attempt_id\": attempt_id,\n            \"observation\": verification,\n",
+      "old": "    except ApprovalStoreError as exc:\n        return with_status_assurance({\n            \"status\": \"unverified\",\n            \"code\": \"completion_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_attempt_id\": attempt_id,\n            \"observation\": verification,\n",
+      "new": "    except ApprovalStoreError as exc:\n        return with_status_assurance({\n            \"status\": \"succeeded\",\n            \"code\": \"completion_persistence_failed\",\n            \"reason\": exc.code,\n            \"manual_review\": True,\n            \"safe_to_retry\": False,\n            \"execution_attempt_id\": attempt_id,\n            \"observation\": verification,\n",
       "tests": [
         "tests.test_controlled_recovery.ControlledRecoveryTests.test_completion_write_failure_leaves_verified_side_effect_unverified"
       ],
@@ -1285,9 +1285,9 @@
     {
       "id": "controlled_audit_claims_security_certification",
       "property": "consistency audit is not a security certification",
-      "path": "src/zevorinth/controlled_recovery.py",
-      "old": "        \"security_certification\": False,\n",
-      "new": "        \"security_certification\": True,\n",
+      "path": "src/zevorinth/assurance.py",
+      "old": "    enriched[\"security_certification\"] = SECURITY_CERTIFICATION\n",
+      "new": "    enriched[\"security_certification\"] = True\n",
       "tests": [
         "tests.test_controlled_recovery_phase367.ControlledRecoveryPhase367Tests.test_success_audit_is_consistent_and_read_only"
       ],
@@ -1418,8 +1418,8 @@
       "id": "assurance_l0_overclaimed_as_l1",
       "property": "missing or corrupt evidence remains L0",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "    audit = _with_assurance(audit, \"L0\")\n",
-      "new": "    audit = _with_assurance(audit, \"L1\")\n",
+      "old": "    audit = with_assurance(audit, \"L0\")\n",
+      "new": "    audit = with_assurance(audit, \"L1\")\n",
       "tests": [
         "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_single_record_tamper_in_isolated_copy_is_corrupt"
       ],
@@ -1429,8 +1429,8 @@
       "id": "assurance_consistent_level_overclaimed",
       "property": "consistent audit remains L1",
       "path": "src/zevorinth/controlled_recovery.py",
-      "old": "    return {\n        **_with_assurance(audit, \"L1\"),\n        \"status\": \"consistent\",\n",
-      "new": "    return {\n        **_with_assurance(audit, \"L2\"),\n        \"status\": \"consistent\",\n",
+      "old": "    return {\n        **with_assurance(audit, \"L1\"),\n        \"status\": \"consistent\",\n",
+      "new": "    return {\n        **with_assurance(audit, \"L2\"),\n        \"status\": \"consistent\",\n",
       "tests": [
         "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_audit_distinguishes_consistency_from_authenticity"
       ],
@@ -1439,7 +1439,7 @@
     {
       "id": "assurance_l2_marked_implemented",
       "property": "L2 remains an unimplemented design target",
-      "path": "src/zevorinth/controlled_recovery.py",
+      "path": "src/zevorinth/assurance.py",
       "old": "        \"label\": \"source_authenticated\",\n        \"meaning\": \"evidence source identity is independently authenticated\",\n        \"implemented\": False,\n",
       "new": "        \"label\": \"source_authenticated\",\n        \"meaning\": \"evidence source identity is independently authenticated\",\n        \"implemented\": True,\n",
       "tests": [
@@ -1450,7 +1450,7 @@
     {
       "id": "assurance_l3_marked_implemented",
       "property": "L3 remains an unimplemented design target",
-      "path": "src/zevorinth/controlled_recovery.py",
+      "path": "src/zevorinth/assurance.py",
       "old": "        \"label\": \"independent_attestation\",\n        \"meaning\": (\n            \"audit or runtime is attested independently of local permissions\"\n        ),\n        \"implemented\": False,\n",
       "new": "        \"label\": \"independent_attestation\",\n        \"meaning\": (\n            \"audit or runtime is attested independently of local permissions\"\n        ),\n        \"implemented\": True,\n",
       "tests": [
@@ -1461,7 +1461,7 @@
     {
       "id": "assurance_unimplemented_level_authenticated",
       "property": "unimplemented levels cannot report authenticated evidence",
-      "path": "src/zevorinth/controlled_recovery.py",
+      "path": "src/zevorinth/assurance.py",
       "old": "        \"evidence_authenticated\": (\n            definition[\"implemented\"] and level in {\"L2\", \"L3\"}\n        ),\n",
       "new": "        \"evidence_authenticated\": (\n            level in {\"L2\", \"L3\"}\n        ),\n",
       "tests": [
@@ -1472,7 +1472,7 @@
     {
       "id": "assurance_unimplemented_level_security_certified",
       "property": "unimplemented L3 cannot report security certification",
-      "path": "src/zevorinth/controlled_recovery.py",
+      "path": "src/zevorinth/assurance.py",
       "old": "        \"security_certification\": (\n            definition[\"implemented\"] and level == \"L3\"\n        ),\n",
       "new": "        \"security_certification\": (\n            level == \"L3\"\n        ),\n",
       "tests": [
@@ -1483,11 +1483,55 @@
     {
       "id": "assurance_l1_allows_retry",
       "property": "L1 never permits automatic retry",
-      "path": "src/zevorinth/controlled_recovery.py",
+      "path": "src/zevorinth/assurance.py",
       "old": "        \"prohibited_behavior\": [\n            \"claim_authenticity\",\n            \"claim_security_certification\",\n            \"automatic_retry\",\n",
       "new": "        \"prohibited_behavior\": [\n            \"claim_authenticity\",\n            \"claim_security_certification\",\n",
       "tests": [
         "tests.test_evidence_trust_boundary.EvidenceTrustBoundaryTests.test_l0_and_l1_behavior_contracts_deny_automation"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_unknown_status_promoted",
+      "property": "unknown execution status remains L0",
+      "path": "src/zevorinth/assurance.py",
+      "old": "        else \"L0\"\n",
+      "new": "        else \"L1\"\n",
+      "tests": [
+        "tests.test_assurance_contract_end_to_end.AssuranceContractEndToEndTests.test_status_mapping_is_closed_and_conservative"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "assurance_trust_fields_omitted",
+      "property": "assurance outputs include shared trust-boundary fields",
+      "path": "src/zevorinth/assurance.py",
+      "old": "    if include_trust_boundary:\n        enriched.update(trust_boundary_fields())\n",
+      "new": "    if include_trust_boundary:\n        enriched.update({})\n",
+      "tests": [
+        "tests.test_assurance_contract_end_to_end.AssuranceContractEndToEndTests.test_status_mapping_is_closed_and_conservative"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lifecycle_consistent_downgraded_or_overclaimed",
+      "property": "consistent lifecycle audits are L1",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        \"L1\" if not issues else \"L0\",\n",
+      "new": "        \"L0\" if not issues else \"L1\",\n",
+      "tests": [
+        "tests.test_assurance_contract_end_to_end.AssuranceContractEndToEndTests.test_lifecycle_audit_and_preview_use_shared_contract"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "preview_security_certification_overclaimed",
+      "property": "recovery previews never claim security certification",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "            \"same_privilege_rewrite_protected\": False,\n            \"security_certification\": False,\n        }\n",
+      "new": "            \"same_privilege_rewrite_protected\": False,\n            \"security_certification\": True,\n        }\n",
+      "tests": [
+        "tests.test_assurance_contract_end_to_end.AssuranceContractEndToEndTests.test_lifecycle_audit_and_preview_use_shared_contract"
       ],
       "expected": "killed"
     }

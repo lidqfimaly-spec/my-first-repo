@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
+from .assurance import with_assurance
 from .models import Event, Task, TaskStatus
 
 
@@ -35,7 +36,7 @@ def audit_storage_error(
     checked = _parse_time(now) if now else datetime.now(timezone.utc)
     if checked is None:
         checked = datetime.now(timezone.utc)
-    return {
+    return with_assurance({
         "task_id": task_id,
         "auditor_version": AUDITOR_VERSION,
         "checked_at": checked.isoformat(timespec="milliseconds"),
@@ -59,7 +60,7 @@ def audit_storage_error(
         },
         "cleanup_operations": [],
         "event_types": [],
-    }
+    }, "L0", include_trust_boundary=True)
 
 
 def _cleanup_operation_states(
@@ -310,7 +311,7 @@ def audit_task_lifecycle(
         "isolation_unverified",
     }:
         manual = True
-    return {
+    report = {
         "task_id": task.task_id,
         "auditor_version": AUDITOR_VERSION,
         "checked_at": checked.isoformat(timespec="milliseconds"),
@@ -332,3 +333,8 @@ def audit_task_lifecycle(
         "cleanup_operations": cleanup_states,
         "event_types": event_types,
     }
+    return with_assurance(
+        report,
+        "L1" if not issues else "L0",
+        include_trust_boundary=True,
+    )

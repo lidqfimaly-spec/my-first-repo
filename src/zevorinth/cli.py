@@ -13,6 +13,8 @@ from typing import Sequence
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
 from .conversation_service import ConversationService
+from .controlled_recovery import audit_controlled_recovery
+from .recovery_preview import RecoveryApprovalStore
 from .event_store import (
     ActiveTaskConflict,
     ConversationNotFound,
@@ -56,6 +58,15 @@ STATUS_EXIT_CODES = {
     TaskStatus.CANCELLED: 5,
 }
 
+RECOVERY_AUDIT_EXIT_CODES = {
+    "completed": 0,
+    "consistent": 0,
+    "verified_failure": 1,
+    "not_claimed": 3,
+    "denied": 4,
+    "unverified": 5,
+}
+
 
 def _project_root(override: Path | None = None) -> Path:
     return (override or Path.cwd()).resolve()
@@ -94,6 +105,9 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "resume_interrupted_task": True,
             "sqlite_execution_leases": True,
             "llm_planner_available": bool(sdk_status["compatible"]),
+            "controlled_recovery_audit": True,
+            "recovery_assurance_levels": ["L0", "L1"],
+            "recovery_authentication": "not_authenticated",
         },
         "task_types": [WRITE_TEXT_ARTIFACT],
         "llm_planner": {
@@ -538,6 +552,15 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("task_id")
     status.add_argument("--json", action="store_true")
 
+    recovery_audit = subparsers.add_parser(
+        "recovery-audit",
+        help="read-only audit of controlled recovery evidence",
+    )
+    recovery_audit.add_argument("approval_id")
+    recovery_audit.add_argument("--workspace", type=Path, required=True)
+    recovery_audit.add_argument("--checked-at", default=None)
+    recovery_audit.add_argument("--json", action="store_true")
+
     events = subparsers.add_parser("events", help="show ordered persisted events")
     events.add_argument("task_id")
     events.add_argument("--json", action="store_true")
@@ -606,6 +629,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _print_human(report)
         return 0
+    if args.command == "recovery-audit":
+        report = audit_controlled_recovery(
+            RecoveryApprovalStore(_project_root(args.home)),
+            args.approval_id,
+            args.workspace,
+            now=args.checked_at,
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    report, ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
+        else:
+            assurance = report.get("assurance") or {}
+            print(
+                f"Recovery audit: {report['status']} "
+                f"({report.get('reason', 'no additional detail')})"
+            )
+            print(
+                f"Assurance: {report['assurance_level']} "
+                f"({assurance.get('label', 'unknown')})"
+            )
+            print(f"Authenticity: {report['authenticity']}")
+            print(f"Trust root: {report['trust_root']}")
+            print(
+                "Security certification: "
+                f"{report['security_certification']}"
+            )
+            print(f"Manual review: {report['manual_review']}")
+            print(f"Safe to retry: {report['safe_to_retry']}")
+        return RECOVERY_AUDIT_EXIT_CODES.get(report["status"], 5)
     if args.command == "conversation":
         try:
             service = ConversationService(_project_root(args.home))

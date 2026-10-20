@@ -109,6 +109,11 @@ class ControlledRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "succeeded", result)
         self.assertEqual(result["approval_status"], "consumed")
+        self.assertEqual(result["assurance_level"], "L1")
+        self.assertEqual(
+            result["authenticity"], "not_authenticated"
+        )
+        self.assertFalse(result["security_certification"])
         self.assertFalse(result["general_recovery_supported"])
         marker = self._marker(workspace)
         self.assertEqual(marker.read_bytes(), CONTROLLED_RESTORE_CONTENT)
@@ -333,6 +338,8 @@ class ControlledRecoveryTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "unverified")
         self.assertEqual(result["code"], "intent_persistence_failed")
+        self.assertEqual(result["assurance_level"], "L0")
+        self.assertFalse(result["security_certification"])
         self.assertFalse(self._marker(workspace).exists())
         persisted = store.load(approval.approval_id)
         self.assertEqual(persisted.status, "consuming")
@@ -356,6 +363,7 @@ class ControlledRecoveryTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "unverified")
         self.assertEqual(result["code"], "claim_persistence_failed")
+        self.assertEqual(result["assurance_level"], "L0")
         self.assertTrue(result["manual_review"])
         self.assertFalse(result["safe_to_retry"])
         self.assertFalse(self._marker(workspace).exists())
@@ -384,6 +392,7 @@ class ControlledRecoveryTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "failed")
         self.assertIn("independent_verification_", result["code"])
+        self.assertEqual(result["assurance_level"], "L1")
         self.assertFalse(self._marker(workspace).exists())
         self.assertEqual(store.load(approval.approval_id).status, "failed")
 
