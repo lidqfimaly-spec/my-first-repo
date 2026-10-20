@@ -607,6 +607,7 @@ ZEVORINTH_MODEL=deepseek-flash
 - 澄清 answered/applied/rejected 事件补齐 task/turn 关联；
 - 验证 pending answer 恢复和 Turn 早期状态窗口；
 - 审计 Schema v4 迁移、Policy、Verifier、Lease/Fencing 和并发路径。
+- 在隔离源码副本中注入两项已修复缺陷，对应回归均按预期失败。
 
 ## 测试
 

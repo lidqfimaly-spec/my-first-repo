@@ -136,6 +136,18 @@ ConversationService.process_message()
 
 这些缺口不改变当前已通过路径的安全结论，但不能称为“所有崩溃时序均已证明”。
 
+### 5.1 隔离副本反例测试
+
+在 `/tmp` 的隔离源码副本中逐一重新引入已修复缺陷，运行对应回归后
+丢弃副本；正式工作树未被修改。
+
+| 注入的错误 | 对应测试 | 实际结果 |
+| --- | --- | --- |
+| 重复处理失败任务时重新返回 `already_processed` | `test_process_cli_reports_blocked_task_status_consistently` | 测试失败（`0 != 4`），缺陷被捕获 |
+| `clarification_answered` 不再写入 question 的 task/turn 关联 | `test_clarification_events_carry_question_association` | applied 与 rejected 两个分支均失败，缺陷被捕获 |
+
+两项反例退出码均为 1，说明新增断言能够捕获对应错误实现。
+
 ## 6. Policy、Verifier 与工具
 
 已有负面测试覆盖：
