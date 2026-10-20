@@ -77,6 +77,7 @@ def _request(**extra: Any) -> TaskRequest:
         "target": "test_ok",
         "workspace": "demo",
         "execution_backend": "host",
+        "host_authorization": "local-maintenance",
     }
     parameters.update(extra)
     return TaskRequest(goal="audit", operation=RUN_TESTS, parameters=parameters)
