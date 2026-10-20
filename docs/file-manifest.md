@@ -95,11 +95,12 @@
 
 ---
 
-# 第 3.44 阶段任务书（未执行）
+# 第 3.44 阶段任务书与执行审计
 
 ## 新增
 
 - `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.44-end-to-end-verification-taskbook.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.44-end-to-end-verification-audit.md`
 
 ## 修改
 
@@ -108,10 +109,12 @@
 
 ## 状态
 
-- 真实模型 API 请求：0；
-- 未启动容器；
-- 未执行候选验证；
-- 等待用户单独授权。
+- 真实模型 API 请求：1（授权上限 1）；
+- 候选协议：通过；
+- 执行链：BLOCKED（`isolation_unverified / evidence_id_missing`）；
+- 容器：未启动；
+- 本地结果：`artifacts/audits/phase-3.44/pilot-result.json`；
+- 本地摘要：`artifacts/audits/phase-3.44/stable-summary.json`。
 
 ---
 

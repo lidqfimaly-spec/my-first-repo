@@ -757,6 +757,34 @@ FAIL（模型行为门禁未通过）；安全边界成立。
 
 ---
 
+# 第 3.44 阶段执行记录
+
+## 授权与结果
+
+1 次真实模型请求，0 重试；固定 `demo/test_ok`，仅容器后端。
+
+- 模型返回合法 `run_tests` 候选，目标 `test_ok`，本地校验通过；
+- 计划层把 `auto_provision_isolation=true` 丢成 `false`；
+- provisioning 未执行，容器未启动；
+- 任务失败：`isolation_unverified / evidence_id_missing`；
+- 无文件副作用、无宿主机回退、无重试。
+
+## 根因
+
+`local_test_runner.validate_parameters()` 的返回字典未保留
+`auto_provision_isolation` 等可信测试字段，`_plan_test()` 用它构建计划，导致执行器
+跳过了 provisioning。
+
+附带问题：`_finish_tool_failure()` 将 run_tests 失败记录为
+`write_text_artifact`，失败审计的工具名不正确。
+
+## 结论
+
+**BLOCKED**：候选协议本次通过，但完整执行链未验证。详见
+`docs/phase-3.44-end-to-end-verification-audit.md`；未推送。
+
+---
+
 
 
 ## 实现
