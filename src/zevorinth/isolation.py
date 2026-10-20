@@ -8,6 +8,7 @@ unisolated.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -579,6 +580,36 @@ def verify_container_boundaries(
     }
 
 
+def _live_runtime_identity() -> str:
+    import shutil
+
+    binary = shutil.which("docker")
+    if binary is None:
+        return "unavailable"
+    completed = subprocess.run(
+        [binary, "version", "--format", "{{.Server.Version}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return completed.stdout.strip() or "unknown"
+
+
+def _live_image_digest(image: str) -> str:
+    import shutil
+
+    binary = shutil.which("docker")
+    if binary is None:
+        return "unavailable"
+    completed = subprocess.run(
+        [binary, "image", "inspect", image, "--format", "{{index .RepoDigests 0}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return completed.stdout.strip() or "missing"
+
+
 def run_protected_container(
     *,
     workspace: Path,
@@ -596,13 +627,19 @@ def run_protected_container(
     if evidence is not None:
         from .isolation_evidence import verify_evidence
 
+        # Derive the expected identity from the live environment and the
+        # command about to run; never from the evidence's own claims.
+        live_command = build_container_command(
+            image=image, workspace=workspace, argv=argv
+        )
+        expected_config = hashlib.sha256(
+            " ".join(live_command).encode("utf-8")
+        ).hexdigest()
         verdict = verify_evidence(
             evidence,
-            expected_runtime=str(evidence.get("runtime_identity", "")),
-            expected_image_digest=str(evidence.get("image_digest", "")),
-            expected_config_digest=str(
-                evidence.get("container_config_digest", "")
-            ),
+            expected_runtime=_live_runtime_identity(),
+            expected_image_digest=_live_image_digest(image),
+            expected_config_digest=expected_config,
         )
         if verdict["state"] != "verified":
             return {

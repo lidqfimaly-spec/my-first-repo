@@ -2,119 +2,105 @@
 
 ## 1. 结论与基线
 
-**BLOCKED（容器真实边界未执行）**，整体 **PASS WITH LIMITATIONS**。
+**PASS WITH LIMITATIONS**（容器边界：**VERIFIED**，在本机授权运行时上真实执行）。
 
-本机没有获授权的容器运行时（daemon 未运行，且本阶段禁止启动），因此七项探针全部 **NOT_EXECUTED**。本阶段交付的是**证据契约 + 独立验证器**：即使调用方伪造 `verified=true`/完整证据，验证器也会拒绝缺失、部分、篡改、失配或版本不兼容的记录。
+用户给出全面授权后，本机 Docker Desktop 被启动（此前禁止启动），拉取 `alpine:3.20`，并在硬化配置下完成七项真实探针。独立验证器判定 `verified`，`run_protected_container()` 实际启动了受保护进程；篡改证据则被拒绝且进程未启动。
 
 | 项目 | 值 |
 | --- | --- |
 | 起始 HEAD | `2e66edb5c3966e93c4ef5b80ce35014e0ce3c896` |
-| 分支 | `phase-2.6-response-hardening` |
+| 阶段提交 | `3ee8afca69b3ee96b84582ebaad2c905705007d5`（当时 BLOCKED） |
+| 本文档更新 | 本提交（真实运行时证据） |
 | 平台 | macOS，Python 3.14.6 |
-| 运行时 | Docker CLI 存在，daemon 不可达 |
+| 运行时 | Docker 29.2.1（Desktop，`/Applications/Docker.app`） |
+| 镜像 | `alpine:3.20` = `alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc` |
 
-## 2. 证据契约
+## 2. 授权与操作记录
 
-`build_evidence()` 生成：
-
-`schema_version`、`verifier_version`、`environment_id`、`runtime_identity`、`image_digest`、`container_config_digest`、`probes[]`、`digest`。
-
-每个 probe：`probe_id`、`boundary`、`status`、`expected_result`、`observed_result`、`exit_code`、`evidence_artifact_ids`、`failure_reason`。状态集合：`PASS` / `FAIL` / `NOT_EXECUTED` / `ERROR` / `INCONCLUSIVE`。
-
-七项边界：`read_inside`、`write_inside`、`read_outside`、`write_outside`、`network`、`credential`、`subprocess`。
-
-`digest` 为除自身外全部字段的规范化 JSON 的 SHA-256，可独立重算。
-
-## 3. 独立验证器
-
-`verify_evidence(evidence, expected_runtime, expected_image_digest, expected_config_digest, expected_verifier_version)` 重新计算判定：
-
-| 条件 | 结果 |
+| 操作 | 说明 |
 | --- | --- |
-| 证据缺失 / 字段缺失 | `blocked` |
-| `verifier_version` 不匹配 | `blocked` |
-| 摘要不符（被篡改） | `failed` |
-| runtime / image / config 身份不符 | `blocked` |
-| 重复 probe_id 或重复 boundary | `failed` |
-| 未知 boundary | `failed` |
-| 缺少任一必需 boundary | `blocked`（`boundary_not_executed:*`） |
-| 任一 probe `FAIL` | `failed` |
-| 任一 probe `NOT_EXECUTED` | `blocked` |
-| 任一 probe `ERROR` / `INCONCLUSIVE` | `unverified` |
-| 全部 `PASS` 且身份/摘要一致 | `verified` |
+| `open -a Docker` | 用户全面授权后启动；daemon 4 秒内就绪 |
+| `docker pull alpine:3.20` | 用户授权后联网拉取（13.7 MB），digest 已记录 |
+| 容器运行 | 仅使用临时工作区与人工创建的诱饵文件 |
 
-`run_protected_container()` 在提供 `evidence` 时**必须**先通过该验证器；未提供时仍要求 `boundary_result.state == "verified"`。任一不满足 → 不启动进程、不回退宿主机执行。
+## 3. 硬化配置（实际使用）
 
-## 4. 七项探针状态
+```
+docker run --rm --network none --read-only --user 65534:65534
+  --cap-drop ALL --security-opt no-new-privileges
+  --pids-limit 64 --memory 256m --cpus 0.5
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m
+  --mount type=bind,src=<workspace>,dst=/workspace --workdir /workspace
+  alpine:3.20 /bin/sh -c <probe>
+```
 
-| 边界 | 状态 | 说明 |
-| --- | --- | --- |
-| 工作区内读/写 | NOT_EXECUTED | 无 daemon |
-| 工作区外读/写 | NOT_EXECUTED | 无 daemon |
-| 网络 | NOT_EXECUTED | `--network none` 只是配置 |
-| 凭据 | NOT_EXECUTED | 无 daemon |
-| 子进程 | NOT_EXECUTED | 无 daemon |
+配置摘要（命令规范化后的 SHA-256）记录在证据文件的 `container_config_digest`。
 
-`NOT_EXECUTED` 在验证器中映射为 `blocked`，**不会**被计为通过。
+## 4. 七项真实探针结果
 
-## 5. 负向测试（已执行）
+| 边界 | 期望 | 实测 | 判定 | 拒绝层 |
+| --- | --- | --- | --- | --- |
+| 工作区内读取 | allowed | allowed | PASS | 允许 |
+| 工作区内写入 | allowed | allowed | PASS | 允许 |
+| 工作区外读取 | denied | denied | PASS | 宿主路径在容器内不存在 |
+| 工作区外写入 | denied | denied | PASS | **内核 EROFS**（read-only rootfs） |
+| 网络 | denied | denied | PASS | **运行时拒绝**（`--network none`） |
+| 凭据占位 | denied | denied | PASS | 路径不存在/非 root |
+| 子进程 | allowed（受 pids-limit 约束） | allowed | PASS | 允许（有界） |
+
+stderr 证据：`/bin/sh: can't create /outside.txt: Read-only file system`。
+
+## 5. 独立验证器判定
+
+`verify_evidence()` 用**实时** runtime 版本、镜像 digest 与即将执行的命令摘要重新计算：
+
+| 项目 | 值 |
+| --- | --- |
+| 状态 | `verified` |
+| 证据 digest | `975d54d82ad32f614cbf6de89153d9f421053398fa23de30c9c8a497035ddebf` |
+| 拒绝原因 | 无 |
+
+门禁行为：
 
 | 场景 | 结果 |
 | --- | --- |
-| 缺失证据 | `blocked` |
-| 少一项 boundary | `blocked`（`boundary_not_executed`） |
-| 全部 `NOT_EXECUTED` | `blocked` |
-| 任一 `FAIL` | `failed` |
-| 任一 `INCONCLUSIVE` | `unverified` |
-| 篡改 probe 状态 | `failed`（`evidence_digest_mismatch`） |
-| 镜像/配置 digest 不匹配 | `blocked` |
-| 旧 verifier 版本 | `blocked` |
-| 重复 probe_id | `failed` |
-| 运行时可用但无证据 | 不 `verified` |
-| 未验证证据下启动容器 | `process_started=false` |
+| 完整且身份一致的证据 | `run_protected_container` **实际启动**，exit 0 |
+| 篡改任一 probe 状态 | `failed`，`process_started=false` |
+| 镜像/配置 digest 与实时环境不符 | `blocked` |
+| `NOT_EXECUTED` / 缺 boundary | `blocked` |
+| 缺证据 / 旧 verifier 版本 | `blocked` |
 
 ## 6. 回归与变异
 
 | 命令 | 结果 | 退出码 |
 | --- | --- | --- |
-| 系统 Python 全量 unittest（连续两次） | 473/473，37.7s / 32.6s | 0 |
+| 系统 Python 全量 unittest（连续两次） | 474/474，32.9s / 32.7s | 0 |
+| 容器实测集成测试 | 1/1（真实容器） | 0 |
 | 证据验证器专项 | 13/13 | 0 |
 | Mutation runner | 46 killed / 0 survived / 0 invalid / 0 error | 0 |
 | `compileall` / `git diff --check` | 无输出 | 0 |
 
-新增变异：`evidence_tamper_accepted`、`not_executed_counted_as_pass`、`evidence_identity_mismatch_ignored`，均被捕获。
+Phase 3.21–3.25 的安全保证（意图门禁、quarantine 校验、Seatbelt `partial`、`run_tests` 非隔离类别）全部保持。
 
-## 7. Phase 3.21–3.25 回归
+## 7. 产物
 
-持久化意图门禁、quarantine 身份/哈希、Seatbelt `partial`、`run_tests` 非隔离类别、应用层拒绝 ≠ 内核拒绝——全部保持（既有测试继续通过）。
-
-## 8. 指标
-
-| 指标 | 值 |
+| 文件 | SHA-256 |
 | --- | --- |
-| isolation_probe_attempts（容器） | 0 |
-| isolation_probe_blocked | 1（运行时不可达） |
-| isolation_probe_verified | 0 |
-| evidence_incomplete | 1（负向测试样本） |
-| evidence_digest_mismatch | 1 |
-| protected_processes_started_without_verified_isolation | 0 |
-| cleanup_intent_gate_regressions | 0 |
+| `artifacts/audits/phase-3.26/container-evidence.json` | `0436f0a14f68eca99755093802535f55ec0da2c703959e20d8720a0c8e08f322` |
+| `artifacts/audits/phase-3.26/mutations.json` | `6116a8fb6e57450843dc0af582bf112667668dee381a93b8ff0c6fd8f06f9941` |
 
-## 9. 已执行 / 静态 / 未执行
+## 8. 安全边界
 
-**已执行**：473 项测试、证据验证器全部负向分支、容器启动门禁、46 条变异。
+- 真实模型 API 请求：0；
+- 联网仅用于 `docker pull alpine:3.20`（用户全面授权）；
+- 未读取 `.env` 或任何凭据；
+- 未挂载宿主目录（仅临时工作区）、未暴露 docker.sock、未继承宿主环境变量；
+- `.idea/` 未修改未暂存；未删除 quarantine 或用户数据；未推送。
 
-**静态审查**：容器参数语义、镜像候选。
+## 9. 残余风险
 
-**未执行 / BLOCKED**：容器七项真实探针、镜像 digest 核验、容器超时/取消/残留。
-
-## 10. 安全边界
-
-真实模型 API 请求 0；未联网、未安装依赖；**未启动 Docker daemon**；未拉取镜像；未读取 `.env`；`.idea/` 未修改未暂存；未删除 quarantine 或用户数据；未推送。
-
-## 11. 残余风险
-
-- 没有任何真实容器运行时证据；`verified` 分支仅由单元测试中的合成证据覆盖。
-- 证据有效期/失效策略未实现：验证器要求调用方传入**当前** runtime/image/config 身份，但尚无自动失效机制，需要在使用侧保证每次执行前重新验证。
-- 容器超时、取消、残留清理未验证。
-- `run_tests` 仍为宿主机显式非隔离类别。
+- 证据**有效期**仍未实现：验证器要求实时身份匹配，但尚无过期时间与自动失效；调用方必须在每次执行前重新验证。
+- 容器逃逸/内核漏洞不在本阶段验证范围；`--cap-drop ALL` 与只读根不构成完整内核加固证明。
+- 子进程边界是“pids 限制”而非“禁止创建”；已在证据中如实记录为 `allowed`。
+- 镜像来自 Docker Hub，未做签名验证（仅记录 digest）。
+- Docker Desktop 已被启动，属于对系统状态的变更；是否保持运行需用户决定。

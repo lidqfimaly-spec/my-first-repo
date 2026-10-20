@@ -602,6 +602,37 @@ ZEVORINTH_MODEL=deepseek-flash
 
 ## 实现
 
+- 新增 `isolation_evidence.py`：证据契约、摘要与独立验证器；
+- `run_protected_container` 用**实时** runtime/镜像 digest/命令摘要推导期望身份，不再信任证据自报；
+- 全面授权后启动 Docker 29.2.1，拉取 `alpine:3.20`，完成七项真实边界探针；
+- 独立验证器判定 `verified`，门禁实际启动受保护进程；篡改证据被拒绝且不启动；
+- 新增真实容器集成测试（无运行时自动 skip）。
+
+## 测试
+
+| 检查 | 结果 |
+| --- | --- |
+| 系统完整 unittest（2 次） | 474/474，exit 0 |
+| 容器实测集成测试 | 1/1（真实容器，exit 0） |
+| 证据验证器专项 | 13/13 |
+| Mutation runner | 46 killed |
+| `compileall` / `git diff --check` | exit 0 |
+
+## 边界
+
+- 七项边界：读/写工作区 allowed；越界读写、网络、凭据 denied；子进程受 pids 限制；
+- 证据有效期仍未实现；
+- Schema 版本保持 v4；
+- 真实模型 API 请求：0；
+- 详见 `docs/phase-3.26-container-isolation-verification-audit.md`；
+- 未推送。
+
+---
+
+
+
+## 实现
+
 - 新增 `isolation_evidence.py`：证据契约、规范化摘要与独立验证器；
 - 验证器拒绝缺失/部分/篡改/身份不符/版本不兼容/NOT_EXECUTED 证据；
 - `run_protected_container` 在提供证据时必须先通过独立验证；

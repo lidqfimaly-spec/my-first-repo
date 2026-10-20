@@ -162,6 +162,27 @@ Schema version：4。运行产物和 `.idea/` 不纳入源码清单。
 - `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.26-container-isolation-verification-audit.md`
 - `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/isolation_evidence.py`
 - `/Users/lidequan/PythonProject/Zevorinth/tests/test_isolation_evidence.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_container_live.py`
+
+## 修改
+
+- `/Users/lidequan/PythonProject/Zevorinth/README.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/execution-log.md`
+- `/Users/lidequan/PythonProject/Zevorinth/docs/file-manifest.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/isolation.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/mutation_cases.json`
+
+运行产物不纳入源码提交；Schema 版本保持 v4。
+
+---
+
+
+
+## 新增
+
+- `/Users/lidequan/PythonProject/Zevorinth/docs/phase-3.26-container-isolation-verification-audit.md`
+- `/Users/lidequan/PythonProject/Zevorinth/src/zevorinth/isolation_evidence.py`
+- `/Users/lidequan/PythonProject/Zevorinth/tests/test_isolation_evidence.py`
 
 ## 修改
 
