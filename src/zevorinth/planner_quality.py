@@ -351,6 +351,8 @@ def _count_values(
 
 def _coverage_audit(
     dataset: Mapping[str, Any],
+    *,
+    live_model_quality_measured: bool,
 ) -> dict[str, Any]:
     cases = list(dataset["cases"])
     operations = {
@@ -361,6 +363,7 @@ def _coverage_audit(
         "case_count": len(cases),
         "sample_origin": "synthetic_fixed_contract",
         "real_user_task_population_sampled": False,
+        "live_model_samples_measured": live_model_quality_measured,
         "category_counts": _count_values(cases, "category"),
         "difficulty_counts": _count_values(cases, "difficulty"),
         "risk_level_counts": _count_values(cases, "risk_level"),
@@ -397,14 +400,25 @@ def _coverage_audit(
         "uncovered_supported_operations": sorted(
             SUPPORTED_TASK_OPERATIONS - set(covered_operations)
         ),
-        "known_gaps": [
-            "no live model samples",
-            "no measured real-user task distribution",
-            "no execution outcome verification in this planner-only baseline",
-            "only two currently supported task operations are represented",
-            "no repeated-sample variance or confidence interval",
-            "no provider, latency, or cost variation",
-        ],
+        "known_gaps": (
+            [
+                "no measured real-user task distribution",
+                "no execution outcome verification in this planner-only baseline",
+                "only two currently supported task operations are represented",
+                "one live fixed-sample run is insufficient for variance estimates",
+                "no repeated-sample variance or confidence interval",
+                "no verified provider price table",
+            ]
+            if live_model_quality_measured
+            else [
+                "no live model samples",
+                "no measured real-user task distribution",
+                "no execution outcome verification in this planner-only baseline",
+                "only two currently supported task operations are represented",
+                "no repeated-sample variance or confidence interval",
+                "no provider, latency, or cost variation",
+            ]
+        ),
     }
 
 
@@ -749,7 +763,10 @@ def _build_quality_report(
         "all_passed": all(case["passed"] for case in cases),
         "metrics": metrics,
         "metric_definitions": metric_definitions,
-        "coverage_audit": _coverage_audit(dataset),
+        "coverage_audit": _coverage_audit(
+            dataset,
+            live_model_quality_measured=live_model_quality_measured,
+        ),
         "scoring_audit": {
             "expected_values_source": "versioned_fixed_dataset",
             "planner_metadata_used_for_plan_pass_fail": False,

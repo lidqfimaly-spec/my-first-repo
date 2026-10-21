@@ -164,6 +164,7 @@ class PlannerQualityTests(unittest.TestCase):
         self.assertEqual(coverage["case_count"], 25)
         self.assertEqual(coverage["sample_origin"], "synthetic_fixed_contract")
         self.assertFalse(coverage["real_user_task_population_sampled"])
+        self.assertFalse(coverage["live_model_samples_measured"])
         self.assertEqual(
             set(coverage["covered_operations"]),
             {"run_tests", "write_text_artifact"},
@@ -282,6 +283,11 @@ class PlannerQualityTests(unittest.TestCase):
         self.assertEqual(report["mode"], "online-planner-only")
         self.assertTrue(report["live_model_quality_measured"])
         self.assertFalse(report["execution_side_effects_enabled"])
+        self.assertTrue(report["coverage_audit"]["live_model_samples_measured"])
+        self.assertNotIn(
+            "no live model samples",
+            report["coverage_audit"]["known_gaps"],
+        )
         self.assertTrue(report["all_passed"], report["failures"])
         self.assertEqual(report["request_accounting"]["model_calls"], 25)
         self.assertEqual(report["request_accounting"]["retries"], 0)

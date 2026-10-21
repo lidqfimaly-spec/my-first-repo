@@ -159,7 +159,8 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             ],
             "limitations": [
                 "default-deny live planning runner",
-                "verified with injected clients; no provider run completed",
+                "one DeepSeek baseline completed on the fixed synthetic dataset",
+                "the dataset still includes scripted-only controls and is not a clean live benchmark",
             ],
         },
         "recovery_audit": {
