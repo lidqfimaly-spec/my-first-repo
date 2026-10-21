@@ -27,10 +27,15 @@ from zevorinth.models import (  # noqa: E402
     TaskRequest,
 )
 from zevorinth.planner import build_artifact_plan  # noqa: E402
+from zevorinth.planner_live_applicability import (  # noqa: E402
+    load_live_applicability_contract,
+)
 from zevorinth.planner_quality import (  # noqa: E402
     QUALITY_EVALUATION_VERSION,
     LIVE_BASELINE_PROTOCOL_VERSION,
     _classify_case,
+    _live_separation_self_check,
+    _verify_live_report_contract,
     load_quality_cases,
     planner_quality_online_preflight,
     run_live_planner_quality,
@@ -222,12 +227,80 @@ class PlannerQualityTests(unittest.TestCase):
             report = planner_quality_online_preflight(output_path)
 
         self.assertTrue(report["ready_for_authorization"])
+        self.assertEqual(
+            report["readiness_status"], "READY_FOR_AUTHORIZATION"
+        )
+        self.assertTrue(report["recommend_second_live_run"])
         self.assertFalse(report["network_request_sent"])
         self.assertFalse(report["execution_side_effects_enabled"])
         self.assertEqual(len(report["selected_case_ids"]), 25)
         self.assertEqual(report["request_boundaries"]["maximum_requests"], 25)
         self.assertEqual(report["request_boundaries"]["retries"], 0)
+        self.assertEqual(
+            report["applicability_contract"]["live_applicable_count"], 19
+        )
+        self.assertTrue(
+            all(check["passed"] for check in report["readiness_checks"])
+        )
+        self.assertTrue(report["separation_self_check"]["passed"])
         self.assertFalse(output_path.exists())
+
+    def test_readiness_rejects_existing_output_path(self) -> None:
+        config = LLMPlannerConfig(
+            model="preflight-model",
+            api_key_present=True,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "zevorinth.planner_quality.LLMPlannerConfig.from_environment",
+            return_value=config,
+        ), patch(
+            "zevorinth.planner_quality.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "3.35.1",
+                "minimum_version": "3.35.1",
+                "compatible": True,
+                "module_path": "/fake/openai/__init__.py",
+            },
+        ):
+            output_path = Path(temp_dir) / "live.json"
+            output_path.write_text("{}\n", encoding="utf-8")
+            report = planner_quality_online_preflight(output_path)
+
+        self.assertFalse(report["ready_for_authorization"])
+        self.assertFalse(report["recommend_second_live_run"])
+        failed = {
+            check["id"]
+            for check in report["readiness_checks"]
+            if not check["passed"]
+        }
+        self.assertIn("output_path_available", failed)
+
+    def test_readiness_separation_self_check_rejects_bad_scorer(self) -> None:
+        contract = load_live_applicability_contract()
+
+        def bad_scorer(cases, *, contract):
+            del contract
+            return {
+                "cases": [
+                    {
+                        "case_id": "hidden_env_path",
+                        "plan_safety_correct": True,
+                        "downstream_blocked": False,
+                        "strict_passed": True,
+                    },
+                    {
+                        "case_id": "clarify_missing_filename",
+                        "plan_safety_correct": True,
+                        "downstream_blocked": True,
+                        "strict_passed": True,
+                    },
+                ],
+                "metrics": {"execution_attempted": False},
+            }
+
+        result = _live_separation_self_check(contract, bad_scorer)
+        self.assertFalse(result["passed"])
 
     def test_live_runner_requires_explicit_authorization(self) -> None:
         with self.assertRaisesRegex(
@@ -235,6 +308,20 @@ class PlannerQualityTests(unittest.TestCase):
             "explicit authorization",
         ):
             run_live_planner_quality()
+
+    def test_live_runner_rejects_contract_before_client_creation(self) -> None:
+        with patch(
+            "zevorinth.planner_live_applicability.load_live_applicability_contract",
+            side_effect=ValueError("broken contract"),
+        ), patch(
+            "zevorinth.planner_quality.LLMPlanner.from_environment",
+            side_effect=AssertionError("client must not be created"),
+        ):
+            with self.assertRaisesRegex(
+                EvaluationConfigurationError,
+                "applicability contract error",
+            ):
+                run_live_planner_quality(authorized=True)
 
     def test_live_runner_uses_one_fake_request_per_case_without_tasks(
         self,
@@ -294,6 +381,10 @@ class PlannerQualityTests(unittest.TestCase):
         self.assertEqual(report["request_accounting"]["model_calls"], 25)
         self.assertEqual(report["request_accounting"]["retries"], 0)
         self.assertEqual(report["metrics"]["real_api_calls"], 25)
+        self.assertEqual(
+            report["live_applicability_contract"]["contract_sha256"],
+            report["live_applicability"]["contract_sha256"],
+        )
         self.assertEqual(client.calls, 25)
         self.assertEqual(
             report["live_applicability"]["metrics"]["strict_case_count"],
@@ -414,6 +505,22 @@ class PlannerQualityTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         runner.assert_called_once_with(authorized=True)
         self.assertEqual(persisted["report_path"], str(output_path.resolve()))
+
+    def test_live_report_contract_mismatch_fails_closed(self) -> None:
+        contract = load_live_applicability_contract()
+        mismatched = {
+            "live_applicability_contract": {
+                "contract_sha256": "0" * 64
+            },
+            "live_applicability": {
+                "contract_sha256": contract["contract_sha256"]
+            },
+        }
+        with self.assertRaisesRegex(
+            EvaluationConfigurationError,
+            "contract SHA mismatch",
+        ):
+            _verify_live_report_contract(mismatched, contract)
 
     def test_independent_scorer_rejects_wrong_classification_and_parameters(
         self,

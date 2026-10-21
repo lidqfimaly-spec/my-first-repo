@@ -2095,6 +2095,50 @@
         "tests.test_llm_planner_instructions.InstructionContractTests.test_only_model_visible_trusted_parameters_reach_client"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_quality_readiness_wrong_strict_count",
+      "property": "live readiness requires the frozen strict case count",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "EXPECTED_LIVE_APPLICABLE = 19\n",
+      "new": "EXPECTED_LIVE_APPLICABLE = 18\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_online_preflight_is_read_only_and_creates_no_client"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_readiness_allows_output_overwrite",
+      "property": "live readiness rejects an existing output path",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "            \"passed\": not output_exists,\n",
+      "new": "            \"passed\": True,\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_readiness_rejects_existing_output_path"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_readiness_hides_bad_separation_self_check",
+      "property": "live readiness rejects a broken safety-separation self-check",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    passed = (\n        blocked[\"plan_safety_correct\"] is False\n",
+      "new": "    passed = True or (\n        blocked[\"plan_safety_correct\"] is False\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_readiness_separation_self_check_rejects_bad_scorer"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_accepts_report_contract_mismatch",
+      "property": "live runner rejects report contract SHA mismatch",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    if declared != expected or scored != expected:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_live_report_contract_mismatch_fails_closed"
+      ],
+      "expected": "killed"
     }
   ]
 }

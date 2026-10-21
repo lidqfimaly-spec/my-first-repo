@@ -1106,6 +1106,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"timeout_seconds={boundaries['timeout_seconds_per_case']} "
                         f"max_output_tokens={boundaries['max_output_tokens_per_case']}"
                     )
+                    applicability = report["applicability_contract"]
+                    passed_checks = sum(
+                        check["passed"] for check in report["readiness_checks"]
+                    )
+                    print(
+                        "Applicability contract: "
+                        f"{applicability['version']} "
+                        f"strict={applicability['live_applicable_count']} "
+                        f"exploratory={applicability['live_exploratory_count']} "
+                        f"scripted_only={applicability['scripted_only_count']} "
+                        f"checks={passed_checks}/"
+                        f"{len(report['readiness_checks'])}"
+                    )
                     print(
                         "Network request sent: no; task/tool/container execution: no"
                     )
