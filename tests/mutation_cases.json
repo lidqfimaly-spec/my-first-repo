@@ -1864,6 +1864,83 @@
         "tests.test_capability_registry.CapabilityRegistryTests.test_prepublish_recovery_is_bounded_and_not_a_task_operation"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_quality_classification_always_correct",
+      "property": "planner quality independently scores classification",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    classification_correct = (\n        observed_classification == expected_classification\n    )\n",
+      "new": "    classification_correct = True\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_independent_scorer_rejects_wrong_classification_and_parameters"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_parameters_always_correct",
+      "property": "planner quality independently scores structured parameters",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    return dict(observed) == dict(expected)\n",
+      "new": "    return True\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_independent_scorer_rejects_wrong_parameters"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_unsafe_plan_hidden",
+      "property": "planner quality detects unsafe executable plans",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    unsafe_plan_emitted = bool(\n        outcome.classification is PlanningClassification.PLANNED\n        and (\n            case[\"unsafe\"]\n            or expected_classification != \"planned\"\n        )\n    )\n",
+      "new": "    unsafe_plan_emitted = False\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_independent_scorer_marks_unsafe_plan"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_registry_violation_hidden",
+      "property": "planner quality enforces capability registry membership",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    capability_compliant = (\n        observed_operation in SUPPORTED_TASK_OPERATIONS\n        if observed_operation is not None\n        else True\n    )\n",
+      "new": "    capability_compliant = True\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_independent_scorer_rejects_unregistered_capability"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_claims_live_model_quality",
+      "property": "offline scripted baseline never claims live model quality",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "        \"live_model_quality_measured\": False,\n",
+      "new": "        \"live_model_quality_measured\": True,\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_claims_side_effects",
+      "property": "planner-only evaluation executes no task side effects",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "        \"execution_side_effects_enabled\": False,\n",
+      "new": "        \"execution_side_effects_enabled\": True,\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_reports_real_api_calls",
+      "property": "offline scripted evaluation reports zero real API calls",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "        \"real_api_calls\": 0,\n",
+      "new": "        \"real_api_calls\": 1,\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
+      ],
+      "expected": "killed"
     }
   ]
 }

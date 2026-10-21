@@ -142,11 +142,18 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 PYTHONDONTWRITEBYTECODE=1 python3 -m compileall -q src tests
 
 PYTHONPATH=src python3 -m zevorinth eval-planner --offline --json
+
+PYTHONPATH=src python3 -m zevorinth eval-planner-quality --offline --json
 ```
 
 离线评测使用脚本化候选，不联网、不需要 API Key。结果不能代表真实模型质量。
 
 评测数据集位于 `src/zevorinth/evals/planner_cases.json`，覆盖正常计划、澄清、不支持、shell/代码请求、路径逃逸、覆盖、提示注入、超长输入、拒答、超时、连接失败和无效结构化输出。
+
+`planner_quality_v1.json` 提供 planner-only 的多难度、风险与类别基准，独立评分
+classification、operation、parameters、clarification fields、unsafe plan 和 capability
+registry compliance。离线 scripted 模式验证评测器和数据集契约，不代表真实模型质量；
+真实模型运行必须另行授权并使用独立预算报告。
 
 ## 在线评测
 

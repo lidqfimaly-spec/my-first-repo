@@ -133,6 +133,16 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             "implemented": True,
             "verified": True,
         },
+        "planner_quality_offline": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["cli:eval-planner-quality", "python_api"],
+            "limitations": [
+                "scripted outputs validate the evaluator and dataset, not live model quality",
+                "no live model requests are included",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,

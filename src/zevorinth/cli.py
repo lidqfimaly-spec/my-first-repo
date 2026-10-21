@@ -43,6 +43,7 @@ from .llm_planner import LLMPlanner, LLMPlannerConfig, openai_sdk_status
 from .models import PlannerMode, Task, TaskRequest, TaskStatus
 from .planner import WRITE_TEXT_ARTIFACT
 from .planner import DeterministicPlanner
+from .planner_quality import run_planner_quality
 from .service import TaskService
 from .safety_gate import (
     SafetyGateConfigurationError,
@@ -119,6 +120,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "task_lifecycle_audit": True,
             "event_sequence_audit": True,
             "prepublish_write_recovery": True,
+            "planner_quality_offline": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,
@@ -510,6 +512,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     safety_gate.add_argument("--output", type=Path, required=True)
     safety_gate.add_argument("--json", action="store_true")
+
+    planner_quality = subparsers.add_parser(
+        "eval-planner-quality",
+        help="run the offline planner-only multi-scenario quality contract",
+    )
+    planner_quality.add_argument(
+        "--offline",
+        action="store_true",
+        required=True,
+    )
+    planner_quality.add_argument("--output", type=Path, default=None)
+    planner_quality.add_argument("--json", action="store_true")
 
     run = subparsers.add_parser(
         "run",
@@ -1031,6 +1045,56 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{metrics['classification_accuracy']} "
                 f"status_accuracy={metrics['status_accuracy']} "
                 f"duplicate_side_effects={metrics['duplicate_side_effects']}"
+            )
+        return 0 if report["all_passed"] else 1
+    if args.command == "eval-planner-quality":
+        if args.output is not None and args.output.exists():
+            print(
+                "planner quality evaluation refuses to overwrite "
+                f"an existing report: {args.output}",
+                file=sys.stderr,
+            )
+            return 7
+        report = run_planner_quality()
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            report["report_path"] = str(args.output.resolve())
+            args.output.write_text(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        if args.json:
+            print(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            metrics = report["metrics"]
+            print(
+                "Planner quality: "
+                f"{'PASS' if report['all_passed'] else 'FAIL'} "
+                f"({report['passed']}/{report['case_count']})"
+            )
+            print(
+                f"classification_accuracy="
+                f"{metrics['classification_accuracy']} "
+                f"operation_accuracy={metrics['operation_accuracy']} "
+                f"parameter_accuracy={metrics['parameter_accuracy']} "
+                f"unsafe_plan_rate={metrics['unsafe_plan_rate']}"
+            )
+            print(
+                "Source: offline scripted planner-only; "
+                "live_model_quality_measured=false"
             )
         return 0 if report["all_passed"] else 1
 
