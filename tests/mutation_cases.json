@@ -1699,6 +1699,83 @@
         "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_old_missing_event_is_unknown_historical"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "capability_policy_registry_drift",
+      "property": "policy uses the authoritative task operation registry",
+      "path": "src/zevorinth/policy.py",
+      "old": "SUPPORTED_OPERATIONS = SUPPORTED_TASK_OPERATIONS\n",
+      "new": "SUPPORTED_OPERATIONS = frozenset({WRITE_TEXT_ARTIFACT})\n",
+      "tests": [
+        "tests.test_capability_registry.CapabilityRegistryTests.test_policy_and_planner_share_the_registry_operations"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "capability_doctor_task_types_drift",
+      "property": "doctor reports registry task operations",
+      "path": "src/zevorinth/cli.py",
+      "old": "        \"task_types\": task_operation_names(),\n",
+      "new": "        \"task_types\": [WRITE_TEXT_ARTIFACT],\n",
+      "tests": [
+        "tests.test_capability_registry.CapabilityRegistryTests.test_doctor_matches_registry_and_is_json_safe"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "capability_doctor_run_tests_disabled",
+      "property": "doctor reports run_tests as implemented",
+      "path": "src/zevorinth/cli.py",
+      "old": "            \"run_tests\": True,\n",
+      "new": "            \"run_tests\": False,\n",
+      "tests": [
+        "tests.test_cli.CliTests.test_doctor_reports_current_capabilities_without_overstating_model_support"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "capability_run_tests_overclaimed_available",
+      "property": "run_tests remains conditional",
+      "path": "src/zevorinth/capabilities.py",
+      "old": "            \"status\": \"conditional\",\n            \"implemented\": True,\n            \"verified\": True,\n            \"policy_allowed\": True,\n            \"access\": [\n                \"cli:test\",\n",
+      "new": "            \"status\": \"available\",\n            \"implemented\": True,\n            \"verified\": True,\n            \"policy_allowed\": True,\n            \"access\": [\n                \"cli:test\",\n",
+      "tests": [
+        "tests.test_capability_registry.CapabilityRegistryTests.test_run_tests_declares_conditions_and_limitations"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "capability_unimplemented_shell_promoted",
+      "property": "general shell remains unimplemented",
+      "path": "src/zevorinth/capabilities.py",
+      "old": "        \"general_shell\": {\n            \"status\": \"not_implemented\",\n",
+      "new": "        \"general_shell\": {\n            \"status\": \"available\",\n",
+      "tests": [
+        "tests.test_capability_registry.CapabilityRegistryTests.test_unimplemented_capabilities_are_not_task_operations"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "capability_manifest_mutates_registry",
+      "property": "capability manifest is detached from the source registry",
+      "path": "src/zevorinth/capabilities.py",
+      "old": "    return deepcopy(CAPABILITY_REGISTRY)\n",
+      "new": "    return CAPABILITY_REGISTRY\n",
+      "tests": [
+        "tests.test_capability_registry.CapabilityRegistryTests.test_manifest_is_detached_from_source_registry"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "capability_doctor_phase_regressed",
+      "property": "doctor reports the current product stage",
+      "path": "src/zevorinth/cli.py",
+      "old": "        \"phase\": \"3.75\",\n",
+      "new": "        \"phase\": \"2\",\n",
+      "tests": [
+        "tests.test_cli.CliTests.test_doctor_reports_current_capabilities_without_overstating_model_support"
+      ],
+      "expected": "killed"
     }
   ]
 }

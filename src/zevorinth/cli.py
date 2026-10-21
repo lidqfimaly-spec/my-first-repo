@@ -12,6 +12,12 @@ from typing import Sequence
 
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
+from .capabilities import (
+    CAPABILITY_REGISTRY_VERSION,
+    capability_manifest,
+    capability_summary,
+    task_operation_names,
+)
 from .conversation_service import ConversationService
 from .controlled_recovery import audit_controlled_recovery
 from .recovery_preview import RecoveryApprovalStore
@@ -81,8 +87,10 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
         "schema_version": EventStore.SCHEMA_VERSION,
         "project": "Zevorinth",
         "version": __version__,
-        "phase": 2,
-        "hardening_phase": "1.5",
+        "phase": "3.75",
+        "hardening_phase": "3.75",
+        "legacy_phase": 2,
+        "legacy_hardening_phase": "1.5",
         "project_root": str(root),
         "python": {
             "version": platform.python_version(),
@@ -97,6 +105,8 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
         "runtime_dependencies": [],
         "capabilities": {
             "task_runtime": True,
+            "write_text_artifact": True,
+            "run_tests": True,
             "deterministic_planner": True,
             "model_provider": llm_config.validation_error() is None,
             "controlled_tool_execution": True,
@@ -110,8 +120,16 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "event_sequence_audit": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
+            "web_ui": False,
+            "general_shell": False,
+            "automatic_recovery": False,
+            "automatic_cleanup": False,
+            "l2_l3_trust": False,
         },
-        "task_types": [WRITE_TEXT_ARTIFACT],
+        "task_types": task_operation_names(),
+        "capability_registry_version": CAPABILITY_REGISTRY_VERSION,
+        "capability_summary": capability_summary(),
+        "capability_manifest": capability_manifest(),
         "llm_planner": {
             **llm_config.public_report(),
             "sdk": sdk_status,
@@ -121,9 +139,10 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "distributed_execution": False,
         },
         "notice": (
-            "Phase 2 supports deterministic and explicitly selected LLM planning "
-            "for one artifact-writing operation. LLM planning never grants tools "
-            "or bypasses local validation, Policy, verification, or leases."
+            "Phase 3.75 is a single-host local Alpha with two task operations: "
+            "write_text_artifact and conditional run_tests. LLM planning never "
+            "grants tools or bypasses local validation, Policy, verification, "
+            "isolation evidence, or leases."
         ),
     }
 
@@ -143,7 +162,18 @@ def _print_human(report: dict[str, object]) -> None:
     print("Capabilities:")
     for name, implemented in capabilities.items():
         print(f"  {name}: {'implemented' if implemented else 'not implemented'}")
+    print(
+        f"Capability registry: {report['capability_registry_version']}"
+    )
     print(f"Task types: {', '.join(report['task_types'])}")
+    manifest = report["capability_manifest"]
+    task_operations = manifest["task_operations"]
+    for name in report["task_types"]:
+        details = task_operations[name]
+        print(
+            f"  {name}: status={details['status']} "
+            f"verified={details['verified']}"
+        )
     llm = report.get("llm_planner")
     if isinstance(llm, dict):
         sdk = llm.get("sdk", {})

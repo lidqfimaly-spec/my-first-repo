@@ -9,6 +9,7 @@ from .artifact_tool import (
     ArtifactToolError,
     validate_artifact_name,
 )
+from .capabilities import SUPPORTED_TASK_OPERATIONS
 from .models import Plan, PolicyDecision, TaskRequest
 from .planner import WRITE_TEXT_ARTIFACT
 from .local_test_runner import (
@@ -19,7 +20,7 @@ from .local_test_runner import (
 )
 
 
-SUPPORTED_OPERATIONS = frozenset({WRITE_TEXT_ARTIFACT, RUN_TESTS_TOOL})
+SUPPORTED_OPERATIONS = SUPPORTED_TASK_OPERATIONS
 
 #: Exact token a caller must present to use the non-isolated host backend.
 HOST_AUTHORIZATION_TOKEN = "local-maintenance"

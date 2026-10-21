@@ -1,8 +1,17 @@
 # Zevorinth（衍序）
 
-Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前完成第 2 阶段：在已验证的可靠执行内核上，增加可选的受限 LLM Planner、严格结构化输出、本地安全校验和离线模型评测体系。第 2.7 阶段已完成两个历史失败案例的定向在线复测，两个固定案例均通过；该结果不代表通用规划能力。
+Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前系统级基线为 Phase 3.75：单机、本地、受控执行切片 Alpha。系统提供确定性 Planner、可选受限 LLM Planner、严格本地校验、持久化任务生命周期、独立验证、恢复/清理治理和 L0/L1 审计。
 
-当前只支持一种真实操作：在任务专属产物目录中创建一个文本文件。LLM 只负责规划；认领、状态转换、Policy、真实写入、独立验证和事件持久化全部继续由本地执行内核完成。
+当前只有两个受控任务操作：
+
+| 操作 | 当前状态 |
+| --- | --- |
+| `write_text_artifact` | 可用：创建任务专属文本产物并独立读回验证 |
+| `run_tests` | 条件可用：需要注册 workspace、有效隔离证据和容器环境；host 后端只允许显式本地维护授权 |
+
+LLM 只负责规划。认领、状态转换、Policy、工具执行、独立验证、隔离证据检查和事件持久化全部由本地执行内核完成。
+
+固定 `restore_controlled_marker` 是实验性 Python API，不是通用任务恢复能力。浏览器、任意 shell、自动恢复、自动清理、多机执行和 L2/L3 证据可信仍不可用。
 
 ## 当前能力
 
@@ -11,6 +20,9 @@ Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前�
 - 本地 Candidate Validator：独立检查字段、类型、操作、文件名、内容、响应大小和澄清信息。
 - SQLite 执行租约、fencing、并发互斥和崩溃恢复。
 - 真实文件写入、独立读回、内容/SHA-256/工具证据验证。
+- 容器内的有界 `run_tests`、隔离证据复核、超时/取消和验证器拒绝路径。
+- Recovery preview、持久化审批、固定 marker 受控操作及只读生命周期/证据审计。
+- `task-audit`、`recovery-audit` 和机器可读 capability registry。
 - `real`、`simulated`、`not_executed` 三态区分。
 - 离线 Planner 评测集、统计报告和确定性基线对照。
 - 手动启用的在线 Planner 评测入口。

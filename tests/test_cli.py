@@ -34,14 +34,17 @@ class CliTests(unittest.TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
 
-    def test_doctor_reports_phase_two_without_overstating_model_support(self) -> None:
+    def test_doctor_reports_current_capabilities_without_overstating_model_support(self) -> None:
         report = doctor_report(PROJECT_ROOT)
 
-        self.assertEqual(report["phase"], 2)
-        self.assertEqual(report["hardening_phase"], "1.5")
+        self.assertEqual(report["phase"], "3.75")
+        self.assertEqual(report["hardening_phase"], "3.75")
+        self.assertEqual(report["legacy_phase"], 2)
         self.assertEqual(report["project_root"], str(PROJECT_ROOT.resolve()))
         self.assertEqual(report["runtime_dependencies"], [])
         self.assertTrue(report["capabilities"]["task_runtime"])
+        self.assertTrue(report["capabilities"]["write_text_artifact"])
+        self.assertTrue(report["capabilities"]["run_tests"])
         self.assertTrue(report["capabilities"]["result_verification"])
         self.assertTrue(report["capabilities"]["sqlite_execution_leases"])
         self.assertFalse(report["capabilities"]["model_provider"])
@@ -54,7 +57,11 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["project"], "Zevorinth")
-        self.assertEqual(payload["phase"], 2)
+        self.assertEqual(payload["phase"], "3.75")
+        self.assertEqual(
+            payload["capability_registry_version"],
+            "capability-registry-v1",
+        )
 
     def test_run_status_and_events_are_persisted_across_cli_calls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
