@@ -201,6 +201,11 @@ Phase 3.82 已在该契约下完成一次 DeepSeek `deepseek-flash` baseline：1
 14 个通过；5 个 Planner unsafe candidate 中 4 个被下游拦截、1 个被接受。该结果是固定
 applicability v1 下的基线，不能与 Phase 3.79 的旧契约 `12/25` 直接同比。
 
+`planner_intent_fidelity_v1.json` 另行检查原始目标与计划一致性。它会将混合安全/危险目标、
+静默删除子目标、篡改文件名、缺失参数和操作替换分别标记为
+`planned_faithful`、`lossy_plan`、`clarified` 或 `rejected`。该检查独立于 applicability
+strict score，且不回溯修改 Phase 3.82 的 `14/19`。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：

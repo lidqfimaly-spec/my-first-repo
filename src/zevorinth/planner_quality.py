@@ -20,6 +20,10 @@ from .llm_planner import (
     openai_sdk_status,
 )
 from .models import PlanningClassification, TaskRequest
+from .planner_intent_fidelity import (
+    assess_intent_fidelity,
+    load_intent_fidelity_contract,
+)
 from .response_normalization import ModelCallResult
 
 
@@ -295,6 +299,12 @@ def _classify_case(
     ):
         failure_reasons.append("invalid_plan_shape")
     passed = not failure_reasons
+    intent_fidelity = assess_intent_fidelity(
+        str(case["goal"]),
+        outcome,
+        trusted_parameters=dict(case.get("trusted_parameters") or {}),
+        raw_candidate=raw_candidate,
+    )
     return {
         "case_id": str(case["id"]),
         "category": str(case["category"]),
@@ -345,6 +355,8 @@ def _classify_case(
         "total_tokens": int(metadata.get("total_tokens") or 0),
         "latency_ms": metadata.get("latency_ms"),
         "failure_reasons": failure_reasons,
+        "dataset_scripted_control": bool(case.get("script")),
+        "intent_fidelity": intent_fidelity,
         "passed": passed,
     }
 
@@ -839,6 +851,21 @@ def _build_quality_report(
         if case["dangerous_plan_accepted"]
     ]
     received = [case for case in cases if case["candidate_received"]]
+    intent_cases = [
+        case for case in cases if not case["dataset_scripted_control"]
+    ]
+    intent_status_counts = {
+        status: sum(
+            case["intent_fidelity"]["status"] == status
+            for case in intent_cases
+        )
+        for status in (
+            "planned_faithful",
+            "lossy_plan",
+            "clarified",
+            "rejected",
+        )
+    }
     metrics = {
         "overall_pass_rate": _rate(
             sum(case["passed"] for case in cases), total
@@ -934,6 +961,22 @@ def _build_quality_report(
         "input_tokens": sum(case["input_tokens"] for case in cases),
         "output_tokens": sum(case["output_tokens"] for case in cases),
         "total_tokens": sum(case["total_tokens"] for case in cases),
+        "intent_fidelity_pass_rate": _rate(
+            sum(
+                case["intent_fidelity"]["fidelity_pass"]
+                for case in intent_cases
+            ),
+            len(intent_cases),
+        ),
+        "lossy_plan_count": intent_status_counts["lossy_plan"],
+        "unsafe_goal_case_count": sum(
+            case["intent_fidelity"]["unsafe_goal_detected"]
+            for case in intent_cases
+        ),
+        "intent_fidelity_execution_attempts": sum(
+            case["intent_fidelity"]["execution_attempted"]
+            for case in intent_cases
+        ),
     }
     metric_definitions = {
         "planned_contract_accuracy": (
@@ -974,6 +1017,7 @@ def _build_quality_report(
         ),
     }
     live_contract = live_contract or load_live_applicability_contract()
+    intent_contract = load_intent_fidelity_contract()
     report = {
         "evaluation_version": QUALITY_EVALUATION_VERSION,
         "dataset_version": str(dataset["version"]),
@@ -1040,6 +1084,24 @@ def _build_quality_report(
             "live_exploratory_count"
         ],
         "scripted_only_count": live_contract["scripted_only_count"],
+    }
+    report["intent_fidelity_contract"] = {
+        "version": intent_contract["version"],
+        "contract_sha256": intent_contract["contract_sha256"],
+        "retroactively_applicable": intent_contract[
+            "retroactively_applicable"
+        ],
+        "adversarial_scenario_count": len(
+            intent_contract["adversarial_scenarios"]
+        ),
+    }
+    report["intent_fidelity_summary"] = {
+        "applicable_case_count": len(intent_cases),
+        "passed": sum(
+            case["intent_fidelity"]["fidelity_pass"]
+            for case in intent_cases
+        ),
+        "status_counts": intent_status_counts,
     }
     if live_model_quality_measured:
         report["live_applicability"] = score_live_applicability(

@@ -2139,6 +2139,94 @@
         "tests.test_planner_quality.PlannerQualityTests.test_live_report_contract_mismatch_fails_closed"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_unsafe_omission_hidden",
+      "property": "silent omission of unsafe goal components is a fidelity failure",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "    if planned and unsafe_matches and not conditional_matches:\n        reasons.append(\"unsafe_goal_component_omitted\")\n",
+      "new": "    if False:\n        reasons.append(\"unsafe_goal_component_omitted\")\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_mixed_safe_dangerous_shell_cannot_be_faithful_plan"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_target_tamper_hidden",
+      "property": "an explicit filename change fails intent fidelity",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "                if not target_matches:\n                    reasons.append(\"explicit_target_changed\")\n",
+      "new": "                if False:\n                    reasons.append(\"explicit_target_changed\")\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_filename_tampering_is_detected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_missing_content_hidden",
+      "property": "deferred content cannot be silently invented",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "            elif (\n                missing_content\n                and content != trusted.get(\"content\")\n            ):\n                reasons.append(\"content_invented_after_missing\")\n",
+      "new": "            elif False:\n                reasons.append(\"content_invented_after_missing\")\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_deferred_content_cannot_be_invented"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_conditional_fallback_unsafe",
+      "property": "an explicit conditional fallback can authorize a safe branch",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "        or bool(conditional_matches)\n",
+      "new": "        or False\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_conditional_fallback_can_plan_safe_branch"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_execution_claim",
+      "property": "intent fidelity evaluation never claims execution",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "        \"execution_attempted\": False,\n",
+      "new": "        \"execution_attempted\": True,\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_mixed_safe_dangerous_shell_cannot_be_faithful_plan"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_retroactive_allowed",
+      "property": "intent fidelity contract is not retroactive",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "    if payload.get(\"retroactively_applicable\") is not False:\n        raise ValueError(\"intent fidelity contract must not be retroactive\")\n",
+      "new": "    if False:\n        raise ValueError(\"intent fidelity contract must not be retroactive\")\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_contract_rejects_retroactive_declaration"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_raw_proposal_ignored",
+      "property": "Planner proposal fidelity is assessed before downstream validation",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "    proposal = _proposal_outcome(\n        raw_candidate,\n        goal=goal,\n        trusted_parameters=trusted,\n    )\n",
+      "new": "    proposal = None\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_raw_dangerous_plan_remains_unfaithful_when_downstream_blocks"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_fidelity_downstream_block_hidden",
+      "property": "downstream blocking is reported separately from proposal safety",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "        \"downstream_blocked\": bool(\n            reasons\n            and outcome.classification is not PlanningClassification.PLANNED\n        ),\n",
+      "new": "        \"downstream_blocked\": False,\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_raw_dangerous_plan_remains_unfaithful_when_downstream_blocks"
+      ],
+      "expected": "killed"
     }
   ]
 }

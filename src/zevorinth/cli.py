@@ -128,6 +128,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_live_baseline_runner": True,
             "planner_live_baseline_enabled": False,
             "planner_live_applicability_contract": True,
+            "planner_intent_fidelity_contract": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,

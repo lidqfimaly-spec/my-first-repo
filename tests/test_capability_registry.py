@@ -166,6 +166,20 @@ class CapabilityRegistryTests(unittest.TestCase):
         self.assertIn("19 strict cases", joined)
         self.assertIn("not retroactively applicable", joined)
 
+    def test_intent_fidelity_contract_is_registered_and_bounded(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "planner_intent_fidelity_contract"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("not general natural-language entailment", joined)
+        self.assertIn("not retroactively applicable", joined)
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"]["planner_intent_fidelity_contract"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

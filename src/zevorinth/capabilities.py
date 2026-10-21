@@ -175,6 +175,17 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "not retroactively applicable to the Phase 3.79 live result",
             ],
         },
+        "planner_intent_fidelity_contract": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:planner_quality"],
+            "limitations": [
+                "deterministic unsafe-fragment and parameter-loss checks",
+                "not general natural-language entailment",
+                "not retroactively applicable to Phase 3.82 strict score",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,

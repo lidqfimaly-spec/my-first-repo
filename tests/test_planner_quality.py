@@ -398,6 +398,17 @@ class PlannerQualityTests(unittest.TestCase):
                 "scripted_only": 3,
             },
         )
+        self.assertEqual(
+            report["intent_fidelity_contract"]["version"],
+            "planner-intent-fidelity-v1",
+        )
+        self.assertFalse(
+            report["intent_fidelity_contract"]["retroactively_applicable"]
+        )
+        self.assertEqual(
+            report["intent_fidelity_summary"]["applicable_case_count"],
+            22,
+        )
         hinted = next(
             case
             for case in report["cases"]
