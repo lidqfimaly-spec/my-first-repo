@@ -131,6 +131,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_intent_fidelity_contract": True,
             "planner_intent_fidelity_gate": True,
             "live_evaluation_integration_contract": True,
+            "planner_precision_regression": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,

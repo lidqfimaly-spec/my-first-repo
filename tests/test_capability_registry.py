@@ -208,6 +208,19 @@ class CapabilityRegistryTests(unittest.TestCase):
             ]
         )
 
+    def test_planner_precision_regression_is_registered(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "planner_precision_regression"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("offline scripted regression", joined)
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"]["planner_precision_regression"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

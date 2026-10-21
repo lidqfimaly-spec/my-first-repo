@@ -17,7 +17,7 @@ from .planner_quality import load_quality_cases
 
 LIVE_EVALUATION_METRIC_CONTRACT = (
     Path(__file__).with_name("evals")
-    / "live_evaluation_metric_contract_v1.json"
+    / "live_evaluation_metric_contract_v2.json"
 )
 REQUIRED_GROUP_COUNTS = {
     "total": 25,

@@ -215,6 +215,16 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "does not authorize a live model run",
             ],
         },
+        "planner_precision_regression": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:planner_precision"],
+            "limitations": [
+                "offline scripted regression only",
+                "does not measure live model behavior",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,

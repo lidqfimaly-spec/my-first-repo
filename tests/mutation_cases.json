@@ -2368,6 +2368,39 @@
         "tests.test_live_evaluation_contract.LiveEvaluationContractTests.test_readiness_report_writer_refuses_overwrite"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_precision_quoted_content_mismatch_hidden",
+      "property": "quoted user content is preserved exactly",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "            elif (\n                explicit_quoted_content\n                and \"content\" not in trusted\n                and content not in explicit_quoted_content\n            ):\n                reasons.append(\"quoted_content_mismatch\")\n",
+      "new": "            elif False:\n                reasons.append(\"quoted_content_mismatch\")\n",
+      "tests": [
+        "tests.test_planner_precision.PlannerPrecisionTests.test_precision_regression_passes_without_execution"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_precision_invalid_schema_accepted",
+      "property": "unknown schema fields cannot produce executable plans",
+      "path": "src/zevorinth/planning_validation.py",
+      "old": "        if unknown_fields:",
+      "new": "        if False:",
+      "tests": [
+        "tests.test_planner_precision.PlannerPrecisionTests.test_precision_regression_passes_without_execution"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_precision_execution_claim",
+      "property": "precision regression never claims task execution",
+      "path": "src/zevorinth/planner_precision.py",
+      "old": "        \"execution_attempts\": 0,\n",
+      "new": "        \"execution_attempts\": 1,\n",
+      "tests": [
+        "tests.test_planner_precision.PlannerPrecisionTests.test_precision_regression_passes_without_execution"
+      ],
+      "expected": "killed"
     }
   ]
 }

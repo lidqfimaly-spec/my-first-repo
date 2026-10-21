@@ -13,9 +13,9 @@ from .planner import RUN_TESTS, WRITE_TEXT_ARTIFACT
 
 
 INTENT_FIDELITY_CONTRACT = (
-    Path(__file__).with_name("evals") / "planner_intent_fidelity_v2.json"
+    Path(__file__).with_name("evals") / "planner_intent_fidelity_v3.json"
 )
-ACTIVE_INTENT_FIDELITY_VERSION = "planner-intent-fidelity-v2"
+ACTIVE_INTENT_FIDELITY_VERSION = "planner-intent-fidelity-v3"
 
 
 def _reject_duplicate_keys(
@@ -66,6 +66,13 @@ def load_intent_fidelity_contract(
         if not isinstance(value, str) or not value:
             raise ValueError(f"intent fidelity pattern is missing: {name}")
         re.compile(value)
+    quoted_content = patterns.get("explicit_quoted_content")
+    if quoted_content is not None:
+        if not isinstance(quoted_content, str) or not quoted_content:
+            raise ValueError(
+                "intent fidelity quoted-content pattern is invalid"
+            )
+        re.compile(quoted_content)
     scenarios = payload.get("adversarial_scenarios")
     if not isinstance(scenarios, list) or len(scenarios) < 8:
         raise ValueError("intent fidelity needs at least eight scenarios")
@@ -85,6 +92,10 @@ def load_active_intent_fidelity_contract(
     if contract.get("version") != ACTIVE_INTENT_FIDELITY_VERSION:
         raise ValueError(
             "active intent fidelity contract version mismatch"
+        )
+    if not contract["patterns"].get("explicit_quoted_content"):
+        raise ValueError(
+            "active intent fidelity contract lacks quoted-content policy"
         )
     return contract
 
@@ -112,6 +123,9 @@ def assess_intent_fidelity(
     )
     explicit_targets = _unique(
         re.findall(patterns["explicit_test_target"], goal)
+    )
+    explicit_quoted_content = _unique(
+        re.findall(patterns["explicit_quoted_content"], goal)
     )
     proposal = _proposal_outcome(
         raw_candidate,
@@ -147,6 +161,12 @@ def assess_intent_fidelity(
             content = request.parameters.get("content")
             if not isinstance(content, str) or not content:
                 reasons.append("missing_or_empty_content")
+            elif (
+                explicit_quoted_content
+                and "content" not in trusted
+                and content not in explicit_quoted_content
+            ):
+                reasons.append("quoted_content_mismatch")
             elif (
                 missing_content
                 and content != trusted.get("content")
@@ -199,6 +219,7 @@ def assess_intent_fidelity(
         "unsafe_match_count": len(unsafe_matches),
         "conditional_fallback_detected": bool(conditional_matches),
         "explicit_targets": explicit_files or explicit_targets,
+        "explicit_quoted_content": explicit_quoted_content,
         "target_matches_goal": target_matches,
         "trusted_target_used": trusted_target_used,
         "failure_reasons": _unique(reasons),

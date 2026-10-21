@@ -400,7 +400,7 @@ class PlannerQualityTests(unittest.TestCase):
         )
         self.assertEqual(
             report["intent_fidelity_contract"]["version"],
-            "planner-intent-fidelity-v2",
+            "planner-intent-fidelity-v3",
         )
         self.assertFalse(
             report["intent_fidelity_contract"]["retroactively_applicable"]

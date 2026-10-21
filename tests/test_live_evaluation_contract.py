@@ -25,7 +25,7 @@ class LiveEvaluationContractTests(unittest.TestCase):
     def test_contract_binds_dataset_and_both_contracts(self) -> None:
         contract = load_live_evaluation_metric_contract()
         self.assertEqual(
-            contract["version"], "live-evaluation-metric-contract-v1"
+            contract["version"], "live-evaluation-metric-contract-v2"
         )
         self.assertFalse(contract["retroactively_applicable"])
         self.assertFalse(contract["reporting_rules"]["composite_score_allowed"])
