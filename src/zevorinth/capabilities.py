@@ -159,7 +159,8 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             ],
             "limitations": [
                 "default-deny live planning runner",
-                "one DeepSeek baseline completed on the fixed synthetic dataset",
+                "two DeepSeek baselines completed on fixed synthetic datasets",
+                "latest applicability-v1 strict baseline is 14 of 19 cases",
                 "the dataset still includes scripted-only controls and is not a clean live benchmark",
             ],
         },

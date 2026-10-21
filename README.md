@@ -197,6 +197,10 @@ runner、target）；模型推断值不能标记为 trusted context，也不会�
 contract SHA、19/3/3 分组、trusted context、危险计划归责、零重试预算和输出路径；只有所有
 检查通过才返回 `READY_FOR_AUTHORIZATION`，且仍要求真实的 `--authorize-live` 才会调用模型。
 
+Phase 3.82 已在该契约下完成一次 DeepSeek `deepseek-flash` baseline：19 个 strict 案例中
+14 个通过；5 个 Planner unsafe candidate 中 4 个被下游拦截、1 个被接受。该结果是固定
+applicability v1 下的基线，不能与 Phase 3.79 的旧契约 `12/25` 直接同比。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：
