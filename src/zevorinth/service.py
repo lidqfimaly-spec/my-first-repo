@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import stat
 import subprocess
 import time
@@ -12,7 +13,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from .artifact_tool import (
     MAX_ARTIFACT_BYTES,
@@ -20,10 +21,13 @@ from .artifact_tool import (
     ArtifactWriter,
     RealArtifactWriter,
     task_publication_lock,
+    validate_artifact_name,
 )
+from .assurance import with_status_assurance
 from .event_store import (
     ClaimLost,
     EventStore,
+    EventStoreError,
     PlanRevisionConflict,
     StoreBusyError,
 )
@@ -385,6 +389,226 @@ class TaskService:
             )
 
         return self._run_claimed(claimed, lease_token)
+
+    def recover_prepublish_publish_lock_failure(
+        self,
+        task_id: str,
+        *,
+        authorized: bool = False,
+    ) -> dict[str, Any]:
+        """Retry one pre-publication lock timeout as a deterministic new task."""
+        source = self.store.require_task(task_id)
+        if not authorized:
+            return self._prepublish_recovery_report(
+                source,
+                status="rejected",
+                code="recovery_unauthorized",
+                reason="explicit recovery authorization is required",
+            )
+        rejected = self._prepublish_recovery_precheck(source)
+        if rejected is not None:
+            code, reason = rejected
+            return self._prepublish_recovery_report(
+                source,
+                status="rejected",
+                code=code,
+                reason=reason,
+            )
+
+        recovery_kind = "prepublish_publish_lock_timeout"
+        replacement_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"zevorinth:{source.task_id}:{recovery_kind}",
+            )
+        )
+        existing = self.store.get_task(replacement_id)
+        reused = existing is not None
+        if existing is None:
+            now = self.clock()
+            replacement = Task(
+                task_id=replacement_id,
+                status=TaskStatus.QUEUED,
+                request=source.request,
+                execution_mode=ExecutionMode.NOT_EXECUTED,
+                attempt_id=str(uuid4()),
+                phase="queued_prepublish_recovery",
+                planner_mode=source.planner_mode,
+                created_at=now,
+                updated_at=now,
+            )
+            event = Event.new(
+                replacement.task_id,
+                EventType.TASK_CREATED,
+                now,
+                {
+                    "operation": source.request.operation,
+                    "goal_present": bool(source.request.goal),
+                    "recovery": {
+                        "kind": recovery_kind,
+                        "source_task_id": source.task_id,
+                        "source_error_code": source.error.code,
+                        "source_attempt_id": source.attempt_id,
+                    },
+                },
+            )
+            try:
+                replacement, _ = self.store.create_task(replacement, event)
+            except (sqlite3.IntegrityError, EventStoreError) as exc:
+                if isinstance(exc, EventStoreError) and not isinstance(
+                    exc.__cause__, sqlite3.IntegrityError
+                ):
+                    raise
+                replacement = self.store.get_task(replacement_id)
+                if replacement is None:
+                    raise
+                reused = True
+        else:
+            replacement = existing
+
+        if not self._is_expected_recovery_task(source, replacement, recovery_kind):
+            return self._prepublish_recovery_report(
+                source,
+                status="rejected",
+                code="recovery_identity_conflict",
+                reason="deterministic recovery task has unexpected provenance",
+            )
+        if not is_terminal(replacement.status):
+            replacement = self.execute_task(replacement.task_id)
+        if replacement.status is TaskStatus.SUCCEEDED:
+            status = (
+                "already_recovered"
+                if reused
+                else "recovered"
+            )
+        elif replacement.status is TaskStatus.FAILED:
+            status = "recovery_failed"
+        else:
+            status = "recovery_in_progress"
+        return self._prepublish_recovery_report(
+            source,
+            status=status,
+            code=(
+                "recovery_task_succeeded"
+                if replacement.status is TaskStatus.SUCCEEDED
+                else f"recovery_task_{replacement.status.value}"
+            ),
+            reason=(
+                "replacement task independently verified"
+                if replacement.status is TaskStatus.SUCCEEDED
+                else "replacement task did not succeed"
+            ),
+            replacement=replacement,
+        )
+
+    def _prepublish_recovery_precheck(
+        self,
+        task: Task,
+    ) -> tuple[str, str] | None:
+        if task.status is not TaskStatus.FAILED:
+            return "recovery_status_not_eligible", "source task is not failed"
+        if task.request.operation != WRITE_TEXT_ARTIFACT:
+            return "recovery_operation_not_eligible", "source operation is not write_text_artifact"
+        if task.error is None or task.error.code != "publish_lock_timeout":
+            return "recovery_error_not_eligible", "source error is not publish_lock_timeout"
+        result = task.tool_result
+        if (
+            result is None
+            or result.success
+            or result.error_code != "publish_lock_timeout"
+            or result.execution_mode is not ExecutionMode.REAL
+            or result.attempt_id != task.attempt_id
+        ):
+            return "recovery_evidence_not_eligible", "tool result does not prove a pre-publication lock failure"
+        if task.artifact is not None or task.verification is not None:
+            return "recovery_side_effect_present", "source task has artifact or verification evidence"
+        events = self.store.list_events(task.task_id)
+        event_types = [event.event_type for event in events]
+        if "tool_succeeded" in event_types or "verification_started" in event_types:
+            return "recovery_side_effect_present", "source events do not prove pre-publication failure"
+        matching_failure = any(
+            event.event_type == "tool_failed"
+            and isinstance(event.payload.get("tool_result"), Mapping)
+            and event.payload["tool_result"].get("attempt_id") == task.attempt_id
+            for event in events
+        )
+        if not matching_failure:
+            return "recovery_evidence_not_eligible", "no matching tool_failed event"
+        artifact_path = task.request.parameters.get("artifact_path")
+        try:
+            name = validate_artifact_name(artifact_path)
+        except ArtifactToolError as exc:
+            return "recovery_target_not_eligible", exc.message
+        root = self.artifacts_root
+        if root.is_symlink():
+            return "recovery_target_not_eligible", "artifacts root is a symlink"
+        if root.exists():
+            root = root.resolve(strict=True)
+        task_dir = root / task.task_id
+        if task_dir.is_symlink():
+            return "recovery_target_not_eligible", "task artifact directory is a symlink"
+        if task_dir.exists() and not task_dir.is_dir():
+            return "recovery_target_not_eligible", "task artifact path is not a directory"
+        target = task_dir / name
+        if target.exists() or target.is_symlink():
+            return "recovery_target_exists", "artifact target already exists"
+        staging = task_dir / ".staging"
+        if staging.is_symlink():
+            return "recovery_staging_unsafe", "artifact staging directory is a symlink"
+        if staging.is_dir() and any(staging.iterdir()):
+            return "recovery_staging_not_clean", "artifact staging directory is not empty"
+        return None
+
+    def _is_expected_recovery_task(
+        self,
+        source: Task,
+        replacement: Task,
+        recovery_kind: str,
+    ) -> bool:
+        created = next(
+            (
+                event
+                for event in self.store.list_events(replacement.task_id)
+                if event.event_type == "task_created"
+            ),
+            None,
+        )
+        if created is None:
+            return False
+        recovery = created.payload.get("recovery")
+        return (
+            isinstance(recovery, Mapping)
+            and recovery.get("kind") == recovery_kind
+            and recovery.get("source_task_id") == source.task_id
+            and replacement.request.to_dict() == source.request.to_dict()
+        )
+
+    def _prepublish_recovery_report(
+        self,
+        source: Task,
+        *,
+        status: str,
+        code: str,
+        reason: str,
+        replacement: Task | None = None,
+    ) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "status": status,
+            "code": code,
+            "reason": reason,
+            "source_task_id": source.task_id,
+            "recovery_kind": "prepublish_publish_lock_timeout",
+            "replacement_task_id": (
+                replacement.task_id if replacement is not None else None
+            ),
+            "replacement_task": (
+                replacement.to_dict() if replacement is not None else None
+            ),
+            "manual_review": status
+            in {"rejected", "recovery_failed", "recovery_in_progress"},
+            "safe_to_retry": False,
+        }
+        return with_status_assurance(report)
 
     def get_task(self, task_id: str) -> Task | None:
         return self.store.get_task(task_id)

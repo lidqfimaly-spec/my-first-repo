@@ -110,6 +110,7 @@ class CapabilityRegistryTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 self.assertIn(f"`{operation}`", readme)
         self.assertNotIn("当前只支持一种真实操作", readme)
+        self.assertIn("recover-prepublish", readme)
         for unavailable in (
             "浏览器",
             "任意 shell",
@@ -119,6 +120,22 @@ class CapabilityRegistryTests(unittest.TestCase):
         ):
             with self.subTest(unavailable=unavailable):
                 self.assertIn(unavailable, readme)
+
+    def test_prepublish_recovery_is_bounded_and_not_a_task_operation(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "prepublish_write_recovery"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        self.assertNotIn(
+            "prepublish_write_recovery", SUPPORTED_TASK_OPERATIONS
+        )
+        self.assertTrue(
+            any(
+                "publish_lock_timeout" in item
+                for item in details["requirements"]
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -118,6 +118,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "controlled_recovery_audit": True,
             "task_lifecycle_audit": True,
             "event_sequence_audit": True,
+            "prepublish_write_recovery": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,
@@ -591,6 +592,18 @@ def build_parser() -> argparse.ArgumentParser:
     task_audit.add_argument("task_id")
     task_audit.add_argument("--checked-at", default=None)
     task_audit.add_argument("--json", action="store_true")
+
+    recover_prepublish = subparsers.add_parser(
+        "recover-prepublish",
+        help="retry one verified pre-publication publish-lock timeout",
+    )
+    recover_prepublish.add_argument("task_id")
+    recover_prepublish.add_argument(
+        "--confirm",
+        action="store_true",
+        help="explicitly authorize this bounded recovery",
+    )
+    recover_prepublish.add_argument("--json", action="store_true")
 
     recovery_audit = subparsers.add_parser(
         "recovery-audit",
@@ -1131,6 +1144,49 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for issue in report["issues"]:
                     print(f"Issue: {issue['code']} {issue['detail']}")
             return 0 if report["ok"] else 5
+        if args.command == "recover-prepublish":
+            report = service.recover_prepublish_publish_lock_failure(
+                args.task_id,
+                authorized=args.confirm,
+            )
+            if args.json:
+                print(
+                    json.dumps(
+                        report,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                replacement = report.get("replacement_task") or {}
+                print(
+                    f"Recovery: {report['status']} "
+                    f"code={report['code']}"
+                )
+                print(f"Source task: {report['source_task_id']}")
+                print(
+                    f"Replacement task: "
+                    f"{report.get('replacement_task_id') or '-'}"
+                )
+                print(
+                    f"Replacement status: "
+                    f"{replacement.get('status', '-')}"
+                )
+                print(
+                    f"Assurance: {report['assurance_level']} "
+                    f"authenticity={report['authenticity']} "
+                    f"security_certification="
+                    f"{report['security_certification']}"
+                )
+                print(f"Reason: {report['reason']}")
+            if report["status"] in {"recovered", "already_recovered"}:
+                return 0
+            if report["status"] == "recovery_failed":
+                return 1
+            if report["status"] == "rejected":
+                return 4
+            return 5
         if args.command == "verify-isolation":
             from .evidence_provisioning import provision_evidence
 

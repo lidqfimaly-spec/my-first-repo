@@ -144,6 +144,23 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             "verified": True,
             "limitations": ["approval does not itself execute recovery"],
         },
+        "prepublish_write_recovery": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["cli:recover-prepublish", "service:python_api"],
+            "requirements": [
+                "source task failed with publish_lock_timeout",
+                "no artifact or verification evidence",
+                "artifact target absent",
+                "staging directory clean",
+                "explicit recovery authorization",
+            ],
+            "limitations": [
+                "one deterministic replacement task per source task",
+                "not general task recovery",
+            ],
+        },
         "controlled_recovery_marker": {
             "status": "internal_only",
             "implemented": True,

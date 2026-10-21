@@ -1776,6 +1776,94 @@
         "tests.test_cli.CliTests.test_doctor_reports_current_capabilities_without_overstating_model_support"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_authorization_bypass",
+      "property": "bounded recovery requires explicit authorization",
+      "path": "src/zevorinth/service.py",
+      "old": "        source = self.store.require_task(task_id)\n        if not authorized:\n",
+      "new": "        source = self.store.require_task(task_id)\n        if False:\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_recovery_contract_validation"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_error_allowlist_bypass",
+      "property": "only publish_lock_timeout is recoverable",
+      "path": "src/zevorinth/service.py",
+      "old": "        if task.error is None or task.error.code != \"publish_lock_timeout\":\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_ineligible_error_contract"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_existing_target_bypass",
+      "property": "recovery refuses an existing artifact target",
+      "path": "src/zevorinth/service.py",
+      "old": "        if target.exists() or target.is_symlink():\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_target_and_staging_rejections"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_dirty_staging_bypass",
+      "property": "recovery refuses a dirty staging directory",
+      "path": "src/zevorinth/service.py",
+      "old": "        if staging.is_dir() and any(staging.iterdir()):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_target_and_staging_rejections"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_failure_reported_success",
+      "property": "failed replacement is not reported as recovered",
+      "path": "src/zevorinth/service.py",
+      "old": "        if replacement.status is TaskStatus.SUCCEEDED:\n            status = (\n",
+      "new": "        if True:\n            status = (\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_replacement_failure_contract"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_cli_confirmation_bypass",
+      "property": "CLI recovery requires explicit confirmation",
+      "path": "src/zevorinth/cli.py",
+      "old": "                authorized=args.confirm,\n",
+      "new": "                authorized=True,\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_cli_confirmation_contract"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_allows_retry",
+      "property": "bounded recovery never enables automatic retry",
+      "path": "src/zevorinth/service.py",
+      "old": "            \"safe_to_retry\": False,\n        }\n        return with_status_assurance(report)\n",
+      "new": "            \"safe_to_retry\": True,\n        }\n        return with_status_assurance(report)\n",
+      "tests": [
+        "tests.test_prepublish_recovery.PrepublishRecoveryTests.test_unit_recovered_contract"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "prepublish_recovery_capability_removed",
+      "property": "the bounded recovery capability is registered",
+      "path": "src/zevorinth/capabilities.py",
+      "old": "        \"prepublish_write_recovery\": {\n            \"status\": \"available\",\n",
+      "new": "        \"prepublish_write_recovery\": {\n            \"status\": \"not_implemented\",\n",
+      "tests": [
+        "tests.test_capability_registry.CapabilityRegistryTests.test_prepublish_recovery_is_bounded_and_not_a_task_operation"
+      ],
+      "expected": "killed"
     }
   ]
 }

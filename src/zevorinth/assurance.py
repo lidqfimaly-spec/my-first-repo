@@ -121,7 +121,11 @@ def level_for_status(status: str) -> str:
             "consistent",
             "denied",
             "failed",
+            "already_recovered",
             "not_claimed",
+            "recovered",
+            "recovery_failed",
+            "rejected",
             "succeeded",
             "verified_failure",
         }

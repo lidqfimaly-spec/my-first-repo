@@ -23,6 +23,7 @@ LLM 只负责规划。认领、状态转换、Policy、工具执行、独立验�
 - 容器内的有界 `run_tests`、隔离证据复核、超时/取消和验证器拒绝路径。
 - Recovery preview、持久化审批、固定 marker 受控操作及只读生命周期/证据审计。
 - `task-audit`、`recovery-audit` 和机器可读 capability registry。
+- `recover-prepublish`：仅针对已验证的 `publish_lock_timeout` 创建一次确定性 replacement task。
 - `real`、`simulated`、`not_executed` 三态区分。
 - 离线 Planner 评测集、统计报告和确定性基线对照。
 - 手动启用的在线 Planner 评测入口。
