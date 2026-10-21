@@ -2243,8 +2243,8 @@
       "id": "planner_intent_gate_checker_error_fails_open",
       "property": "intent fidelity checker errors fail closed",
       "path": "src/zevorinth/llm_planner.py",
-      "old": "    except Exception as exc:\n        return PlanningOutcome(\n",
-      "new": "    except Exception as exc:\n        return outcome\n        return PlanningOutcome(\n",
+      "old": "    except Exception as exc:\n        return PlanningOutcome(\n            classification=PlanningClassification.FAILED,\n            error_code=\"intent_fidelity_check_error\",\n",
+      "new": "    except Exception as exc:\n        return outcome\n        return PlanningOutcome(\n            classification=PlanningClassification.FAILED,\n            error_code=\"intent_fidelity_check_error\",\n",
       "tests": [
         "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_checker_exception_fails_closed"
       ],
@@ -2399,6 +2399,103 @@
       "new": "        \"execution_attempts\": 1,\n",
       "tests": [
         "tests.test_planner_precision.PlannerPrecisionTests.test_precision_regression_passes_without_execution"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "exact_text_version_drift_allowed",
+      "property": "only the active exact-text contract version can gate plans",
+      "path": "src/zevorinth/planner_text_precision.py",
+      "old": "    if payload.get(\"version\") != ACTIVE_EXACT_TEXT_CONTRACT_VERSION:\n        raise ValueError(\"active exact text contract version mismatch\")\n",
+      "new": "    if False:\n        raise ValueError(\"active exact text contract version mismatch\")\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextContractTests.test_contract_rejects_version_duplicate_and_normalization_drift"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "exact_text_normalization_allowed",
+      "property": "no precision mode may normalize text",
+      "path": "src/zevorinth/planner_text_precision.py",
+      "old": "        if details.get(\"normalizes_text\") is not False:\n            raise ValueError(f\"exact text mode normalizes text: {mode}\")\n",
+      "new": "        if False:\n            raise ValueError(f\"exact text mode normalizes text: {mode}\")\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextContractTests.test_contract_rejects_version_duplicate_and_normalization_drift"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "exact_text_whitespace_normalized",
+      "property": "exact text comparisons preserve whitespace code points",
+      "path": "src/zevorinth/planner_text_precision.py",
+      "old": "        if content != expected:\n",
+      "new": "        if content.strip() != expected.strip():\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextEnforcementTests.test_unicode_whitespace_and_newline_differences_fail_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "semantic_punctuation_rejected",
+      "property": "semantic mode does not impose system punctuation",
+      "path": "src/zevorinth/planner_text_precision.py",
+      "old": "        metadata[\"text_precision\"].update(result=\"semantic\")\n        outcome.metadata = metadata\n        return outcome\n",
+      "new": "        metadata[\"text_precision\"].update(result=\"semantic\")\n        return _failed(\"text_precision_mismatch\", \"semantic mismatch\", metadata)\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextEnforcementTests.test_write_simple_semantic_punctuation_is_not_a_system_failure"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "exact_text_mismatch_accepted",
+      "property": "exact mismatches cannot become executable plans",
+      "path": "src/zevorinth/planner_text_precision.py",
+      "old": "        if content != expected:\n            return _failed(\n",
+      "new": "        if False:\n            return _failed(\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextEnforcementTests.test_service_blocks_exact_mismatch_without_task_or_tool_events"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "invalid_format_accepted",
+      "property": "declared content format violations fail closed",
+      "path": "src/zevorinth/planner_text_precision.py",
+      "old": "    if not format_valid:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextEnforcementTests.test_format_constrained_accepts_and_rejects_declared_format"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "exact_text_missing_expected_reaches_model",
+      "property": "malformed exact contracts fail before a model call",
+      "patches": [
+        {
+          "path": "src/zevorinth/planner_text_precision.py",
+          "old": "        if not expected_present:\n            raise ValueError(\"exact_text requires expected_text\")\n",
+          "new": "        if False:\n            raise ValueError(\"exact_text requires expected_text\")\n"
+        },
+        {
+          "path": "src/zevorinth/planner_text_precision.py",
+          "old": "        if not isinstance(expected_text, str):\n            raise ValueError(\"expected_text must be a string\")\n",
+          "new": "        if False:\n            raise ValueError(\"expected_text must be a string\")\n"
+        }
+      ],
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextEnforcementTests.test_contract_errors_fail_before_model_call"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "text_precision_normalization_claim",
+      "property": "precision reports never claim normalization",
+      "path": "src/zevorinth/planner_exact_text_runner.py",
+      "old": "            elif precision_metadata.get(\"normalized_before_compare\") is not False:\n",
+      "new": "            elif False:\n",
+      "tests": [
+        "tests.test_planner_text_precision.ExactTextContractTests.test_runner_rejects_a_planner_that_claims_normalization"
       ],
       "expected": "killed"
     }

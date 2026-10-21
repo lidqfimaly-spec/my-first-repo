@@ -130,6 +130,8 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_live_applicability_contract": True,
             "planner_intent_fidelity_contract": True,
             "planner_intent_fidelity_gate": True,
+            "planner_text_precision_contract": True,
+            "planner_text_precision_gate": True,
             "live_evaluation_integration_contract": True,
             "planner_precision_regression": True,
             "recovery_assurance_levels": ["L0", "L1"],

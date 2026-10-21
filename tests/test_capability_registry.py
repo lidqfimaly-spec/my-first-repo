@@ -193,6 +193,30 @@ class CapabilityRegistryTests(unittest.TestCase):
             report["capabilities"]["planner_intent_fidelity_gate"]
         )
 
+    def test_text_precision_contract_and_gate_are_registered(self) -> None:
+        contract = CAPABILITY_REGISTRY["capabilities"][
+            "planner_text_precision_contract"
+        ]
+        self.assertEqual(contract["status"], "available")
+        self.assertTrue(contract["verified"])
+        joined = " ".join(contract["limitations"]).lower()
+        self.assertIn("defaults to semantic", joined)
+        self.assertIn("do not trim", joined)
+
+        gate = CAPABILITY_REGISTRY["capabilities"][
+            "planner_text_precision_gate"
+        ]
+        self.assertEqual(gate["status"], "available")
+        self.assertIn("llm_planner", gate["access"])
+        self.assertTrue(
+            any("fail-closed" in item.lower() for item in gate["requirements"])
+        )
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"]["planner_text_precision_contract"]
+        )
+        self.assertTrue(report["capabilities"]["planner_text_precision_gate"])
+
     def test_live_evaluation_metric_contract_is_registered(self) -> None:
         details = CAPABILITY_REGISTRY["capabilities"][
             "live_evaluation_integration_contract"

@@ -21,7 +21,7 @@ CAPABILITY_STATUSES = frozenset(
 
 CAPABILITY_REGISTRY: dict[str, Any] = {
     "version": CAPABILITY_REGISTRY_VERSION,
-    "product_stage": "3.75",
+    "product_stage": "3.89",
     "deployment_scope": "single_host_local_alpha",
     "task_operations": {
         WRITE_TEXT_ARTIFACT: {
@@ -199,6 +199,38 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             "limitations": [
                 "deterministic contract checks are not general natural-language entailment",
                 "gate prevents plan acceptance but does not authenticate goal provenance",
+            ],
+        },
+        "planner_text_precision_contract": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:planner_text_precision"],
+            "requirements": [
+                "explicit trusted precision_mode or a precision-specific trusted value",
+                "exact_text requires trusted expected_text",
+                "format_constrained requires trusted content_format",
+            ],
+            "limitations": [
+                "defaults to semantic mode to preserve ordinary writing behavior",
+                "exact comparisons do not trim, normalize Unicode, or adjust punctuation",
+                "not retroactively applicable to Phase 3.88 live scores",
+            ],
+        },
+        "planner_text_precision_gate": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["llm_planner", "service:submit"],
+            "requirements": [
+                "contract validation before the model call",
+                "code-point comparison after local candidate validation",
+                "fail-closed contract errors and precision mismatches",
+            ],
+            "limitations": [
+                "applies only to planned write_text_artifact candidates",
+                "does not replace Policy, authorization, intent fidelity, or execution checks",
+                "empty file content remains invalid before text precision",
             ],
         },
         "live_evaluation_integration_contract": {

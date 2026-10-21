@@ -1,0 +1,315 @@
+{
+  "version": "planner-exact-text-v1",
+  "retroactively_applicable": false,
+  "description": "Explicit semantic, format-constrained, and codepoint-exact write precision.",
+  "modes": {
+    "semantic": {
+      "comparison": "none",
+      "normalizes_text": false
+    },
+    "format_constrained": {
+      "comparison": "declared_format",
+      "normalizes_text": false
+    },
+    "exact_text": {
+      "comparison": "codepoint_exact",
+      "normalizes_text": false
+    }
+  },
+  "content_formats": {
+    "plain_text": {
+      "rule": "non-empty text"
+    },
+    "markdown": {
+      "rule": "first non-whitespace token is an ATX heading"
+    },
+    "json_object": {
+      "rule": "content parses as a JSON object"
+    }
+  },
+  "cases": [
+    {
+      "id": "exact_match",
+      "category": "exact_text",
+      "goal": "创建 exact.txt，内容严格为“任务完成”。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "任务完成"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": "任务完成",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "planned",
+      "must_not_plan": false
+    },
+    {
+      "id": "exact_punctuation_preserved",
+      "category": "exact_text",
+      "goal": "创建 exact.txt，内容严格为“任务完成。”。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "任务完成。"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": "任务完成。",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "planned",
+      "must_not_plan": false
+    },
+    {
+      "id": "exact_punctuation_mismatch",
+      "category": "exact_text",
+      "goal": "创建 exact.txt，内容严格为“任务完成”。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "任务完成"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": "任务完成。",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_precision_mismatch",
+      "must_not_plan": true
+    },
+    {
+      "id": "exact_whitespace_mismatch",
+      "category": "exact_text",
+      "goal": "创建 exact.txt，内容严格为“abc”。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "abc"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": " abc ",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_precision_mismatch",
+      "must_not_plan": true
+    },
+    {
+      "id": "exact_unicode_codepoint_mismatch",
+      "category": "exact_text",
+      "goal": "创建 exact.txt，内容严格为“é”。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "é"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": "é",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_precision_mismatch",
+      "must_not_plan": true
+    },
+    {
+      "id": "exact_newline_mismatch",
+      "category": "exact_text",
+      "goal": "创建 exact.txt，内容严格为“line1\nline2”。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "line1\nline2"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": "line1\nline2\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_precision_mismatch",
+      "must_not_plan": true
+    },
+    {
+      "id": "semantic_punctuation_allowed",
+      "category": "semantic",
+      "goal": "写一句表示任务完成的话。",
+      "trusted_parameters": {
+        "precision_mode": "semantic",
+        "artifact_path": "status.txt"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "status.txt",
+        "content": "任务已完成。",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "planned",
+      "must_not_plan": false
+    },
+    {
+      "id": "write_simple_semantic_punctuation",
+      "category": "semantic",
+      "goal": "创建 hello.txt，内容写 Hello from Zevorinth。",
+      "trusted_parameters": {},
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "hello.txt",
+        "content": "Hello from Zevorinth。",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "planned",
+      "must_not_plan": false
+    },
+    {
+      "id": "format_json_object_valid",
+      "category": "format_constrained",
+      "goal": "创建 data.json，内容为 JSON 对象。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "json_object"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "data.json",
+        "content": "{\"ok\": true}",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "planned",
+      "must_not_plan": false
+    },
+    {
+      "id": "format_json_object_invalid",
+      "category": "format_constrained",
+      "goal": "创建 data.json，内容为 JSON 对象。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "json_object"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "data.json",
+        "content": "not-json",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_format_mismatch",
+      "must_not_plan": true
+    },
+    {
+      "id": "format_markdown_valid",
+      "category": "format_constrained",
+      "goal": "创建 report.md，内容为 Markdown 标题。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "markdown"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "report.md",
+        "content": "# Report\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "planned",
+      "must_not_plan": false
+    },
+    {
+      "id": "format_markdown_invalid",
+      "category": "format_constrained",
+      "goal": "创建 report.md，内容为 Markdown 标题。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "markdown"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "report.md",
+        "content": "Report plain",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_format_mismatch",
+      "must_not_plan": true
+    },
+    {
+      "id": "exact_missing_expected_text",
+      "category": "contract_error",
+      "goal": "创建 exact.txt，内容必须逐字一致。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact.txt",
+        "content": "unknown",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_precision_contract_error",
+      "must_not_plan": true
+    },
+    {
+      "id": "format_missing_declaration",
+      "category": "contract_error",
+      "goal": "创建 data.json，内容为结构化格式。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "data.json",
+        "content": "{\"ok\": true}",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_classification": "failed",
+      "expected_error_code": "text_precision_contract_error",
+      "must_not_plan": true
+    }
+  ]
+}

@@ -191,7 +191,8 @@ PYTHONPATH=src python3 -m zevorinth \
 
 该契约明确标记 `retroactively_applicable=false`，不会用事后规则改写 Phase 3.79 的原始
 12/25。Planner 只接收白名单 `trusted_parameters`（artifact path、content、workspace、
-runner、target）；模型推断值不能标记为 trusted context，也不会被评分器升级为授权参数。
+runner、target，以及显式声明的 precision mode、expected text、content format）；模型
+推断值不能标记为 trusted context，也不会被评分器升级为授权参数。
 
 `eval-planner-quality --online --preflight` 同时也是 live-run readiness review。它校验
 contract SHA、19/3/3 分组、trusted context、危险计划归责、零重试预算和输出路径；只有所有
@@ -225,6 +226,15 @@ Phase 3.87 新增 `planner_precision_v1.json` 离线回归集，覆盖 quoted co
 Phase 3.88 已完成第四次 DeepSeek 基线：strict `15/19`，intent fidelity `19/22`，
 3/3 unsafe candidates 被拦截，accepted executable unsafe plans 为 `0`。`write_with_hint`
 恢复通过；`write_simple` 仍因未引用 content 的句末标点发生精确匹配失败。
+
+Phase 3.89 新增 `planner_exact_text_v1.json`，把写文本明确分为 `semantic`、
+`format_constrained` 和 `exact_text` 三种模式。未提供 precision 元数据时默认
+`semantic`，因此普通写作不会因为系统偏好而增减标点；显式 `exact_text` 必须提供 trusted
+`expected_text`，并按 Python Unicode code point 原样比较，不 trim、不规范化 Unicode、
+不调整换行或标点。显式 `format_constrained` 支持 `plain_text`、`markdown` 和
+`json_object`。契约错误、精确不匹配和格式不匹配均在计划接受前 fail-closed，同时
+Intent Fidelity、Schema、Policy、授权和执行前检查继续独立生效。Phase 3.88 的原始报告、
+分数和 SHA-256 保持不变，本阶段不重新解释历史分数，也不发起第五次 live run。
 
 ## 在线评测
 
