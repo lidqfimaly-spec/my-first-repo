@@ -54,7 +54,7 @@ class LifecycleAuditCoverageTests(unittest.TestCase):
         self.assertTrue(report["ok"], report["issues"])
         self.assertFalse(report["task_recovery"]["safe_to_retry"])
         self.assertEqual(report["task_recovery"]["recommendation"], "none")
-        self.assertEqual(report["auditor_version"], "lifecycle-audit-v1")
+        self.assertEqual(report["auditor_version"], "lifecycle-audit-v2")
         self.assertFalse(report["security_certification"])
 
     def test_audit_is_read_only(self) -> None:

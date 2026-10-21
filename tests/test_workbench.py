@@ -366,6 +366,31 @@ class WorkbenchProjectionTests(unittest.TestCase):
                 with self.assertRaises(sqlite3.OperationalError):
                     connection.execute("DELETE FROM tasks")
 
+    def test_clarification_detail_uses_stage_applicable_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = TaskService(root)
+            task = service.submit(
+                TaskRequest(
+                    goal="run tests before workspace is known",
+                    operation="run_tests",
+                    parameters={
+                        "runner": "unittest",
+                        "target": "tests.test_demo",
+                    },
+                )
+            )
+            detail = ReadOnlyWorkbench(root).task_detail(task.task_id)
+        self.assertEqual(detail["task"]["status"], "awaiting_clarification")
+        self.assertTrue(detail["lifecycle_audit"]["ok"])
+        self.assertNotIn(
+            "missing_final_execution_plan",
+            [item["code"] for item in detail["lifecycle_audit"]["issues"]],
+        )
+        action = detail["recovery_preview"]["actions"][0]
+        self.assertEqual(action["action"], "none")
+        self.assertEqual(action["risk"], "low")
+
     def test_cli_exposes_loopback_workbench_command(self) -> None:
         args = build_parser().parse_args(["workbench", "--port", "8877"])
         self.assertEqual(args.command, "workbench")

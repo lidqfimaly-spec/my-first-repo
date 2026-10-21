@@ -2639,6 +2639,50 @@
         "tests.test_workbench.WorkbenchHTTPTests.test_task_discovery_detail_and_attention_are_read_only"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "clarification_requires_final_execution_plan",
+      "property": "final execution plans are required only after execution stage begins",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    final_execution_plan_required = (\n",
+      "new": "    final_execution_plan_required = True or (\n",
+      "tests": [
+        "tests.test_task_lifecycle_audit.TaskLifecycleAuditTests.test_awaiting_clarification_does_not_require_final_test_plan"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "executed_final_execution_plan_requirement_hidden",
+      "property": "executing tasks still require a final execution plan",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    if is_test and snapshot is None and final_execution_plan_required:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_task_lifecycle_audit.TaskLifecycleAuditTests.test_executed_run_tests_without_final_plan_is_flagged"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "clarification_recovery_preview_escalated",
+      "property": "clarification previews do not become recovery-risk actions",
+      "path": "src/zevorinth/recovery_preview.py",
+      "old": "                current_state=\"awaiting_clarification\",\n                operation=(\n                    \"provide the requested clarification through the existing \"\n                    \"conversation or CLI; recovery is not applicable\"\n                ),\n                preconditions=(\"required clarification fields are answered\",),\n                expected_result=\"clarification completes and normal lifecycle resumes\",\n                risk=\"low\",\n",
+      "new": "                current_state=\"awaiting_clarification\",\n                operation=(\n                    \"provide the requested clarification through the existing \"\n                    \"conversation or CLI; recovery is not applicable\"\n                ),\n                preconditions=(\"required clarification fields are answered\",),\n                expected_result=\"clarification completes and normal lifecycle resumes\",\n                risk=\"high\",\n",
+      "tests": [
+        "tests.test_task_lifecycle_audit.TaskLifecycleAuditTests.test_awaiting_clarification_does_not_require_final_test_plan"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "lifecycle_audit_version_drift",
+      "property": "stage applicability changes use a new lifecycle audit version",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "AUDITOR_VERSION = \"lifecycle-audit-v2\"\n",
+      "new": "AUDITOR_VERSION = \"lifecycle-audit-v1\"\n",
+      "tests": [
+        "tests.test_lifecycle_audit_coverage.LifecycleAuditCoverageTests.test_success_is_consistent_and_not_retryable"
+      ],
+      "expected": "killed"
     }
   ]
 }

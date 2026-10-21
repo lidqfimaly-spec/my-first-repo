@@ -21,7 +21,7 @@ CAPABILITY_STATUSES = frozenset(
 
 CAPABILITY_REGISTRY: dict[str, Any] = {
     "version": CAPABILITY_REGISTRY_VERSION,
-    "product_stage": "3.91",
+    "product_stage": "3.92",
     "deployment_scope": "single_host_local_alpha",
     "task_operations": {
         WRITE_TEXT_ARTIFACT: {

@@ -12,7 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from zevorinth.models import Task, TaskRequest  # noqa: E402
+from zevorinth.models import Event, Task, TaskRequest  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 from zevorinth.task_lifecycle import audit_task_lifecycle  # noqa: E402
 
@@ -146,7 +146,86 @@ class TaskLifecycleAuditTests(unittest.TestCase):
         self.assertFalse(state["retryable"])
         self.assertTrue(state["manual_intervention"])
 
-    def test_historical_run_tests_without_final_plan_is_flagged(self) -> None:
+    def test_awaiting_clarification_does_not_require_final_test_plan(
+        self,
+    ) -> None:
+        root = Path(tempfile.mkdtemp(prefix="zv-lifecycle-clarification-"))
+        service = TaskService(root)
+        task = service.submit(
+            TaskRequest(
+                goal="run tests before workspace is known",
+                operation="run_tests",
+                parameters={
+                    "runner": "unittest",
+                    "target": "tests.test_demo",
+                },
+            )
+        )
+        report = service.audit_lifecycle(task.task_id)
+        self.assertEqual(task.status.value, "awaiting_clarification")
+        self.assertTrue(report["ok"], report["issues"])
+        self.assertNotIn(
+            "missing_final_execution_plan",
+            [item["code"] for item in report["issues"]],
+        )
+        self.assertTrue(report["task_recovery"]["manual_intervention"])
+
+        preview = service.recovery_preview(task.task_id)
+        action = preview["actions"][0]
+        self.assertEqual(action["action"], "none")
+        self.assertEqual(action["current_state"], "awaiting_clarification")
+        self.assertEqual(action["risk"], "low")
+        self.assertFalse(action["requires_approval"])
+        self.assertNotIn("missing_final_execution_plan", preview["unknown"])
+
+    def test_other_pre_execution_states_do_not_require_final_plan(
+        self,
+    ) -> None:
+        root = Path(tempfile.mkdtemp(prefix="zv-lifecycle-open-"))
+        service = TaskService(root)
+        queued = service.enqueue(
+            TaskRequest(
+                goal="queued test",
+                operation="run_tests",
+                parameters={
+                    "runner": "unittest",
+                    "target": "test_ok",
+                    "workspace": "missing",
+                },
+            )
+        )
+        queued_audit = service.audit_lifecycle(queued.task_id)
+        self.assertTrue(queued_audit["ok"], queued_audit["issues"])
+        self.assertNotIn(
+            "missing_final_execution_plan",
+            [item["code"] for item in queued_audit["issues"]],
+        )
+
+        blocked = service.submit(
+            TaskRequest(
+                goal="blocked test",
+                operation="run_tests",
+                parameters={
+                    "runner": "unittest",
+                    "target": "test_ok",
+                    "workspace": "missing",
+                    "execution_backend": "host",
+                    "host_authorization": "local-maintenance",
+                },
+            )
+        )
+        blocked_audit = service.audit_lifecycle(blocked.task_id)
+        self.assertEqual(blocked.status.value, "blocked")
+        self.assertTrue(blocked_audit["ok"], blocked_audit["issues"])
+        self.assertNotIn(
+            "missing_final_execution_plan",
+            [item["code"] for item in blocked_audit["issues"]],
+        )
+        self.assertTrue(
+            blocked_audit["task_recovery"]["manual_intervention"]
+        )
+
+    def test_executed_run_tests_without_final_plan_is_flagged(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="zv-lifecycle-history-"))
         service = TaskService(root)
         task = service.enqueue(
@@ -160,7 +239,20 @@ class TaskLifecycleAuditTests(unittest.TestCase):
                 },
             )
         )
-        report = service.audit_lifecycle(task.task_id)
+        events = [
+            *service.store.list_events(task.task_id),
+            Event.new(
+                task.task_id,
+                "execution_plan_finalized",
+                NOW,
+                payload={"final_execution_plan": None},
+            ),
+        ]
+        data = task.to_dict()
+        data["status"] = "verifying"
+        data["phase"] = "verification_started"
+        verifying = Task.from_dict(data)
+        report = audit_task_lifecycle(verifying, events, now=NOW)
         self.assertFalse(report["ok"])
         self.assertIn(
             "missing_final_execution_plan",

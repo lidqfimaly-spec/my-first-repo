@@ -11,7 +11,7 @@ from .models import Event, Task, TaskStatus
 
 CLEANUP_INTENT_TTL_SECONDS = 24 * 60 * 60
 RUN_TESTS = "run_tests"
-AUDITOR_VERSION = "lifecycle-audit-v1"
+AUDITOR_VERSION = "lifecycle-audit-v2"
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -466,7 +466,16 @@ def audit_task_lifecycle(
         ):
             issue("task_succeeded_before_verification", task.task_id)
 
-    if is_test and snapshot is None:
+    final_execution_plan_required = (
+        task.status in {TaskStatus.VERIFYING, TaskStatus.SUCCEEDED}
+        or "execution_plan_finalized" in event_types
+        or "tool_started" in event_types
+        or (
+            task.tool_result is not None
+            and task.tool_result.test_evidence is not None
+        )
+    )
+    if is_test and snapshot is None and final_execution_plan_required:
         issue("missing_final_execution_plan", task.task_id)
     if snapshot is not None:
         if task.execution_plan_version != task.plan_version:

@@ -951,12 +951,28 @@ def build_recovery_preview(
                 requires_approval=True,
             )
         )
+    elif task.status is TaskStatus.AWAITING_CLARIFICATION:
+        actions.append(
+            RecoveryAction(
+                action="none",
+                target=f"task:{task.task_id}",
+                current_state="awaiting_clarification",
+                operation=(
+                    "provide the requested clarification through the existing "
+                    "conversation or CLI; recovery is not applicable"
+                ),
+                preconditions=("required clarification fields are answered",),
+                expected_result="clarification completes and normal lifecycle resumes",
+                risk="low",
+                verification="clarification completion and lifecycle audit",
+                requires_approval=False,
+            )
+        )
     elif task.status in {
         TaskStatus.RUNNING,
         TaskStatus.VERIFYING,
         TaskStatus.INTERRUPTED,
         TaskStatus.BLOCKED,
-        TaskStatus.AWAITING_CLARIFICATION,
     }:
         actions.append(
             RecoveryAction(

@@ -1,6 +1,6 @@
 # Zevorinth（衍序）
 
-Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前系统级基线为 Phase 3.91：
+Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前系统级基线为 Phase 3.92：
 单机、本地、受控执行切片 Alpha。系统提供确定性 Planner、可选受限 LLM Planner、严格
 本地校验、持久化任务生命周期、独立验证、恢复/清理治理、L0/L1 审计和只读本地工作台。
 
