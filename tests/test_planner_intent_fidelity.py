@@ -18,8 +18,10 @@ from zevorinth.models import (  # noqa: E402
     TaskRequest,
 )
 from zevorinth.planner_intent_fidelity import (  # noqa: E402
+    ACTIVE_INTENT_FIDELITY_VERSION,
     INTENT_FIDELITY_CONTRACT,
     assess_intent_fidelity,
+    load_active_intent_fidelity_contract,
     load_intent_fidelity_contract,
 )
 
@@ -44,7 +46,7 @@ class IntentFidelityContractTests(unittest.TestCase):
         self,
     ) -> None:
         contract = load_intent_fidelity_contract()
-        self.assertEqual(contract["version"], "planner-intent-fidelity-v2")
+        self.assertEqual(contract["version"], ACTIVE_INTENT_FIDELITY_VERSION)
         self.assertFalse(contract["retroactively_applicable"])
         self.assertGreaterEqual(len(contract["adversarial_scenarios"]), 8)
         self.assertEqual(len(contract["contract_sha256"]), 64)
@@ -61,6 +63,21 @@ class IntentFidelityContractTests(unittest.TestCase):
                 ValueError, "must not be retroactive"
             ):
                 load_intent_fidelity_contract(path)
+
+    def test_active_contract_rejects_v1_missing_and_corrupt_files(self) -> None:
+        v1_path = PROJECT_ROOT / "src" / "zevorinth" / "evals" / (
+            "planner_intent_fidelity_v1.json"
+        )
+        with self.assertRaisesRegex(ValueError, "version mismatch"):
+            load_active_intent_fidelity_contract(v1_path)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "missing.json"
+            with self.assertRaises(FileNotFoundError):
+                load_active_intent_fidelity_contract(missing)
+            corrupt = Path(temp_dir) / "corrupt.json"
+            corrupt.write_text("{invalid", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_active_intent_fidelity_contract(corrupt)
 
     def test_mixed_safe_dangerous_shell_cannot_be_faithful_plan(self) -> None:
         goal = "在 demo 中运行 tests.test_x; rm -rf temp。"

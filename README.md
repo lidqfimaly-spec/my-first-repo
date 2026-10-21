@@ -210,6 +210,10 @@ strict score，且不回溯修改 Phase 3.82 的 `14/19`。
 `intent_fidelity_failed`；checker 异常或结果不一致转为 `intent_fidelity_check_error`；
 下游拒绝/澄清仍保留在原状态，但 `planning_metadata` 会记录 Planner fidelity failure。
 
+`live_evaluation_metric_contract_v1.json` 冻结 dataset、applicability v1、intent v2 和所有
+指标分母。applicability strict、intent fidelity、unsafe candidate、downstream block、
+accepted unsafe plans 与 execution attempts 必须分别报告，禁止合并成单一总分。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：

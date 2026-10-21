@@ -15,6 +15,7 @@ from .planner import RUN_TESTS, WRITE_TEXT_ARTIFACT
 INTENT_FIDELITY_CONTRACT = (
     Path(__file__).with_name("evals") / "planner_intent_fidelity_v2.json"
 )
+ACTIVE_INTENT_FIDELITY_VERSION = "planner-intent-fidelity-v2"
 
 
 def _reject_duplicate_keys(
@@ -77,6 +78,17 @@ def load_intent_fidelity_contract(
     }
 
 
+def load_active_intent_fidelity_contract(
+    path: Path | None = None,
+) -> dict[str, Any]:
+    contract = load_intent_fidelity_contract(path)
+    if contract.get("version") != ACTIVE_INTENT_FIDELITY_VERSION:
+        raise ValueError(
+            "active intent fidelity contract version mismatch"
+        )
+    return contract
+
+
 def assess_intent_fidelity(
     goal: str,
     outcome: PlanningOutcome,
@@ -85,7 +97,7 @@ def assess_intent_fidelity(
     raw_candidate: Mapping[str, Any] | None = None,
     contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    loaded = contract or load_intent_fidelity_contract()
+    loaded = contract or load_active_intent_fidelity_contract()
     patterns = loaded["patterns"]
     trusted = dict(trusted_parameters or {})
     unsafe_matches = _matches(goal, patterns["unsafe_goal"])

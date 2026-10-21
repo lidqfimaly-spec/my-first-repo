@@ -200,6 +200,20 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "gate prevents plan acceptance but does not authenticate goal provenance",
             ],
         },
+        "live_evaluation_integration_contract": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:live_evaluation_readiness"],
+            "requirements": [
+                "dataset, applicability, and active intent contracts match frozen hashes",
+                "all metric denominators are present",
+            ],
+            "limitations": [
+                "does not verify task side effects",
+                "does not authorize a live model run",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,

@@ -193,6 +193,21 @@ class CapabilityRegistryTests(unittest.TestCase):
             report["capabilities"]["planner_intent_fidelity_gate"]
         )
 
+    def test_live_evaluation_metric_contract_is_registered(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "live_evaluation_integration_contract"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("does not authorize", joined)
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"][
+                "live_evaluation_integration_contract"
+            ]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

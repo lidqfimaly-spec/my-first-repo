@@ -514,6 +514,9 @@ def planner_quality_online_preflight(
     output_path: Path,
 ) -> dict[str, Any]:
     """Validate the fixed live-run contract without creating an API client."""
+    from .live_evaluation_contract import (
+        build_live_evaluation_integration_report,
+    )
     from .planner_live_applicability import (
         load_live_applicability_contract,
         score_live_applicability,
@@ -537,6 +540,7 @@ def planner_quality_online_preflight(
         contract,
         score_live_applicability,
     )
+    integration_validation = build_live_evaluation_integration_report()
     checks = [
         {
             "id": "applicability_contract_loaded",
@@ -583,6 +587,11 @@ def planner_quality_online_preflight(
             "id": "dangerous_plan_separation",
             "passed": bool(separation_self_check["passed"]),
             "detail": separation_self_check,
+        },
+        {
+            "id": "live_metric_contract",
+            "passed": integration_validation["status"] == "PASS",
+            "detail": integration_validation["metric_contract"],
         },
         {
             "id": "bounded_request_contract",
@@ -658,6 +667,7 @@ def planner_quality_online_preflight(
         },
         "readiness_checks": checks,
         "separation_self_check": separation_self_check,
+        "integration_validation": integration_validation,
         "configuration": {
             **config.public_report(),
             "configuration_error": (
@@ -1238,6 +1248,11 @@ def run_live_planner_quality(
         "retries": LIVE_RETRIES,
         "maximum_requests": LIVE_MAX_REQUESTS,
     }
+    from .live_evaluation_contract import (
+        validate_live_report_against_metric_contract,
+    )
+
+    validate_live_report_against_metric_contract(report)
     return report
 
 

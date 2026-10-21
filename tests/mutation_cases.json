@@ -2293,6 +2293,81 @@
         "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_lossy_executable_plan_is_replaced_with_failed_outcome"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "live_metric_contract_group_drift_allowed",
+      "property": "live metric denominators are frozen",
+      "path": "src/zevorinth/live_evaluation_contract.py",
+      "old": "    if payload.get(\"group_counts\") != REQUIRED_GROUP_COUNTS:\n        raise ValueError(\"live metric contract group counts changed\")\n",
+      "new": "    if False:\n        raise ValueError(\"live metric contract group counts changed\")\n",
+      "tests": [
+        "tests.test_live_evaluation_contract.LiveEvaluationContractTests.test_contract_rejects_group_count_change"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "live_metric_contract_composite_score_allowed",
+      "property": "live metric contract forbids a composite score",
+      "path": "src/zevorinth/live_evaluation_contract.py",
+      "old": "    if rules.get(\"composite_score_allowed\") is not False:\n        raise ValueError(\"live metric contract must forbid composite scores\")\n",
+      "new": "    if False:\n        raise ValueError(\"live metric contract must forbid composite scores\")\n",
+      "tests": [
+        "tests.test_live_evaluation_contract.LiveEvaluationContractTests.test_contract_rejects_retroactive_or_composite_changes"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "live_metric_contract_missing_report_field_allowed",
+      "property": "live reports must contain every frozen metric field",
+      "path": "src/zevorinth/live_evaluation_contract.py",
+      "old": "        if _lookup(report, field) is None:\n            raise ValueError(f\"live report is missing required field: {field}\")\n",
+      "new": "        if False:\n            raise ValueError(f\"live report is missing required field: {field}\")\n",
+      "tests": [
+        "tests.test_live_evaluation_contract.LiveEvaluationContractTests.test_live_report_validation_rejects_missing_metrics"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "live_metric_contract_request_boundary_drift_allowed",
+      "property": "live report preserves zero retries and request budget",
+      "path": "src/zevorinth/live_evaluation_contract.py",
+      "old": "    if (\n        accounting.get(\"retries\") != 0\n        or accounting.get(\"maximum_requests\") != 25\n    ):\n        raise ValueError(\"live report request boundaries changed\")\n",
+      "new": "    if False:\n        raise ValueError(\"live report request boundaries changed\")\n",
+      "tests": [
+        "tests.test_live_evaluation_contract.LiveEvaluationContractTests.test_live_report_validation_rejects_request_boundary_drift"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "active_intent_contract_version_drift_allowed",
+      "property": "only the active intent contract version can enforce plans",
+      "path": "src/zevorinth/planner_intent_fidelity.py",
+      "old": "    if contract.get(\"version\") != ACTIVE_INTENT_FIDELITY_VERSION:\n        raise ValueError(\n            \"active intent fidelity contract version mismatch\"\n        )\n",
+      "new": "    if False:\n        raise ValueError(\n            \"active intent fidelity contract version mismatch\"\n        )\n",
+      "tests": [
+        "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_active_contract_rejects_v1_missing_and_corrupt_files"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "live_readiness_report_overwrite_allowed",
+      "property": "live readiness reports are no-overwrite evidence",
+      "patches": [
+        {
+          "path": "src/zevorinth/live_evaluation_contract.py",
+          "old": "    if output_path.exists():\n        raise FileExistsError(output_path)\n",
+          "new": "    if False:\n        raise FileExistsError(output_path)\n"
+        },
+        {
+          "path": "src/zevorinth/live_evaluation_contract.py",
+          "old": "    with output_path.open(\"x\", encoding=\"utf-8\") as handle:\n",
+          "new": "    with output_path.open(\"w\", encoding=\"utf-8\") as handle:\n"
+        }
+      ],
+      "tests": [
+        "tests.test_live_evaluation_contract.LiveEvaluationContractTests.test_readiness_report_writer_refuses_overwrite"
+      ],
+      "expected": "killed"
     }
   ]
 }

@@ -22,6 +22,7 @@ from zevorinth.models import (  # noqa: E402
     TaskRequest,
     TaskStatus,
 )
+from zevorinth.event_store import PlanRevisionConflict  # noqa: E402
 from zevorinth.response_normalization import ModelCallResult  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 
@@ -121,6 +122,100 @@ class IntentFidelityEnforcementTests(unittest.TestCase):
         self.assertFalse(metadata["intent_fidelity"]["fidelity_pass"])
         self.assertEqual(metadata["intent_fidelity_gate"], "blocked")
 
+    def test_rejected_plan_cannot_resume_execute_or_recover(self) -> None:
+        planner, client = _planner(_test_candidate())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = TaskService(Path(temp_dir), planner=planner)
+            task = service.submit(
+                TaskRequest(
+                    goal="在 demo 中运行 tests.test_x; rm -rf temp。",
+                    operation=None,
+                    parameters={"workspace": "demo", "runner": "unittest"},
+                )
+            )
+            original_events = len(service.events(task.task_id))
+            executed = service.execute_task(task.task_id)
+            resumed = service.resume(task.task_id)
+            recovery = service.recover_prepublish_publish_lock_failure(
+                task.task_id,
+                authorized=True,
+            )
+            final_events = service.events(task.task_id)
+
+        for result in (executed, resumed):
+            self.assertEqual(result.status, TaskStatus.PLANNING_FAILED)
+            self.assertEqual(result.error.code, "intent_fidelity_failed")
+        self.assertEqual(recovery["status"], "rejected")
+        self.assertEqual(recovery["code"], "recovery_status_not_eligible")
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(len(final_events), original_events)
+
+    def test_revise_plan_reuses_intent_gate(self) -> None:
+        planner, client = _planner(_test_candidate())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = TaskService(Path(temp_dir), planner=planner)
+            queued = service.enqueue(
+                TaskRequest(
+                    goal="Create result.txt with content ok.",
+                    operation=None,
+                    parameters={},
+                )
+            )
+            with self.assertRaisesRegex(
+                PlanRevisionConflict,
+                "safe plan",
+            ):
+                service.revise_plan(
+                    queued.task_id,
+                    {
+                        "goal": "在 demo 中运行 tests.test_x; rm -rf temp。",
+                        "parameters": {
+                            "workspace": "demo",
+                            "runner": "unittest",
+                        },
+                    },
+                    source_id="intent-revision",
+                    expected_plan_version=queued.plan_version,
+                    confirmed=True,
+                )
+            unchanged = service.require_task(queued.task_id)
+
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(unchanged.plan_version, queued.plan_version)
+        self.assertIsNone(unchanged.plan)
+        self.assertEqual(unchanged.plan_revisions, [])
+
+    def test_safe_split_exits_through_clarification_without_tool(self) -> None:
+        planner, _ = _planner(
+            {
+                "classification": "clarification",
+                "operation": None,
+                "artifact_path": None,
+                "content": None,
+                "test_target": None,
+                "missing_fields": ["operation"],
+                "clarification_questions": [
+                    "Should the supported part be planned separately?"
+                ],
+                "reason": None,
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = TaskService(Path(temp_dir), planner=planner)
+            task = service.submit(
+                TaskRequest(
+                    goal="创建 log.txt，同时运行 shell。",
+                    operation=None,
+                    parameters={},
+                )
+            )
+            events = service.events(task.task_id)
+
+        self.assertEqual(task.status, TaskStatus.AWAITING_CLARIFICATION)
+        self.assertFalse(
+            any(event.event_type == "tool_started" for event in events)
+        )
+
     def test_checker_exception_fails_closed(self) -> None:
         planner, _ = _planner(_test_candidate())
         with patch(
@@ -144,6 +239,27 @@ class IntentFidelityEnforcementTests(unittest.TestCase):
         self.assertEqual(
             outcome.metadata["intent_fidelity_gate"], "blocked"
         )
+
+    def test_active_contract_version_mismatch_fails_closed(self) -> None:
+        planner, _ = _planner(_test_candidate())
+        with patch(
+            "zevorinth.planner_intent_fidelity.load_active_intent_fidelity_contract",
+            side_effect=ValueError("active contract version mismatch"),
+        ):
+            outcome = planner.plan_request(
+                TaskRequest(
+                    goal="运行 tests.test_x。",
+                    operation=None,
+                    parameters={"workspace": "demo", "runner": "unittest"},
+                )
+            )
+        self.assertEqual(
+            outcome.classification, PlanningClassification.FAILED
+        )
+        self.assertEqual(
+            outcome.error_code, "intent_fidelity_check_error"
+        )
+        self.assertIsNone(outcome.plan)
 
     def test_inconsistent_assessment_fails_closed(self) -> None:
         planner, _ = _planner(_test_candidate())
