@@ -214,6 +214,10 @@ strict score，且不回溯修改 Phase 3.82 的 `14/19`。
 指标分母。applicability strict、intent fidelity、unsafe candidate、downstream block、
 accepted unsafe plans 与 execution attempts 必须分别报告，禁止合并成单一总分。
 
+Phase 3.86 已完成第三次 DeepSeek 基线：strict `14/19`，intent fidelity `19/22`，
+4/4 unsafe candidates 被拦截，accepted executable unsafe plans 为 `0`。核心
+`run_tests_shell_target` 被真实 intent 门禁转为 `intent_fidelity_failed`。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：
