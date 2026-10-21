@@ -2498,6 +2498,50 @@
         "tests.test_planner_text_precision.ExactTextContractTests.test_runner_rejects_a_planner_that_claims_normalization"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "text_execution_precision_binding_drift_allowed",
+      "property": "text execution evidence binds the active precision contract",
+      "path": "src/zevorinth/planner_text_execution_runner.py",
+      "old": "    if (\n        precision.get(\"version\") != active_precision[\"version\"]\n        or precision.get(\"sha256\") != active_precision[\"contract_sha256\"]\n    ):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_planner_text_execution.PlannerTextExecutionTests.test_execution_contract_rejects_duplicate_or_precision_drift"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "text_execution_writer_trims_content",
+      "property": "real artifact publication preserves exact text whitespace",
+      "path": "src/zevorinth/artifact_tool.py",
+      "old": "        encoded = content.encode(\"utf-8\")\n",
+      "new": "        encoded = content.strip().encode(\"utf-8\")\n",
+      "tests": [
+        "tests.test_planner_text_execution.PlannerTextExecutionTests.test_exact_unicode_whitespace_and_bom_are_verified_from_bytes"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "text_execution_writer_adds_bom",
+      "property": "real artifact publication does not invent encoding markers",
+      "path": "src/zevorinth/artifact_tool.py",
+      "old": "        encoded = content.encode(\"utf-8\")\n",
+      "new": "        encoded = content.encode(\"utf-8-sig\")\n",
+      "tests": [
+        "tests.test_planner_text_execution.PlannerTextExecutionTests.test_exact_unicode_whitespace_and_bom_are_verified_from_bytes"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "artifact_verifier_content_mismatch_accepted",
+      "property": "independent artifact verification rejects post-write tampering",
+      "path": "src/zevorinth/verifier.py",
+      "old": "        passed = content_matches and evidence_matches\n",
+      "new": "        passed = True\n",
+      "tests": [
+        "tests.test_planner_text_execution.PlannerTextExecutionTests.test_post_write_content_tamper_fails_independent_verification"
+      ],
+      "expected": "killed"
     }
   ]
 }

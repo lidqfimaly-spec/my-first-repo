@@ -21,7 +21,7 @@ CAPABILITY_STATUSES = frozenset(
 
 CAPABILITY_REGISTRY: dict[str, Any] = {
     "version": CAPABILITY_REGISTRY_VERSION,
-    "product_stage": "3.89",
+    "product_stage": "3.90",
     "deployment_scope": "single_host_local_alpha",
     "task_operations": {
         WRITE_TEXT_ARTIFACT: {
@@ -231,6 +231,24 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "applies only to planned write_text_artifact candidates",
                 "does not replace Policy, authorization, intent fidelity, or execution checks",
                 "empty file content remains invalid before text precision",
+            ],
+        },
+        "planner_text_precision_execution": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:planner_text_execution"],
+            "requirements": [
+                "scripted or explicitly configured planner",
+                "temporary local workspace",
+                "real artifact write",
+                "independent byte readback and artifact evidence check",
+            ],
+            "limitations": [
+                "end-to-end regression uses fixed scripted candidates",
+                "does not measure live model quality",
+                "writes only inside a temporary workspace",
+                "does not provide L2 or L3 provenance authentication",
             ],
         },
         "live_evaluation_integration_contract": {

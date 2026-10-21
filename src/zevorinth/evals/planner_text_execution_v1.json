@@ -1,0 +1,248 @@
+{
+  "version": "planner-text-execution-v1",
+  "retroactively_applicable": false,
+  "description": "Offline end-to-end execution of semantic, format-constrained, and exact text contracts through artifact write and independent readback.",
+  "precision_contract": {
+    "version": "planner-exact-text-v1",
+    "sha256": "cf22a6adb91b03a03830c89c887a962e3d5835b7e7a2baa140e32eae15b8e8ec"
+  },
+  "cases": [
+    {
+      "id": "exact_unicode_multiline",
+      "category": "exact_text",
+      "goal": "创建 exact-unicode.txt，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "任务完成\ncafé\n"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact-unicode.txt",
+        "content": "任务完成\ncafé\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "succeeded",
+      "expected_error_code": null,
+      "expected_artifact_content": "任务完成\ncafé\n",
+      "expected_precision_result": "exact_match",
+      "expected_precision_gate": "passed",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "exact_whitespace_preserved",
+      "category": "exact_text",
+      "goal": "创建 exact-whitespace.txt，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "  leading and trailing  \n"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact-whitespace.txt",
+        "content": "  leading and trailing  \n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "succeeded",
+      "expected_error_code": null,
+      "expected_artifact_content": "  leading and trailing  \n",
+      "expected_precision_result": "exact_match",
+      "expected_precision_gate": "passed",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "exact_utf8_bom_preserved",
+      "category": "exact_text",
+      "goal": "创建 exact-bom.txt，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "\ufeffhello\n"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact-bom.txt",
+        "content": "\ufeffhello\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "succeeded",
+      "expected_error_code": null,
+      "expected_artifact_content": "\ufeffhello\n",
+      "expected_precision_result": "exact_match",
+      "expected_precision_gate": "passed",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "semantic_punctuation_preserved",
+      "category": "semantic",
+      "goal": "创建 semantic.txt，内容写一句任务已完成。",
+      "trusted_parameters": {},
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "semantic.txt",
+        "content": "任务已完成。\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "succeeded",
+      "expected_error_code": null,
+      "expected_artifact_content": "任务已完成。\n",
+      "expected_precision_result": "semantic",
+      "expected_precision_gate": "passed",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "format_json_object_executed",
+      "category": "format_constrained",
+      "goal": "创建 data.json，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "json_object"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "data.json",
+        "content": "{\"任务\":\"完成\",\"ok\":true}\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "succeeded",
+      "expected_error_code": null,
+      "expected_artifact_content": "{\"任务\":\"完成\",\"ok\":true}\n",
+      "expected_precision_result": "format_match",
+      "expected_precision_gate": "passed",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "format_markdown_executed",
+      "category": "format_constrained",
+      "goal": "创建 report.md，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "markdown"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "report.md",
+        "content": "# 报告\n\n正文\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "succeeded",
+      "expected_error_code": null,
+      "expected_artifact_content": "# 报告\n\n正文\n",
+      "expected_precision_result": "format_match",
+      "expected_precision_gate": "passed",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "exact_punctuation_mismatch_rejected",
+      "category": "exact_text",
+      "goal": "创建 exact-reject.txt，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "任务完成"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact-reject.txt",
+        "content": "任务完成。",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "planning_failed",
+      "expected_error_code": "text_precision_mismatch",
+      "expected_artifact_content": null,
+      "expected_precision_result": "exact_mismatch",
+      "expected_precision_gate": "blocked",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "exact_trailing_newline_mismatch_rejected",
+      "category": "exact_text",
+      "goal": "创建 exact-newline.txt，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": "line1\nline2"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "exact-newline.txt",
+        "content": "line1\nline2\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "planning_failed",
+      "expected_error_code": "text_precision_mismatch",
+      "expected_artifact_content": null,
+      "expected_precision_result": "exact_mismatch",
+      "expected_precision_gate": "blocked",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "format_json_mismatch_rejected",
+      "category": "format_constrained",
+      "goal": "创建 invalid-data.json，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "format_constrained",
+        "content_format": "json_object"
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "invalid-data.json",
+        "content": "not-json\n",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "planning_failed",
+      "expected_error_code": "text_format_mismatch",
+      "expected_artifact_content": null,
+      "expected_precision_result": "format_mismatch",
+      "expected_precision_gate": "blocked",
+      "expected_intent_status": "planned_faithful"
+    },
+    {
+      "id": "empty_write_content_precondition_rejected",
+      "category": "precondition",
+      "goal": "创建 empty.txt，内容按可信规范提供。",
+      "trusted_parameters": {
+        "precision_mode": "exact_text",
+        "expected_text": ""
+      },
+      "scripted_output": {
+        "classification": "plan",
+        "operation": "write_text_artifact",
+        "artifact_path": "empty.txt",
+        "content": "",
+        "missing_fields": [],
+        "clarification_questions": [],
+        "reason": null
+      },
+      "expected_task_status": "planning_failed",
+      "expected_error_code": "invalid_candidate_content",
+      "expected_artifact_content": null,
+      "expected_precision_result": null,
+      "expected_precision_gate": null,
+      "expected_intent_status": "lossy_plan"
+    }
+  ]
+}

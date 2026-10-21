@@ -217,6 +217,28 @@ class CapabilityRegistryTests(unittest.TestCase):
         )
         self.assertTrue(report["capabilities"]["planner_text_precision_gate"])
 
+    def test_text_precision_execution_is_registered_and_bounded(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "planner_text_precision_execution"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        self.assertIn("python_api", details["access"])
+        self.assertTrue(
+            any("readback" in item.lower() for item in details["requirements"])
+        )
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("scripted candidates", joined)
+        self.assertIn("temporary workspace", joined)
+        self.assertNotIn(
+            "planner_text_precision_execution",
+            SUPPORTED_TASK_OPERATIONS,
+        )
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"]["planner_text_precision_execution"]
+        )
+
     def test_live_evaluation_metric_contract_is_registered(self) -> None:
         details = CAPABILITY_REGISTRY["capabilities"][
             "live_evaluation_integration_contract"

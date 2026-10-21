@@ -236,6 +236,13 @@ Phase 3.89 新增 `planner_exact_text_v1.json`，把写文本明确分为 `seman
 Intent Fidelity、Schema、Policy、授权和执行前检查继续独立生效。Phase 3.88 的原始报告、
 分数和 SHA-256 保持不变，本阶段不重新解释历史分数，也不发起第五次 live run。
 
+Phase 3.90 将三种文本契约贯通到真实临时 workspace 的写入和独立回读。固定 10 案例矩阵中
+6 个 semantic/format/exact 计划实际创建 artifact，并由 `artifact-readback-v1` 重新读取
+UTF-8 bytes、校验大小、SHA-256、attempt 与 workspace effects；4 个 mismatch/precondition
+案例在 planning 阶段失败，不创建 plan、artifact 或工具事件。精确矩阵覆盖多行 Unicode、
+首尾空白、尾随换行和 UTF-8 BOM；写入后内容被篡改仍由独立 verifier 拒绝。候选不能通过
+自身字段声明 `expected_text`。本阶段只使用脚本 Planner 和临时目录，不发起 live run。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：
