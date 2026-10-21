@@ -150,10 +150,13 @@ PYTHONPATH=src python3 -m zevorinth eval-planner-quality --offline --json
 
 评测数据集位于 `src/zevorinth/evals/planner_cases.json`，覆盖正常计划、澄清、不支持、shell/代码请求、路径逃逸、覆盖、提示注入、超长输入、拒答、超时、连接失败和无效结构化输出。
 
-`planner_quality_v1.json` 提供 planner-only 的多难度、风险与类别基准，独立评分
-classification、operation、parameters、clarification fields、unsafe plan 和 capability
-registry compliance。离线 scripted 模式验证评测器和数据集契约，不代表真实模型质量；
-真实模型运行必须另行授权并使用独立预算报告。
+`planner_quality_v2.json` 提供 planner-only 的多难度、风险与类别基准，并输出独立的
+coverage audit、scoring independence audit，以及危险候选“提出 / 被识别 / 被接受”
+三个指标。离线 scripted 模式验证评测器和数据集契约，不代表真实模型质量。
+
+报告中的 `live_baseline_protocol` 是真实模型基线的授权清单，当前固定为
+`authorization_required`、`live_runner_implemented=false`、`live_requests_enabled=false`。
+它不提供在线执行入口；真实调用必须另行授权并用独立预算与输出路径记录。
 
 ## 在线评测
 

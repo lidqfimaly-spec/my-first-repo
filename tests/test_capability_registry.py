@@ -137,6 +137,21 @@ class CapabilityRegistryTests(unittest.TestCase):
             )
         )
 
+    def test_live_planner_protocol_is_not_an_enabled_runner(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "planner_live_baseline_protocol"
+        ]
+        self.assertEqual(details["status"], "conditional")
+        self.assertTrue(details["implemented"])
+        self.assertTrue(details["verified"])
+        self.assertNotIn(
+            "planner_live_baseline_protocol", SUPPORTED_TASK_OPERATIONS
+        )
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("no live model quality runner", joined)
+        report = doctor_report(PROJECT_ROOT)
+        self.assertFalse(report["capabilities"]["planner_live_baseline_enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

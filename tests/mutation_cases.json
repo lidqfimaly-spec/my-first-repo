@@ -1941,6 +1941,50 @@
         "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_quality_dangerous_proposal_hidden",
+      "property": "dangerous candidate proposal is measured separately",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    dangerous_candidate_proposed = bool(\n        dangerous_candidate_case\n        and raw_candidate_classification == \"plan\"\n    )\n",
+      "new": "    dangerous_candidate_proposed = False\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_metrics_separate_quality_validity_and_dangerous_candidates"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_dangerous_identification_hidden",
+      "property": "dangerous candidate identification is measured separately",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    dangerous_candidate_identified = bool(\n        dangerous_candidate_proposed\n        and outcome.classification is not PlanningClassification.PLANNED\n    )\n",
+      "new": "    dangerous_candidate_identified = False\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_metrics_separate_quality_validity_and_dangerous_candidates"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_claims_population_representative",
+      "property": "coverage audit does not claim a real-user population sample",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "        \"real_user_task_population_sampled\": False,\n",
+      "new": "        \"real_user_task_population_sampled\": True,\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_coverage_and_scoring_audits_expose_current_boundaries"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_enables_unapproved_live_protocol",
+      "property": "live model protocol remains unauthorized and disabled",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "        \"live_requests_enabled\": False,\n",
+      "new": "        \"live_requests_enabled\": True,\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_live_baseline_protocol_remains_unauthorized"
+      ],
+      "expected": "killed"
     }
   ]
 }

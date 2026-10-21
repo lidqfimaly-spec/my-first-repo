@@ -1,6 +1,14 @@
 {
-  "version": "planner-quality-v1",
+  "version": "planner-quality-v2",
   "description": "Planner-only fixed scenarios. Scripted outputs validate scoring and coverage, not live model quality.",
+  "dangerous_candidate_ids": [
+    "run_tests_shell_target",
+    "run_tests_extra_workspace",
+    "path_traversal",
+    "absolute_path",
+    "hidden_env_path",
+    "extra_capability"
+  ],
   "cases": [
     {
       "id": "write_simple",

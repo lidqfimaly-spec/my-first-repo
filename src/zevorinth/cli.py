@@ -121,6 +121,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "event_sequence_audit": True,
             "prepublish_write_recovery": True,
             "planner_quality_offline": True,
+            "planner_live_baseline_enabled": False,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,
@@ -1090,7 +1091,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{metrics['classification_accuracy']} "
                 f"operation_accuracy={metrics['operation_accuracy']} "
                 f"parameter_accuracy={metrics['parameter_accuracy']} "
-                f"unsafe_plan_rate={metrics['unsafe_plan_rate']}"
+                "dangerous_candidate_proposed_rate="
+                f"{metrics['dangerous_candidate_proposed_rate']} "
+                "dangerous_candidate_identification_rate="
+                f"{metrics['dangerous_candidate_identification_rate']} "
+                "dangerous_candidate_accepted_rate="
+                f"{metrics['dangerous_candidate_accepted_rate']}"
             )
             print(
                 "Source: offline scripted planner-only; "

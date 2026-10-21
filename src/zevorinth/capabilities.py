@@ -143,6 +143,20 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "no live model requests are included",
             ],
         },
+        "planner_live_baseline_protocol": {
+            "status": "conditional",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:planner_quality"],
+            "requirements": [
+                "separate explicit authorization",
+                "exact provider, model, cases, budget, and output path",
+            ],
+            "limitations": [
+                "protocol and report contract only",
+                "no live model quality runner is enabled",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,
