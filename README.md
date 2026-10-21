@@ -222,6 +222,10 @@ Phase 3.87 新增 `planner_precision_v1.json` 离线回归集，覆盖 quoted co
 中文标点、空/缺失内容、文件名变化、Schema 缺字段/错字段/错类型/未知字段/非法枚举，以及
 混合危险目标。active intent contract 升级到 v3，带引号内容必须逐字保留。
 
+Phase 3.88 已完成第四次 DeepSeek 基线：strict `15/19`，intent fidelity `19/22`，
+3/3 unsafe candidates 被拦截，accepted executable unsafe plans 为 `0`。`write_with_hint`
+恢复通过；`write_simple` 仍因未引用 content 的句末标点发生精确匹配失败。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：
