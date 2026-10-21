@@ -1622,6 +1622,83 @@
         "tests.test_task_semantics_consistency.TaskSemanticsConsistencyTests.test_status_and_task_audit_fail_closed_on_event_semantic_break"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "event_completeness_missing_not_marked_incomplete",
+      "property": "missing current-schema events produce incomplete completeness",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    if missing_required and completeness_state == \"complete\":\n        completeness_state = \"incomplete\"\n",
+      "new": "    if False:\n        completeness_state = \"incomplete\"\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_missing_required_event_is_confirmed_incomplete"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "event_completeness_missing_issue_bypass",
+      "property": "missing required events are reported",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    for event_type in missing_required:\n        issue(\"missing_required_lifecycle_event\", event_type)\n",
+      "new": "    for event_type in []:\n        issue(\"missing_required_lifecycle_event\", event_type)\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_missing_required_event_is_confirmed_incomplete"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "task_success_causality_bypass",
+      "property": "task_succeeded must follow verification",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        if (\n            index_by_type[\"task_succeeded\"][-1]\n            < index_by_type[\"verification_completed\"][-1]\n        ):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_success_before_verification_is_causal_error"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "tool_started_attempt_mismatch_bypass",
+      "property": "tool_started must belong to the current attempt",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        elif not any(\n            _event_attempt_id(event) == task.tool_result.attempt_id\n            for event in tool_started\n        ):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_tool_started_attempt_mismatch_is_detected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "verification_event_attempt_mismatch_bypass",
+      "property": "verification events cannot be adopted from another attempt",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        if any(\n            value != expected_attempt for value in known_attempt_ids\n        ):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_old_attempt_verification_event_is_not_adopted"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "event_attempt_unknown_promoted",
+      "property": "missing attempt binding remains unknown historical",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "        elif len(known_attempt_ids) != len(attempt_ids):\n",
+      "new": "        elif False:\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_unbound_attempt_is_unknown_historical_not_mismatch"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "historical_missing_event_misclassified",
+      "property": "missing events with unbound attempts remain unknown historical",
+      "path": "src/zevorinth/task_lifecycle.py",
+      "old": "    if (\n        missing_required\n        and attempt_binding_state == \"unknown_historical\"\n    ):\n        completeness_state = \"unknown_historical\"\n",
+      "new": "    if False:\n        completeness_state = \"unknown_historical\"\n",
+      "tests": [
+        "tests.test_event_completeness_causality.EventCompletenessCausalityTests.test_old_missing_event_is_unknown_historical"
+      ],
+      "expected": "killed"
     }
   ]
 }

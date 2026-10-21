@@ -26,6 +26,19 @@ def _parse_time(value: object) -> datetime | None:
     return parsed
 
 
+def _event_attempt_id(event: Event) -> str | None:
+    direct = event.payload.get("attempt_id")
+    if isinstance(direct, str) and direct:
+        return direct
+    for key in ("artifact", "test_evidence", "tool_result"):
+        nested = event.payload.get(key)
+        if isinstance(nested, Mapping):
+            value = nested.get("attempt_id")
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 def audit_storage_error(
     task_id: str,
     error: BaseException,
@@ -333,6 +346,126 @@ def audit_task_lifecycle(
                 task.task_id,
             )
 
+    required_events: list[str] = []
+    completeness_state = "not_assessed"
+    if task.status is TaskStatus.SUCCEEDED:
+        required_events = [
+            "task_created",
+            "planning_started",
+            "planning_completed",
+            "task_planned",
+            "tool_started",
+            (
+                "tool_succeeded"
+                if task.tool_result is not None
+                and task.tool_result.success
+                else "tool_failed"
+            ),
+            "verification_started",
+            "verification_completed",
+            "task_succeeded",
+        ]
+        if is_test:
+            required_events.insert(4, "execution_plan_finalized")
+        completeness_state = "complete"
+    elif task.status is TaskStatus.SIMULATED:
+        required_events = [
+            "task_created",
+            "planning_started",
+            "planning_completed",
+            "task_planned",
+            "tool_started",
+            "tool_succeeded",
+            "simulation_completed",
+        ]
+        completeness_state = "complete"
+    elif task.status is TaskStatus.FAILED:
+        required_events = ["task_created", "task_failed"]
+        completeness_state = "minimal_complete"
+    elif task.status is TaskStatus.CANCELLED:
+        required_events = ["task_created", "task_cancelled"]
+        completeness_state = "minimal_complete"
+    elif task.status is TaskStatus.QUEUED:
+        required_events = ["task_created"]
+        completeness_state = "open"
+    else:
+        completeness_state = "open"
+    missing_required = [
+        event_type
+        for event_type in required_events
+        if event_type not in event_types
+    ]
+    for event_type in missing_required:
+        issue("missing_required_lifecycle_event", event_type)
+    if missing_required and completeness_state == "complete":
+        completeness_state = "incomplete"
+
+    attempt_binding_state = "not_applicable"
+    if task.tool_result is not None:
+        tool_started = [
+            event
+            for event in event_list
+            if event.event_type == "tool_started"
+        ]
+        if not tool_started:
+            attempt_binding_state = "unknown_historical"
+            issue("event_attempt_binding_unknown", "tool_started")
+        elif not any(
+            _event_attempt_id(event) == task.tool_result.attempt_id
+            for event in tool_started
+        ):
+            attempt_binding_state = "mismatch"
+            issue("tool_started_attempt_mismatch", task.task_id)
+        else:
+            attempt_binding_state = "tool_verified"
+    verification_started = [
+        event
+        for event in event_list
+        if event.event_type == "verification_started"
+    ]
+    if verification_events:
+        attempt_ids = [
+            _event_attempt_id(event)
+            for event in [*verification_started, *verification_events]
+        ]
+        expected_attempt = (
+            task.tool_result.attempt_id
+            if task.tool_result is not None
+            else task.attempt_id
+        )
+        known_attempt_ids = [
+            value for value in attempt_ids if value is not None
+        ]
+        if any(
+            value != expected_attempt for value in known_attempt_ids
+        ):
+            attempt_binding_state = "mismatch"
+            issue("verification_event_attempt_mismatch", task.task_id)
+        elif len(known_attempt_ids) != len(attempt_ids):
+            if attempt_binding_state != "mismatch":
+                attempt_binding_state = "unknown_historical"
+            issue(
+                "event_attempt_binding_unknown",
+                "verification_events",
+            )
+        elif attempt_binding_state in {"not_applicable", "tool_verified"}:
+            attempt_binding_state = "verified"
+    if (
+        missing_required
+        and attempt_binding_state == "unknown_historical"
+    ):
+        completeness_state = "unknown_historical"
+    if (
+        task.status is TaskStatus.SUCCEEDED
+        and "task_succeeded" in event_types
+        and "verification_completed" in event_types
+    ):
+        if (
+            index_by_type["task_succeeded"][-1]
+            < index_by_type["verification_completed"][-1]
+        ):
+            issue("task_succeeded_before_verification", task.task_id)
+
     if is_test and snapshot is None:
         issue("missing_final_execution_plan", task.task_id)
     if snapshot is not None:
@@ -414,6 +547,12 @@ def audit_task_lifecycle(
         },
         "cleanup_operations": cleanup_states,
         "event_types": event_types,
+        "event_completeness": {
+            "state": completeness_state,
+            "required_event_types": required_events,
+            "missing_event_types": missing_required,
+            "causality": attempt_binding_state,
+        },
     }
     return with_assurance(
         report,

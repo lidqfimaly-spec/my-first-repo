@@ -1827,7 +1827,11 @@ class TaskService:
                 TaskStatus.VERIFYING,
                 EventType.VERIFICATION_STARTED,
                 self.clock(),
-                payload={"resume": True, "source": "persisted_tool_evidence"},
+                payload={
+                    "resume": True,
+                    "source": "persisted_tool_evidence",
+                    "attempt_id": task.attempt_id,
+                },
                 updates={"phase": "resumed_verification", "error": None},
                 lease_token=lease_token,
             )
@@ -2166,6 +2170,7 @@ class TaskService:
             payload={
                 "artifact": result.artifact.to_dict(),
                 "tool_result_trusted": False,
+                "attempt_id": task.attempt_id,
             },
             updates={"phase": "verification_started"},
             lease_token=lease_token,
@@ -2699,6 +2704,7 @@ class TaskService:
                 payload={
                     "resume": True,
                     "source": "persisted_test_evidence",
+                    "attempt_id": persisted.attempt_id,
                 },
                 updates={"phase": "resumed_test_verification", "error": None},
                 lease_token=lease_token,
@@ -2999,6 +3005,7 @@ class TaskService:
             payload={
                 "test_evidence": evidence.to_dict(),
                 "tool_result_trusted": False,
+                "attempt_id": evidence.attempt_id,
             },
             updates={"phase": "verification_started"},
             lease_token=lease_token,
@@ -3066,7 +3073,10 @@ class TaskService:
             task.task_id,
             EventType.VERIFICATION_COMPLETED,
             self.clock(),
-            payload={"verification": verification.to_dict()},
+            payload={
+                "verification": verification.to_dict(),
+                "attempt_id": task.attempt_id,
+            },
             updates={
                 "verification": verification,
                 "phase": (
@@ -3362,7 +3372,10 @@ class TaskService:
             task.task_id,
             EventType.VERIFICATION_COMPLETED,
             self.clock(),
-            payload={"verification": verification.to_dict()},
+            payload={
+                "verification": verification.to_dict(),
+                "attempt_id": task.attempt_id,
+            },
             updates={
                 "verification": verification,
                 "artifact": verification.artifact or task.artifact,

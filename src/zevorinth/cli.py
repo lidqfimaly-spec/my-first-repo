@@ -107,6 +107,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "llm_planner_available": bool(sdk_status["compatible"]),
             "controlled_recovery_audit": True,
             "task_lifecycle_audit": True,
+            "event_sequence_audit": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
         },
@@ -1050,6 +1051,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"Lifecycle audit: "
                     f"{'ok' if audit['ok'] else 'unverified'} "
                     f"assurance={audit['assurance_level']} "
+                    f"completeness="
+                    f"{audit['event_completeness']['state']} "
                     f"authenticity={audit['authenticity']} "
                     f"security_certification="
                     f"{audit['security_certification']}"
@@ -1077,6 +1080,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"Assurance: {report['assurance_level']} "
                     f"({report['assurance']['label']})"
+                )
+                event_completeness = report["event_completeness"]
+                print(
+                    f"Event completeness: "
+                    f"{event_completeness['state']} "
+                    f"causality={event_completeness['causality']}"
                 )
                 print(f"Authenticity: {report['authenticity']}")
                 print(f"Trust root: {report['trust_root']}")
