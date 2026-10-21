@@ -15,6 +15,7 @@ from typing import Any, Mapping, Protocol
 
 from .models import PlannerMode, PlanningClassification, PlanningOutcome, TaskRequest
 from .planning_validation import PlanningCandidateValidator
+from .planner_intent_fidelity import assess_intent_fidelity
 from .response_normalization import ModelCallResult, normalize_response_object
 
 
@@ -509,10 +510,15 @@ class LLMPlanner:
                 error_message="model returned no structured candidate",
                 metadata=call_metadata,
             )
-        return self.validator.validate(
+        outcome = self.validator.validate(
             result.candidate,
             base_request=request,
             metadata=call_metadata,
+        )
+        return _enforce_intent_fidelity(
+            request,
+            outcome,
+            raw_candidate=result.candidate,
         )
 
 
@@ -536,6 +542,122 @@ def _trusted_context_sha256(context: Mapping[str, Any]) -> str | None:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _enforce_intent_fidelity(
+    request: TaskRequest,
+    outcome: PlanningOutcome,
+    *,
+    raw_candidate: object,
+) -> PlanningOutcome:
+    base_metadata = {
+        **dict(outcome.metadata),
+        "intent_fidelity_enforced": True,
+    }
+    try:
+        assessment = assess_intent_fidelity(
+            request.goal or "",
+            outcome,
+            trusted_parameters=request.parameters,
+            raw_candidate=(
+                raw_candidate
+                if isinstance(raw_candidate, Mapping)
+                else None
+            ),
+        )
+    except Exception as exc:
+        return PlanningOutcome(
+            classification=PlanningClassification.FAILED,
+            error_code="intent_fidelity_check_error",
+            error_message=(
+                "intent fidelity check failed closed with "
+                f"{type(exc).__name__}"
+            ),
+            metadata={
+                **base_metadata,
+                "intent_fidelity_gate": "blocked",
+            },
+        )
+    if not _valid_intent_assessment(assessment, outcome):
+        return PlanningOutcome(
+            classification=PlanningClassification.FAILED,
+            error_code="intent_fidelity_check_error",
+            error_message="intent fidelity result was missing or inconsistent",
+            metadata={
+                **base_metadata,
+                "intent_fidelity_gate": "blocked",
+            },
+        )
+    gate_result = (
+        "passed"
+        if outcome.classification is PlanningClassification.PLANNED
+        else "terminal_non_execution"
+    )
+    enriched_metadata = {
+        **base_metadata,
+        "intent_fidelity_gate": gate_result,
+        "intent_fidelity": assessment,
+    }
+    if (
+        outcome.classification is PlanningClassification.PLANNED
+        and assessment["fidelity_pass"] is not True
+    ):
+        return PlanningOutcome(
+            classification=PlanningClassification.FAILED,
+            error_code="intent_fidelity_failed",
+            error_message=(
+                "planner candidate did not preserve the user goal; "
+                "executable plan was rejected"
+            ),
+            metadata={
+                **enriched_metadata,
+                "intent_fidelity_gate": "blocked",
+            },
+        )
+    outcome.metadata = enriched_metadata
+    return outcome
+
+
+def _valid_intent_assessment(
+    assessment: object,
+    outcome: PlanningOutcome,
+) -> bool:
+    if not isinstance(assessment, Mapping):
+        return False
+    if not isinstance(assessment.get("fidelity_pass"), bool):
+        return False
+    status = assessment.get("status")
+    if status not in {
+        "planned_faithful",
+        "lossy_plan",
+        "clarified",
+        "rejected",
+    }:
+        return False
+    if assessment.get("execution_attempted") is not False:
+        return False
+    proposal_classification = assessment.get("proposal_classification")
+    terminal_classification = assessment.get("terminal_classification")
+    if proposal_classification not in {
+        "planned",
+        "clarification",
+        "unsupported",
+        "failed",
+    }:
+        return False
+    if terminal_classification != outcome.classification.value:
+        return False
+    if (
+        status in {"planned_faithful", "lossy_plan"}
+        and proposal_classification != "planned"
+    ):
+        return False
+    if (
+        status in {"clarified", "rejected"}
+        and proposal_classification == "planned"
+    ):
+        return False
+    return True
 
 
 def _classify_api_error(exc: Exception) -> tuple[str, str]:

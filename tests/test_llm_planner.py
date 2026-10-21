@@ -113,7 +113,7 @@ class LLMPlannerTests(unittest.TestCase):
         task = service.submit(
             request
             or TaskRequest(
-                goal="Create a result file using natural language.",
+                goal="Create result.txt with content llm planned content.",
                 operation=None,
                 parameters={},
             )
@@ -669,7 +669,7 @@ class LLMPlannerTests(unittest.TestCase):
             root = Path(temp_dir)
             service = TaskService(root, planner=planner)
             request = TaskRequest(
-                goal="Create result.txt.",
+                goal="Create result.txt with content llm planned content.",
                 operation=None,
                 parameters={},
             )

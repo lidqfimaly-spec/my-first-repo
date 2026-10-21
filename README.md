@@ -206,6 +206,10 @@ applicability v1 下的基线，不能与 Phase 3.79 的旧契约 `12/25` 直接
 `planned_faithful`、`lossy_plan`、`clarified` 或 `rejected`。该检查独立于 applicability
 strict score，且不回溯修改 Phase 3.82 的 `14/19`。
 
+该检查已强制接入 `LLMPlanner.plan_request()`：可执行 lossy plan 会在返回前转为
+`intent_fidelity_failed`；checker 异常或结果不一致转为 `intent_fidelity_check_error`；
+下游拒绝/澄清仍保留在原状态，但 `planning_metadata` 会记录 Planner fidelity failure。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：

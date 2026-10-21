@@ -186,6 +186,20 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "not retroactively applicable to Phase 3.82 strict score",
             ],
         },
+        "planner_intent_fidelity_gate": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["llm_planner", "service:submit"],
+            "requirements": [
+                "valid intent fidelity assessment before planned output",
+                "fail-closed on checker error or inconsistent result",
+            ],
+            "limitations": [
+                "deterministic contract checks are not general natural-language entailment",
+                "gate prevents plan acceptance but does not authenticate goal provenance",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,

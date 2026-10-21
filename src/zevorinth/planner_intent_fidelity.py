@@ -13,7 +13,7 @@ from .planner import RUN_TESTS, WRITE_TEXT_ARTIFACT
 
 
 INTENT_FIDELITY_CONTRACT = (
-    Path(__file__).with_name("evals") / "planner_intent_fidelity_v1.json"
+    Path(__file__).with_name("evals") / "planner_intent_fidelity_v2.json"
 )
 
 
@@ -211,7 +211,7 @@ def _matches(text: str, patterns: list[str]) -> list[str]:
 
 def _goal_supplies_content(goal: str) -> bool:
     return bool(
-        re.search(r"内容|写|write", goal, re.IGNORECASE)
+        re.search(r"内容|写|write|content", goal, re.IGNORECASE)
         or re.search(r"[“\"][^”\"]+[”\"]", goal)
     )
 

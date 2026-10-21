@@ -2227,6 +2227,72 @@
         "tests.test_planner_intent_fidelity.IntentFidelityContractTests.test_raw_dangerous_plan_remains_unfaithful_when_downstream_blocks"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_intent_gate_planned_lossy_bypass",
+      "property": "lossy executable plans are blocked before plan acceptance",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "    if (\n        outcome.classification is PlanningClassification.PLANNED\n        and assessment[\"fidelity_pass\"] is not True\n    ):\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_lossy_executable_plan_is_replaced_with_failed_outcome"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_gate_checker_error_fails_open",
+      "property": "intent fidelity checker errors fail closed",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "    except Exception as exc:\n        return PlanningOutcome(\n",
+      "new": "    except Exception as exc:\n        return outcome\n        return PlanningOutcome(\n",
+      "tests": [
+        "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_checker_exception_fails_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_gate_inconsistent_execution_claim",
+      "property": "inconsistent intent assessments fail closed",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "    if assessment.get(\"execution_attempted\") is not False:\n        return False\n",
+      "new": "    if False:\n        return False\n",
+      "tests": [
+        "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_inconsistent_assessment_fails_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_gate_metadata_erased",
+      "property": "downstream-blocked Planner failures remain recorded",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "    outcome.metadata = enriched_metadata\n    return outcome\n",
+      "new": "    return outcome\n",
+      "tests": [
+        "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_downstream_block_keeps_planner_fidelity_failure_visible"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_gate_terminal_result_hidden",
+      "property": "non-executing terminal outcomes retain their gate classification",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "    gate_result = (\n        \"passed\"\n        if outcome.classification is PlanningClassification.PLANNED\n        else \"terminal_non_execution\"\n    )\n",
+      "new": "    gate_result = \"passed\"\n",
+      "tests": [
+        "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_downstream_block_keeps_planner_fidelity_failure_visible"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_intent_gate_lossy_result_hidden",
+      "property": "lossy executable plans record a blocked gate result",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "                **enriched_metadata,\n                \"intent_fidelity_gate\": \"blocked\",\n",
+      "new": "                **enriched_metadata,\n                \"intent_fidelity_gate\": \"passed\",\n",
+      "tests": [
+        "tests.test_planner_intent_enforcement.IntentFidelityEnforcementTests.test_lossy_executable_plan_is_replaced_with_failed_outcome"
+      ],
+      "expected": "killed"
     }
   ]
 }

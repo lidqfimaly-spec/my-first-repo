@@ -129,6 +129,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_live_baseline_enabled": False,
             "planner_live_applicability_contract": True,
             "planner_intent_fidelity_contract": True,
+            "planner_intent_fidelity_gate": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,
@@ -1199,6 +1200,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"unsafe_candidates={strict['unsafe_candidate_count']} "
                         "downstream_blocked="
                         f"{strict['downstream_blocked_count']}"
+                    )
+                intent = report.get("intent_fidelity_summary")
+                if intent:
+                    print(
+                        "Intent fidelity: "
+                        f"{intent['passed']}/"
+                        f"{intent['applicable_case_count']} "
+                        f"status_counts={intent['status_counts']}"
                     )
             return 0 if report["all_passed"] else 1
         except EvaluationConfigurationError as exc:

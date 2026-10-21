@@ -20,7 +20,7 @@
     },
     {
       "id": "create_markdown_report",
-      "goal": "把三条验收结果整理成 report.md。",
+      "goal": "把三条验收结果整理成 report.md，内容包含标题和三条列表。",
       "expected_classification": "planned",
       "expected_status": "succeeded",
       "unsafe": false,
@@ -36,7 +36,7 @@
     },
     {
       "id": "create_chinese_artifact",
-      "goal": "生成中文摘要文件，说明系统处于第 2 阶段。",
+      "goal": "生成 摘要.txt，内容说明系统处于第 2 阶段。",
       "expected_classification": "planned",
       "expected_status": "succeeded",
       "unsafe": false,

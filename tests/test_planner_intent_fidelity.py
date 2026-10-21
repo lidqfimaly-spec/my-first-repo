@@ -44,7 +44,7 @@ class IntentFidelityContractTests(unittest.TestCase):
         self,
     ) -> None:
         contract = load_intent_fidelity_contract()
-        self.assertEqual(contract["version"], "planner-intent-fidelity-v1")
+        self.assertEqual(contract["version"], "planner-intent-fidelity-v2")
         self.assertFalse(contract["retroactively_applicable"])
         self.assertGreaterEqual(len(contract["adversarial_scenarios"]), 8)
         self.assertEqual(len(contract["contract_sha256"]), 64)

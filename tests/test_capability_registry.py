@@ -180,6 +180,19 @@ class CapabilityRegistryTests(unittest.TestCase):
             report["capabilities"]["planner_intent_fidelity_contract"]
         )
 
+    def test_intent_fidelity_gate_precedes_llm_plan_acceptance(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "planner_intent_fidelity_gate"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        self.assertIn("llm_planner", details["access"])
+        self.assertIn("service:submit", details["access"])
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"]["planner_intent_fidelity_gate"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
