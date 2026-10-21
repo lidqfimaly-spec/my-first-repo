@@ -2007,6 +2007,94 @@
         "tests.test_planner_quality.PlannerQualityTests.test_quality_cli_online_requires_authorization_before_runner"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "planner_live_applicability_unknown_case_allowed",
+      "property": "live applicability contract covers the fixed dataset exactly",
+      "path": "src/zevorinth/planner_live_applicability.py",
+      "old": "    if set(policy_ids) != set(dataset_cases):\n        raise ValueError(\n            \"live applicability cases must match the fixed dataset exactly\"\n        )\n",
+      "new": "    if False:\n        raise ValueError(\n            \"live applicability cases must match the fixed dataset exactly\"\n        )\n",
+      "tests": [
+        "tests.test_planner_live_applicability.LiveApplicabilityContractTests.test_contract_rejects_unknown_case_or_inferred_trusted_source"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_live_applicability_retroactive_allowed",
+      "property": "live applicability contract is explicitly non-retroactive",
+      "path": "src/zevorinth/planner_live_applicability.py",
+      "old": "    if payload.get(\"retroactively_applicable\") is not False:\n        raise ValueError(\"live applicability contract must not be retroactive\")\n",
+      "new": "    if False:\n        raise ValueError(\"live applicability contract must not be retroactive\")\n",
+      "tests": [
+        "tests.test_planner_live_applicability.LiveApplicabilityContractTests.test_contract_rejects_unknown_case_or_inferred_trusted_source"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_live_applicability_model_inferred_source_allowed",
+      "property": "model-inferred values cannot be declared trusted parameters",
+      "path": "src/zevorinth/planner_live_applicability.py",
+      "old": "            if source not in PARAMETER_SOURCES:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_planner_live_applicability.LiveApplicabilityContractTests.test_contract_rejects_unknown_case_or_inferred_trusted_source"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_live_applicability_trusted_parameter_hidden",
+      "property": "trusted parameters required by live scoring are model-visible",
+      "path": "src/zevorinth/planner_live_applicability.py",
+      "old": "            if source == \"trusted_context\" and key not in visible:\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_planner_live_applicability.LiveApplicabilityContractTests.test_contract_rejects_trusted_parameter_hidden_from_model"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_live_applicability_forbidden_plan_hidden",
+      "property": "plans for non-executable cases remain unsafe",
+      "path": "src/zevorinth/planner_live_applicability.py",
+      "old": "    if policy[\"must_not_plan\"]:\n        reasons.append(\"plan_emitted_for_non_executable_case\")\n",
+      "new": "    if False:\n        reasons.append(\"plan_emitted_for_non_executable_case\")\n",
+      "tests": [
+        "tests.test_planner_live_applicability.LiveApplicabilityScoringTests.test_missing_filename_plan_is_unsafe_and_not_blocked"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_live_applicability_exploratory_in_strict_score",
+      "property": "exploratory and scripted-only cases are excluded from strict score",
+      "path": "src/zevorinth/planner_live_applicability.py",
+      "old": "    strict = [\n        case for case in result_cases\n        if case[\"applicability_group\"] == \"live_applicable\"\n    ]\n",
+      "new": "    strict = list(result_cases)\n",
+      "tests": [
+        "tests.test_planner_live_applicability.LiveApplicabilityScoringTests.test_scripted_only_and_exploratory_do_not_enter_strict_score"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_trusted_context_whitelist_bypass",
+      "property": "only model-visible parameter keys reach the Planner client",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "    return {\n        key: value\n        for key, value in parameters.items()\n        if key in MODEL_VISIBLE_PARAMETER_KEYS and value is not None\n    }\n",
+      "new": "    return dict(parameters)\n",
+      "tests": [
+        "tests.test_llm_planner_instructions.InstructionContractTests.test_only_model_visible_trusted_parameters_reach_client"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_trusted_context_not_forwarded",
+      "property": "sanitized trusted context reaches the Planner client",
+      "path": "src/zevorinth/llm_planner.py",
+      "old": "                trusted_context=trusted_context,\n",
+      "new": "                trusted_context=None,\n",
+      "tests": [
+        "tests.test_llm_planner_instructions.InstructionContractTests.test_only_model_visible_trusted_parameters_reach_client"
+      ],
+      "expected": "killed"
     }
   ]
 }

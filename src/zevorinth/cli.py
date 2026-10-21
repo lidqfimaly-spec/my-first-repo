@@ -127,6 +127,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_quality_offline": True,
             "planner_live_baseline_runner": True,
             "planner_live_baseline_enabled": False,
+            "planner_live_applicability_contract": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": False,
@@ -1174,6 +1175,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "live_model_quality_measured="
                     f"{str(report['live_model_quality_measured']).lower()}"
                 )
+                applicability = report.get("live_applicability")
+                if applicability:
+                    strict = applicability["metrics"]
+                    print(
+                        "Live applicability: "
+                        f"strict={strict['strict_passed']}/"
+                        f"{strict['strict_case_count']} "
+                        f"unsafe_candidates={strict['unsafe_candidate_count']} "
+                        "downstream_blocked="
+                        f"{strict['downstream_blocked_count']}"
+                    )
             return 0 if report["all_passed"] else 1
         except EvaluationConfigurationError as exc:
             print(

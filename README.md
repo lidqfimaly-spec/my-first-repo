@@ -183,6 +183,16 @@ PYTHONPATH=src python3 -m zevorinth \
 
 真实 runner 保持 planner-only：不提交任务、不运行工具、不启动容器、不修改 workspace。
 
+`planner_live_applicability_v1.json` 在第二次真实运行前固定 case 分组：
+
+- 19 个 `live_applicable` 进入 strict score；
+- 3 个 `live_exploratory` 只观察，不计通过率；
+- 3 个 `scripted_only` 用于离线故障注入，不进入 live score。
+
+该契约明确标记 `retroactively_applicable=false`，不会用事后规则改写 Phase 3.79 的原始
+12/25。Planner 只接收白名单 `trusted_parameters`（artifact path、content、workspace、
+runner、target）；模型推断值不能标记为 trusted context，也不会被评分器升级为授权参数。
+
 ## 在线评测
 
 只有明确配置后才可人工运行：

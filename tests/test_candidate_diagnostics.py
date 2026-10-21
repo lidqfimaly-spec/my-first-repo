@@ -255,8 +255,9 @@ class FakeCandidateClient:
         goal: str,
         instructions: str,
         max_output_tokens: int,
+        trusted_context: dict | None = None,
     ) -> ModelCallResult:
-        del goal, instructions, max_output_tokens
+        del goal, instructions, max_output_tokens, trusted_context
         self.calls += 1
         return ModelCallResult(
             candidate=self.candidate,

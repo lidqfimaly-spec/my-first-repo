@@ -46,8 +46,9 @@ class ScriptedPlannerClient:
         goal: str,
         instructions: str,
         max_output_tokens: int,
+        trusted_context: Mapping[str, Any] | None = None,
     ) -> ModelCallResult:
-        del goal, instructions, max_output_tokens
+        del goal, instructions, max_output_tokens, trusted_context
         self.calls += 1
         script = self.case.get("script")
         if script == "timeout":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import unittest
@@ -30,6 +31,8 @@ from zevorinth.response_normalization import ModelCallResult  # noqa: E402
 class RecordingClient:
     def __init__(self, candidate: dict | None = None) -> None:
         self.instructions: str | None = None
+        self.goal: str | None = None
+        self.trusted_context: dict | None = None
         self.candidate = candidate
 
     def create_candidate(
@@ -38,8 +41,11 @@ class RecordingClient:
         goal: str,
         instructions: str,
         max_output_tokens: int,
+        trusted_context: dict | None = None,
     ) -> ModelCallResult:
-        del goal, max_output_tokens
+        del max_output_tokens
+        self.goal = goal
+        self.trusted_context = trusted_context
         self.instructions = instructions
         return ModelCallResult(
             candidate=self.candidate,
@@ -106,6 +112,12 @@ class InstructionContractTests(unittest.TestCase):
         self.assertIn("create one text file", PLANNER_INSTRUCTIONS)
         self.assertIn("artifact_path", PLANNER_INSTRUCTIONS)
 
+    def test_trusted_context_is_data_and_missing_values_are_not_invented(
+        self,
+    ) -> None:
+        self.assertIn("trusted_parameters", PLANNER_INSTRUCTIONS)
+        self.assertIn("never invent", PLANNER_INSTRUCTIONS)
+
     def test_deepseek_planner_receives_the_same_instructions(self) -> None:
         client = RecordingClient(_candidate())
         planner = LLMPlanner(
@@ -125,8 +137,52 @@ class InstructionContractTests(unittest.TestCase):
             )
         )
         self.assertEqual(client.instructions, PLANNER_INSTRUCTIONS)
+        self.assertEqual(client.trusted_context, {"workspace": "demo"})
         self.assertEqual(outcome.classification.value, "planned")
         self.assertEqual(outcome.plan.steps[0].tool_name, "run_tests")
+
+    def test_only_model_visible_trusted_parameters_reach_client(self) -> None:
+        client = RecordingClient(
+            {
+                "classification": "clarification",
+                "missing_fields": ["test_target"],
+                "clarification_questions": ["Which target?"],
+            }
+        )
+        planner = LLMPlanner(
+            config=LLMPlannerConfig(
+                provider=LLMProvider.DEEPSEEK,
+                model="deepseek-flash",
+                api_key_present=True,
+                api_key_env="DEEPSEEK_API_KEY",
+            ),
+            client=client,
+        )
+        outcome = planner.plan_request(
+            TaskRequest(
+                goal="run tests in the configured workspace",
+                operation=None,
+                parameters={
+                    "workspace": "demo",
+                    "runner": "unittest",
+                    "evidence_id": "must-not-enter-model-input",
+                    "command": "rm -rf /",
+                    "image": "untrusted",
+                },
+            )
+        )
+        self.assertEqual(
+            client.trusted_context,
+            {"workspace": "demo", "runner": "unittest"},
+        )
+        self.assertEqual(
+            outcome.metadata["trusted_context_keys"],
+            ["runner", "workspace"],
+        )
+        self.assertNotIn(
+            "rm -rf",
+            json.dumps(client.trusted_context, ensure_ascii=False),
+        )
 
     def test_unsupported_stays_unsupported(self) -> None:
         client = RecordingClient(

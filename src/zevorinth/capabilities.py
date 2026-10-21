@@ -163,6 +163,17 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "the dataset still includes scripted-only controls and is not a clean live benchmark",
             ],
         },
+        "planner_live_applicability_contract": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["python_api", "report:planner_quality"],
+            "limitations": [
+                "applies only to reports generated under contract v1",
+                "19 strict cases, 3 exploratory cases, and 3 scripted-only cases",
+                "not retroactively applicable to the Phase 3.79 live result",
+            ],
+        },
         "recovery_audit": {
             "status": "available",
             "implemented": True,

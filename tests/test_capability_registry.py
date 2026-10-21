@@ -153,6 +153,18 @@ class CapabilityRegistryTests(unittest.TestCase):
         report = doctor_report(PROJECT_ROOT)
         self.assertTrue(report["capabilities"]["planner_live_baseline_runner"])
         self.assertFalse(report["capabilities"]["planner_live_baseline_enabled"])
+        self.assertTrue(
+            report["capabilities"]["planner_live_applicability_contract"]
+        )
+
+    def test_live_applicability_contract_is_not_retroactive(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "planner_live_applicability_contract"
+        ]
+        self.assertEqual(details["status"], "available")
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("19 strict cases", joined)
+        self.assertIn("not retroactively applicable", joined)
 
 
 if __name__ == "__main__":

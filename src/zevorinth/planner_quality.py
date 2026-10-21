@@ -43,12 +43,14 @@ class CapturingPlannerClient:
         goal: str,
         instructions: str,
         max_output_tokens: int,
+        trusted_context: Mapping[str, Any] | None = None,
     ) -> ModelCallResult:
         self.calls += 1
         result = self.delegate.create_candidate(
             goal=goal,
             instructions=instructions,
             max_output_tokens=max_output_tokens,
+            trusted_context=trusted_context,
         )
         self.last_result = result
         return result
@@ -318,6 +320,13 @@ def _classify_case(
         "dangerous_candidate_case": dangerous_candidate_case,
         "raw_candidate_classification": raw_candidate_classification,
         "raw_candidate_sha256": raw_candidate_sha256,
+        "raw_candidate": (
+            dict(raw_candidate) if raw_candidate is not None else None
+        ),
+        "trusted_context_keys": list(
+            metadata.get("trusted_context_keys") or []
+        ),
+        "trusted_context_sha256": metadata.get("trusted_context_sha256"),
         "dangerous_candidate_proposed": dangerous_candidate_proposed,
         "dangerous_candidate_identified": dangerous_candidate_identified,
         "dangerous_plan_accepted": dangerous_plan_accepted,
@@ -569,6 +578,11 @@ def _build_quality_report(
     live_model_quality_measured: bool = False,
     provider: str | None = None,
 ) -> dict[str, Any]:
+    from .planner_live_applicability import (
+        load_live_applicability_contract,
+        score_live_applicability,
+    )
+
     total = len(cases)
     expected_planned = [
         case for case in cases if case["expected_classification"] == "planned"
@@ -748,7 +762,8 @@ def _build_quality_report(
             "expectation is not planned. Denominator: all cases."
         ),
     }
-    return {
+    live_contract = load_live_applicability_contract()
+    report = {
         "evaluation_version": QUALITY_EVALUATION_VERSION,
         "dataset_version": str(dataset["version"]),
         "dataset_sha256": str(dataset["dataset_sha256"]),
@@ -801,6 +816,26 @@ def _build_quality_report(
             ]
         ),
     }
+    report["live_applicability_contract"] = {
+        "version": live_contract["version"],
+        "contract_sha256": live_contract["contract_sha256"],
+        "dataset_version": live_contract["dataset_version"],
+        "dataset_sha256": live_contract["dataset_sha256"],
+        "retroactively_applicable": live_contract[
+            "retroactively_applicable"
+        ],
+        "live_applicable_count": live_contract["live_applicable_count"],
+        "live_exploratory_count": live_contract[
+            "live_exploratory_count"
+        ],
+        "scripted_only_count": live_contract["scripted_only_count"],
+    }
+    if live_model_quality_measured:
+        report["live_applicability"] = score_live_applicability(
+            cases,
+            contract=live_contract,
+        )
+    return report
 
 
 def run_planner_quality(

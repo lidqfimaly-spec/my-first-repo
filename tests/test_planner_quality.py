@@ -254,6 +254,7 @@ class PlannerQualityTests(unittest.TestCase):
                 goal: str,
                 instructions: str,
                 max_output_tokens: int,
+                trusted_context: dict | None = None,
             ) -> ModelCallResult:
                 self.calls += 1
                 case = cases_by_goal[goal].pop(0)
@@ -261,6 +262,7 @@ class PlannerQualityTests(unittest.TestCase):
                     goal=goal,
                     instructions=instructions,
                     max_output_tokens=max_output_tokens,
+                    trusted_context=trusted_context,
                 )
 
         client = DatasetClient()
@@ -293,6 +295,27 @@ class PlannerQualityTests(unittest.TestCase):
         self.assertEqual(report["request_accounting"]["retries"], 0)
         self.assertEqual(report["metrics"]["real_api_calls"], 25)
         self.assertEqual(client.calls, 25)
+        self.assertEqual(
+            report["live_applicability"]["metrics"]["strict_case_count"],
+            19,
+        )
+        self.assertEqual(
+            report["live_applicability"]["group_counts"],
+            {
+                "live_applicable": 19,
+                "live_exploratory": 3,
+                "scripted_only": 3,
+            },
+        )
+        hinted = next(
+            case
+            for case in report["cases"]
+            if case["case_id"] == "write_with_hint"
+        )
+        self.assertEqual(
+            hinted["trusted_context_keys"],
+            ["artifact_path", "content"],
+        )
         self.assertTrue(
             all(
                 case["raw_candidate_sha256"] is not None

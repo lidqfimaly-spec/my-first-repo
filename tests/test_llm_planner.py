@@ -209,6 +209,7 @@ class LLMPlannerTests(unittest.TestCase):
                 goal="Create result.txt",
                 instructions="bounded instructions",
                 max_output_tokens=321,
+                trusted_context={"workspace": "demo"},
             )
 
         self.assertEqual(captured["client"]["max_retries"], 0)
@@ -220,6 +221,12 @@ class LLMPlannerTests(unittest.TestCase):
         self.assertFalse(request["store"])
         self.assertNotIn("tools", request)
         self.assertEqual(request["timeout"], 7)
+        model_input = json.loads(request["input"])
+        self.assertEqual(model_input["user_goal"], "Create result.txt")
+        self.assertEqual(
+            model_input["trusted_parameters"],
+            {"workspace": "demo"},
+        )
         self.assertTrue(request["text"]["format"]["strict"])
         self.assertEqual(result.total_tokens, 20)
         self.assertEqual(result.candidate["artifact_path"], "result.txt")
