@@ -43,7 +43,11 @@ from .llm_planner import LLMPlanner, LLMPlannerConfig, openai_sdk_status
 from .models import PlannerMode, Task, TaskRequest, TaskStatus
 from .planner import WRITE_TEXT_ARTIFACT
 from .planner import DeterministicPlanner
-from .planner_quality import run_planner_quality
+from .planner_quality import (
+    planner_quality_online_preflight,
+    run_live_planner_quality,
+    run_planner_quality,
+)
 from .service import TaskService
 from .safety_gate import (
     SafetyGateConfigurationError,
@@ -121,6 +125,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "event_sequence_audit": True,
             "prepublish_write_recovery": True,
             "planner_quality_offline": True,
+            "planner_live_baseline_runner": True,
             "planner_live_baseline_enabled": False,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
@@ -516,12 +521,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     planner_quality = subparsers.add_parser(
         "eval-planner-quality",
-        help="run the offline planner-only multi-scenario quality contract",
+        help="run the planner-only quality contract offline or by explicit live authorization",
+    )
+    quality_mode = planner_quality.add_mutually_exclusive_group(required=True)
+    quality_mode.add_argument("--offline", action="store_true")
+    quality_mode.add_argument("--online", action="store_true")
+    planner_quality.add_argument(
+        "--preflight",
+        action="store_true",
+        help="validate the fixed live-run contract without creating a client",
     )
     planner_quality.add_argument(
-        "--offline",
+        "--authorize-live",
         action="store_true",
-        required=True,
+        help="explicitly authorize one bounded planner-only model run",
     )
     planner_quality.add_argument("--output", type=Path, default=None)
     planner_quality.add_argument("--json", action="store_true")
@@ -1049,60 +1062,125 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return 0 if report["all_passed"] else 1
     if args.command == "eval-planner-quality":
-        if args.output is not None and args.output.exists():
+        try:
+            if args.offline and (args.preflight or args.authorize_live):
+                raise EvaluationConfigurationError(
+                    "offline planner quality does not accept live options"
+                )
+            if args.preflight and not args.online:
+                raise EvaluationConfigurationError(
+                    "--preflight requires --online"
+                )
+            if args.preflight and args.authorize_live:
+                raise EvaluationConfigurationError(
+                    "--preflight does not accept --authorize-live"
+                )
+            if args.online and args.output is None:
+                raise EvaluationConfigurationError(
+                    "online planner quality requires an explicit --output path"
+                )
+            if args.online and args.preflight:
+                report = planner_quality_online_preflight(args.output)
+                if args.json:
+                    print(
+                        json.dumps(
+                            report,
+                            ensure_ascii=False,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    configuration = report["configuration"]
+                    boundaries = report["request_boundaries"]
+                    print(
+                        "Planner quality preflight: "
+                        f"{'READY' if report['ready_for_authorization'] else 'NOT READY'}"
+                    )
+                    print(
+                        f"model={configuration.get('model') or 'not configured'} "
+                        "max_requests="
+                        f"{boundaries['maximum_requests']} "
+                        f"retries={boundaries['retries']} "
+                        f"timeout_seconds={boundaries['timeout_seconds_per_case']} "
+                        f"max_output_tokens={boundaries['max_output_tokens_per_case']}"
+                    )
+                    print(
+                        "Network request sent: no; task/tool/container execution: no"
+                    )
+                return (
+                    0 if report["ready_for_authorization"] else 7
+                )
+            if args.online and not args.authorize_live:
+                raise EvaluationConfigurationError(
+                    "online planner quality requires --authorize-live"
+                )
+            if args.output is not None and args.output.exists():
+                print(
+                    "planner quality evaluation refuses to overwrite "
+                    f"an existing report: {args.output}",
+                    file=sys.stderr,
+                )
+                return 7
+            report = (
+                run_live_planner_quality(authorized=True)
+                if args.online
+                else run_planner_quality()
+            )
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                report["report_path"] = str(args.output.resolve())
+                args.output.write_text(
+                    json.dumps(
+                        report,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            if args.json:
+                print(
+                    json.dumps(
+                        report,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                metrics = report["metrics"]
+                print(
+                    "Planner quality: "
+                    f"{'PASS' if report['all_passed'] else 'FAIL'} "
+                    f"({report['passed']}/{report['case_count']})"
+                )
+                print(
+                    f"classification_accuracy="
+                    f"{metrics['classification_accuracy']} "
+                    f"operation_accuracy={metrics['operation_accuracy']} "
+                    f"parameter_accuracy={metrics['parameter_accuracy']} "
+                    "dangerous_candidate_proposed_rate="
+                    f"{metrics['dangerous_candidate_proposed_rate']} "
+                    "dangerous_candidate_identification_rate="
+                    f"{metrics['dangerous_candidate_identification_rate']} "
+                    "dangerous_candidate_accepted_rate="
+                    f"{metrics['dangerous_candidate_accepted_rate']}"
+                )
+                print(
+                    f"Source: {report['mode']} "
+                    f"model={report.get('model') or 'none'} "
+                    "live_model_quality_measured="
+                    f"{str(report['live_model_quality_measured']).lower()}"
+                )
+            return 0 if report["all_passed"] else 1
+        except EvaluationConfigurationError as exc:
             print(
-                "planner quality evaluation refuses to overwrite "
-                f"an existing report: {args.output}",
+                f"planner quality configuration error: {exc}",
                 file=sys.stderr,
             )
             return 7
-        report = run_planner_quality()
-        if args.output is not None:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            report["report_path"] = str(args.output.resolve())
-            args.output.write_text(
-                json.dumps(
-                    report,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-        if args.json:
-            print(
-                json.dumps(
-                    report,
-                    ensure_ascii=False,
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-        else:
-            metrics = report["metrics"]
-            print(
-                "Planner quality: "
-                f"{'PASS' if report['all_passed'] else 'FAIL'} "
-                f"({report['passed']}/{report['case_count']})"
-            )
-            print(
-                f"classification_accuracy="
-                f"{metrics['classification_accuracy']} "
-                f"operation_accuracy={metrics['operation_accuracy']} "
-                f"parameter_accuracy={metrics['parameter_accuracy']} "
-                "dangerous_candidate_proposed_rate="
-                f"{metrics['dangerous_candidate_proposed_rate']} "
-                "dangerous_candidate_identification_rate="
-                f"{metrics['dangerous_candidate_identification_rate']} "
-                "dangerous_candidate_accepted_rate="
-                f"{metrics['dangerous_candidate_accepted_rate']}"
-            )
-            print(
-                "Source: offline scripted planner-only; "
-                "live_model_quality_measured=false"
-            )
-        return 0 if report["all_passed"] else 1
 
     try:
         service = _service(args)

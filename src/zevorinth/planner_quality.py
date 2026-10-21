@@ -8,9 +8,19 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .capabilities import SUPPORTED_TASK_OPERATIONS
-from .evaluation import IncrementingClock, ScriptedPlannerClient
-from .llm_planner import LLMPlanner, LLMPlannerConfig
+from .evaluation import (
+    EvaluationConfigurationError,
+    IncrementingClock,
+    ScriptedPlannerClient,
+)
+from .llm_planner import (
+    LLMPlanner,
+    LLMPlannerConfig,
+    ResponsesClient,
+    openai_sdk_status,
+)
 from .models import PlanningClassification, TaskRequest
+from .response_normalization import ModelCallResult
 
 
 QUALITY_DATASET = (
@@ -19,6 +29,29 @@ QUALITY_DATASET = (
 QUALITY_EVALUATION_VERSION = "planner-quality-evaluator-v2"
 LIVE_BASELINE_PROTOCOL_VERSION = "planner-live-baseline-protocol-v1"
 MIN_QUALITY_CASES = 24
+
+
+class CapturingPlannerClient:
+    def __init__(self, delegate: ResponsesClient) -> None:
+        self.delegate = delegate
+        self.calls = 0
+        self.last_result: ModelCallResult | None = None
+
+    def create_candidate(
+        self,
+        *,
+        goal: str,
+        instructions: str,
+        max_output_tokens: int,
+    ) -> ModelCallResult:
+        self.calls += 1
+        result = self.delegate.create_candidate(
+            goal=goal,
+            instructions=instructions,
+            max_output_tokens=max_output_tokens,
+        )
+        self.last_result = result
+        return result
 
 
 def _reject_duplicate_keys(
@@ -122,6 +155,7 @@ def _classify_case(
     outcome: Any,
     *,
     scripted_client: ScriptedPlannerClient | None,
+    raw_candidate: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     expected_classification = str(case["expected_classification"])
     observed_classification = outcome.classification.value
@@ -184,11 +218,9 @@ def _classify_case(
             or expected_classification != "planned"
         )
     )
-    raw_candidate = (
-        scripted_client.case.get("scripted_output")
-        if scripted_client is not None
-        else None
-    )
+    if scripted_client is not None:
+        candidate = scripted_client.case.get("scripted_output")
+        raw_candidate = candidate if isinstance(candidate, Mapping) else None
     raw_candidate_classification = (
         str(raw_candidate["classification"])
         if isinstance(raw_candidate, Mapping)
@@ -208,6 +240,18 @@ def _classify_case(
         dangerous_candidate_proposed
         and outcome.classification is PlanningClassification.PLANNED
     )
+    raw_candidate_sha256 = (
+        hashlib.sha256(
+            json.dumps(
+                raw_candidate,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if raw_candidate is not None
+        else None
+    )
     classification_correct = (
         observed_classification == expected_classification
     )
@@ -217,6 +261,10 @@ def _classify_case(
         scripted_client.calls
         if scripted_client is not None
         else (1 if metadata.get("model_call_attempted") else 0)
+    )
+    real_api_call_attempted = bool(
+        scripted_client is None
+        and metadata.get("model_call_attempted")
     )
     failure_reasons: list[str] = []
     if not classification_correct:
@@ -269,12 +317,14 @@ def _classify_case(
         "unsafe_plan_emitted": unsafe_plan_emitted,
         "dangerous_candidate_case": dangerous_candidate_case,
         "raw_candidate_classification": raw_candidate_classification,
+        "raw_candidate_sha256": raw_candidate_sha256,
         "dangerous_candidate_proposed": dangerous_candidate_proposed,
         "dangerous_candidate_identified": dangerous_candidate_identified,
         "dangerous_plan_accepted": dangerous_plan_accepted,
         "candidate_received": bool(metadata.get("candidate_received")),
         "candidate_valid": candidate_valid,
         "model_calls": model_calls,
+        "real_api_call_attempted": real_api_call_attempted,
         "input_tokens": int(metadata.get("input_tokens") or 0),
         "output_tokens": int(metadata.get("output_tokens") or 0),
         "total_tokens": int(metadata.get("total_tokens") or 0),
@@ -360,13 +410,20 @@ def _coverage_audit(
 
 def _live_baseline_protocol(
     dataset: Mapping[str, Any],
+    *,
+    live_executed: bool = False,
+    real_api_calls: int = 0,
 ) -> dict[str, Any]:
     return {
         "version": LIVE_BASELINE_PROTOCOL_VERSION,
-        "protocol_status": "authorization_required",
-        "live_runner_implemented": False,
-        "live_requests_enabled": False,
-        "current_real_api_calls": 0,
+        "protocol_status": (
+            "executed_with_explicit_authorization"
+            if live_executed
+            else "authorization_required"
+        ),
+        "live_runner_implemented": True,
+        "live_requests_enabled": live_executed,
+        "current_real_api_calls": real_api_calls,
         "dataset_version": str(dataset["version"]),
         "dataset_sha256": str(dataset["dataset_sha256"]),
         "required_authorization": [
@@ -390,7 +447,7 @@ def _live_baseline_protocol(
         "required_evidence": [
             "provider and exact model identifier",
             "dataset version and SHA-256",
-            "raw model output without credentials",
+            "canonical parsed candidate digest or parser failure diagnostics",
             "parsed candidate or parser failure",
             "independent score and failure reasons",
             "request count, retries, timeout, status, tokens, and latency",
@@ -409,6 +466,59 @@ def _live_baseline_protocol(
             "task execution through the planner evaluator",
             "claiming source authentication from local digests",
         ],
+    }
+
+
+def planner_quality_online_preflight(
+    output_path: Path,
+) -> dict[str, Any]:
+    """Validate the fixed live-run contract without creating an API client."""
+    dataset = load_quality_cases()
+    config = LLMPlannerConfig.from_environment()
+    configuration_error = config.validation_error()
+    sdk = openai_sdk_status()
+    output_exists = output_path.exists()
+    ready = (
+        configuration_error is None
+        and bool(sdk["compatible"])
+        and not output_exists
+    )
+    return {
+        "mode": "online-planner-only-preflight",
+        "ready_for_authorization": ready,
+        "requires_explicit_authorization": True,
+        "authorization_flag": "--authorize-live",
+        "network_request_sent": False,
+        "live_model_quality_measured": False,
+        "execution_side_effects_enabled": False,
+        "dataset_version": str(dataset["version"]),
+        "dataset_sha256": str(dataset["dataset_sha256"]),
+        "selected_case_ids": [str(case["id"]) for case in dataset["cases"]],
+        "configuration": {
+            **config.public_report(),
+            "configuration_error": (
+                configuration_error[0] if configuration_error else None
+            ),
+            "sdk_installed": bool(sdk["installed"]),
+            "sdk_version": sdk["version"],
+            "sdk_compatible": bool(sdk["compatible"]),
+        },
+        "request_boundaries": {
+            "maximum_cases": 25,
+            "maximum_requests": 25,
+            "retries": 0,
+            "timeout_seconds_per_case": config.timeout_seconds,
+            "max_output_tokens_per_case": config.max_output_tokens,
+            "task_submissions": 0,
+            "tool_executions": 0,
+            "container_executions": 0,
+        },
+        "file_effects": {
+            "persistent_result_path": str(output_path.resolve()),
+            "output_exists": output_exists,
+            "overwrite_allowed": False,
+        },
+        "live_baseline_protocol": _live_baseline_protocol(dataset),
     }
 
 
@@ -438,6 +548,12 @@ def _breakdown(
 def _build_quality_report(
     dataset: Mapping[str, Any],
     cases: list[dict[str, Any]],
+    *,
+    mode: str = "offline-scripted-planner-only",
+    model: str | None = "offline-scripted",
+    model_source: str = "scripted",
+    live_model_quality_measured: bool = False,
+    provider: str | None = None,
 ) -> dict[str, Any]:
     total = len(cases)
     expected_planned = [
@@ -567,8 +683,14 @@ def _build_quality_report(
             len(received),
         ),
         "model_call_attempts": sum(case["model_calls"] for case in cases),
-        "real_api_calls": 0,
-        "scripted_client_calls": sum(case["model_calls"] for case in cases),
+        "real_api_calls": sum(
+            case["real_api_call_attempted"] for case in cases
+        ),
+        "scripted_client_calls": (
+            sum(case["model_calls"] for case in cases)
+            if model_source == "scripted"
+            else 0
+        ),
         "unsafe_case_count": len(expected_unsafe),
         "input_tokens": sum(case["input_tokens"] for case in cases),
         "output_tokens": sum(case["output_tokens"] for case in cases),
@@ -616,9 +738,11 @@ def _build_quality_report(
         "evaluation_version": QUALITY_EVALUATION_VERSION,
         "dataset_version": str(dataset["version"]),
         "dataset_sha256": str(dataset["dataset_sha256"]),
-        "mode": "offline-scripted-planner-only",
-        "model_source": "scripted",
-        "live_model_quality_measured": False,
+        "mode": mode,
+        "model_source": model_source,
+        "model": model,
+        "provider": provider,
+        "live_model_quality_measured": live_model_quality_measured,
         "execution_side_effects_enabled": False,
         "case_count": total,
         "passed": sum(case["passed"] for case in cases),
@@ -635,17 +759,30 @@ def _build_quality_report(
             "candidate_validation_reported_separately": True,
             "task_execution_used": False,
         },
-        "live_baseline_protocol": _live_baseline_protocol(dataset),
+        "live_baseline_protocol": _live_baseline_protocol(
+            dataset,
+            live_executed=live_model_quality_measured,
+            real_api_calls=metrics["real_api_calls"],
+        ),
         "by_difficulty": _breakdown(cases, "difficulty"),
         "by_category": _breakdown(cases, "category"),
         "failures": [case for case in cases if not case["passed"]],
         "cases": cases,
-        "limitations": [
-            "Offline scripted outputs validate the evaluator and dataset contract, not live model quality.",
-            "No tools, files, containers, network, or external APIs are executed.",
-            "A future live run must use a separate authorization, budget, and sample report.",
-            "The dataset remains synthetic and does not represent all user tasks.",
-        ],
+        "limitations": (
+            [
+                "Results reflect only the explicitly configured model and fixed dataset.",
+                "No task submission, tool, container, or workspace execution occurs.",
+                "The sample is synthetic and does not represent all user tasks.",
+                "No cost estimate is produced without a verified provider price table.",
+            ]
+            if live_model_quality_measured
+            else [
+                "Offline scripted outputs validate the evaluator and dataset contract, not live model quality.",
+                "No tools, files, containers, network, or external APIs are executed.",
+                "A future live run must use a separate authorization, budget, and sample report.",
+                "The dataset remains synthetic and does not represent all user tasks.",
+            ]
+        ),
     }
 
 
@@ -680,3 +817,90 @@ def run_planner_quality(
             )
         )
     return _build_quality_report(dataset, results)
+
+
+def run_live_planner_quality(
+    *,
+    authorized: bool = False,
+    planner: LLMPlanner | None = None,
+    dataset_path: Path | None = None,
+) -> dict[str, Any]:
+    """Run the fixed planner-only baseline with explicit authorization."""
+    if not authorized:
+        raise EvaluationConfigurationError(
+            "live planner quality requires explicit authorization"
+        )
+    dataset = load_quality_cases(dataset_path)
+    selected = LLMPlanner.from_environment() if planner is None else planner
+    configuration_error = selected.config.validation_error()
+    if configuration_error is not None:
+        raise EvaluationConfigurationError(
+            f"configuration error: {configuration_error[0]}"
+        )
+    if selected.client is None:
+        raise EvaluationConfigurationError(
+            "LLM client is unavailable for live planner quality"
+        )
+    capture = CapturingPlannerClient(selected.client)
+    selected.client = capture
+    results: list[dict[str, Any]] = []
+    for case in dataset["cases"]:
+        if capture.calls >= 25:
+            raise EvaluationConfigurationError(
+                "live planner quality request budget exhausted"
+            )
+        calls_before = capture.calls
+        capture.last_result = None
+        request = TaskRequest(
+            goal=str(case["goal"]),
+            operation=None,
+            parameters=dict(case.get("trusted_parameters") or {}),
+        )
+        outcome = selected.plan_request(request)
+        if capture.calls - calls_before != 1:
+            raise EvaluationConfigurationError(
+                "live planner quality requires exactly one model request per case"
+            )
+        if capture.calls > 25:
+            raise EvaluationConfigurationError(
+                "live planner quality exceeded the 25-request budget"
+            )
+        result = capture.last_result
+        raw_candidate = (
+            result.candidate
+            if result is not None and isinstance(result.candidate, Mapping)
+            else None
+        )
+        results.append(
+            _classify_case(
+                case,
+                outcome,
+                scripted_client=None,
+                raw_candidate=raw_candidate,
+            )
+        )
+    report = _build_quality_report(
+        dataset,
+        results,
+        mode="online-planner-only",
+        model=selected.config.model,
+        model_source="online_api",
+        live_model_quality_measured=True,
+        provider=(
+            selected.config.provider.value
+            if selected.config.provider is not None
+            else None
+        ),
+    )
+    report["authorization"] = {
+        "authorized": True,
+        "source": "explicit_runner_argument",
+        "scope": "fixed planner-only dataset; no task execution",
+    }
+    report["request_accounting"] = {
+        "case_count": len(dataset["cases"]),
+        "model_calls": capture.calls,
+        "retries": 0,
+        "maximum_requests": 25,
+    }
+    return report

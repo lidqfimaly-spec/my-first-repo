@@ -155,8 +155,33 @@ coverage audit、scoring independence audit，以及危险候选“提出 / 被�
 三个指标。离线 scripted 模式验证评测器和数据集契约，不代表真实模型质量。
 
 报告中的 `live_baseline_protocol` 是真实模型基线的授权清单，当前固定为
-`authorization_required`、`live_runner_implemented=false`、`live_requests_enabled=false`。
-它不提供在线执行入口；真实调用必须另行授权并用独立预算与输出路径记录。
+`authorization_required`、`live_runner_implemented=true`、`live_requests_enabled=false`。
+runner 默认拒绝运行；未来真实调用必须使用新的、未存在的输出路径，并通过
+`--authorize-live` 显式授权。
+
+Planner-quality 在线预检不创建 API client，也不发送请求：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  eval-planner-quality \
+  --online \
+  --preflight \
+  --output artifacts/evaluations/phase-3.79-quality-live.json \
+  --json
+```
+
+真实运行只在该路径、预算和模型范围另行批准后启用：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  eval-planner-quality \
+  --online \
+  --authorize-live \
+  --output artifacts/evaluations/phase-3.79-quality-live.json \
+  --json
+```
+
+真实 runner 保持 planner-only：不提交任务、不运行工具、不启动容器、不修改 workspace。
 
 ## 在线评测
 

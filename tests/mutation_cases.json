@@ -1913,7 +1913,7 @@
       "id": "planner_quality_claims_live_model_quality",
       "property": "offline scripted baseline never claims live model quality",
       "path": "src/zevorinth/planner_quality.py",
-      "old": "        \"live_model_quality_measured\": False,\n",
+      "old": "        \"live_model_quality_measured\": live_model_quality_measured,\n",
       "new": "        \"live_model_quality_measured\": True,\n",
       "tests": [
         "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
@@ -1924,7 +1924,7 @@
       "id": "planner_quality_claims_side_effects",
       "property": "planner-only evaluation executes no task side effects",
       "path": "src/zevorinth/planner_quality.py",
-      "old": "        \"execution_side_effects_enabled\": False,\n",
+      "old": "        \"provider\": provider,\n        \"live_model_quality_measured\": live_model_quality_measured,\n        \"execution_side_effects_enabled\": False,\n",
       "new": "        \"execution_side_effects_enabled\": True,\n",
       "tests": [
         "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
@@ -1935,7 +1935,7 @@
       "id": "planner_quality_reports_real_api_calls",
       "property": "offline scripted evaluation reports zero real API calls",
       "path": "src/zevorinth/planner_quality.py",
-      "old": "        \"real_api_calls\": 0,\n",
+      "old": "        \"real_api_calls\": sum(\n            case[\"real_api_call_attempted\"] for case in cases\n        ),\n",
       "new": "        \"real_api_calls\": 1,\n",
       "tests": [
         "tests.test_planner_quality.PlannerQualityTests.test_offline_quality_report_is_planner_only_and_repeatable"
@@ -1979,10 +1979,32 @@
       "id": "planner_quality_enables_unapproved_live_protocol",
       "property": "live model protocol remains unauthorized and disabled",
       "path": "src/zevorinth/planner_quality.py",
-      "old": "        \"live_requests_enabled\": False,\n",
+      "old": "        \"live_requests_enabled\": live_executed,\n",
       "new": "        \"live_requests_enabled\": True,\n",
       "tests": [
-        "tests.test_planner_quality.PlannerQualityTests.test_live_baseline_protocol_remains_unauthorized"
+        "tests.test_planner_quality.PlannerQualityTests.test_offline_protocol_keeps_live_requests_disabled"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_live_runner_authorization_bypass",
+      "property": "live planner quality defaults to explicit authorization",
+      "path": "src/zevorinth/planner_quality.py",
+      "old": "    if not authorized:\n        raise EvaluationConfigurationError(\n            \"live planner quality requires explicit authorization\"\n        )\n",
+      "new": "    if False:\n        raise EvaluationConfigurationError(\n            \"live planner quality requires explicit authorization\"\n        )\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_live_runner_requires_explicit_authorization"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "planner_quality_cli_live_authorization_bypass",
+      "property": "online planner quality CLI requires explicit live authorization",
+      "path": "src/zevorinth/cli.py",
+      "old": "            if args.online and not args.authorize_live:\n                raise EvaluationConfigurationError(\n                    \"online planner quality requires --authorize-live\"\n                )\n",
+      "new": "            if False:\n                raise EvaluationConfigurationError(\n                    \"online planner quality requires --authorize-live\"\n                )\n",
+      "tests": [
+        "tests.test_planner_quality.PlannerQualityTests.test_quality_cli_online_requires_authorization_before_runner"
       ],
       "expected": "killed"
     }

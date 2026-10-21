@@ -16,6 +16,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from zevorinth.cli import main  # noqa: E402
+from zevorinth.evaluation import (  # noqa: E402
+    EvaluationConfigurationError,
+    ScriptedPlannerClient,
+)
+from zevorinth.llm_planner import LLMPlanner, LLMPlannerConfig  # noqa: E402
 from zevorinth.models import (  # noqa: E402
     PlanningClassification,
     PlanningOutcome,
@@ -27,8 +32,11 @@ from zevorinth.planner_quality import (  # noqa: E402
     LIVE_BASELINE_PROTOCOL_VERSION,
     _classify_case,
     load_quality_cases,
+    planner_quality_online_preflight,
+    run_live_planner_quality,
     run_planner_quality,
 )
+from zevorinth.response_normalization import ModelCallResult  # noqa: E402
 
 
 class PlannerQualityTests(unittest.TestCase):
@@ -175,18 +183,208 @@ class PlannerQualityTests(unittest.TestCase):
         )
         self.assertFalse(audit["task_execution_used"])
 
-    def test_live_baseline_protocol_remains_unauthorized(self) -> None:
+    def test_offline_protocol_keeps_live_requests_disabled(self) -> None:
         report = run_planner_quality()
         protocol = report["live_baseline_protocol"]
         self.assertEqual(protocol["version"], LIVE_BASELINE_PROTOCOL_VERSION)
         self.assertEqual(protocol["protocol_status"], "authorization_required")
-        self.assertFalse(protocol["live_runner_implemented"])
+        self.assertTrue(protocol["live_runner_implemented"])
         self.assertFalse(protocol["live_requests_enabled"])
         self.assertEqual(protocol["current_real_api_calls"], 0)
         self.assertEqual(protocol["hard_limits"]["maximum_requests"], 25)
         self.assertEqual(protocol["hard_limits"]["retries"], 0)
         self.assertEqual(protocol["hard_limits"]["task_submissions"], 0)
         self.assertEqual(protocol["hard_limits"]["tool_executions"], 0)
+
+    def test_online_preflight_is_read_only_and_creates_no_client(self) -> None:
+        config = LLMPlannerConfig(
+            model="preflight-model",
+            api_key_present=True,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "zevorinth.planner_quality.LLMPlannerConfig.from_environment",
+            return_value=config,
+        ), patch(
+            "zevorinth.planner_quality.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "3.35.1",
+                "minimum_version": "3.35.1",
+                "compatible": True,
+                "module_path": "/fake/openai/__init__.py",
+            },
+        ), patch(
+            "zevorinth.planner_quality.LLMPlanner.from_environment",
+            side_effect=AssertionError("preflight must not create a client"),
+        ):
+            output_path = Path(temp_dir) / "live.json"
+            report = planner_quality_online_preflight(output_path)
+
+        self.assertTrue(report["ready_for_authorization"])
+        self.assertFalse(report["network_request_sent"])
+        self.assertFalse(report["execution_side_effects_enabled"])
+        self.assertEqual(len(report["selected_case_ids"]), 25)
+        self.assertEqual(report["request_boundaries"]["maximum_requests"], 25)
+        self.assertEqual(report["request_boundaries"]["retries"], 0)
+        self.assertFalse(output_path.exists())
+
+    def test_live_runner_requires_explicit_authorization(self) -> None:
+        with self.assertRaisesRegex(
+            EvaluationConfigurationError,
+            "explicit authorization",
+        ):
+            run_live_planner_quality()
+
+    def test_live_runner_uses_one_fake_request_per_case_without_tasks(
+        self,
+    ) -> None:
+        dataset = load_quality_cases()
+        cases_by_goal: dict[str, list[dict]] = {}
+        for case in dataset["cases"]:
+            cases_by_goal.setdefault(str(case["goal"]), []).append(case)
+
+        class DatasetClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def create_candidate(
+                self,
+                *,
+                goal: str,
+                instructions: str,
+                max_output_tokens: int,
+            ) -> ModelCallResult:
+                self.calls += 1
+                case = cases_by_goal[goal].pop(0)
+                return ScriptedPlannerClient(case).create_candidate(
+                    goal=goal,
+                    instructions=instructions,
+                    max_output_tokens=max_output_tokens,
+                )
+
+        client = DatasetClient()
+        planner = LLMPlanner(
+            config=LLMPlannerConfig(
+                model="fake-online-model",
+                api_key_present=True,
+            ),
+            client=client,
+        )
+        with patch(
+            "zevorinth.evaluation.TaskService.submit",
+            side_effect=AssertionError("live quality must not submit tasks"),
+        ):
+            report = run_live_planner_quality(
+                authorized=True,
+                planner=planner,
+            )
+
+        self.assertEqual(report["mode"], "online-planner-only")
+        self.assertTrue(report["live_model_quality_measured"])
+        self.assertFalse(report["execution_side_effects_enabled"])
+        self.assertTrue(report["all_passed"], report["failures"])
+        self.assertEqual(report["request_accounting"]["model_calls"], 25)
+        self.assertEqual(report["request_accounting"]["retries"], 0)
+        self.assertEqual(report["metrics"]["real_api_calls"], 25)
+        self.assertEqual(client.calls, 25)
+        self.assertTrue(
+            all(
+                case["raw_candidate_sha256"] is not None
+                for case in report["cases"]
+                if case["candidate_received"]
+            )
+        )
+
+    def test_quality_cli_online_requires_authorization_before_runner(
+        self,
+    ) -> None:
+        stderr = StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "zevorinth.cli.run_live_planner_quality",
+            side_effect=AssertionError("runner must not start"),
+        ), redirect_stderr(stderr):
+            exit_code = main(
+                [
+                    "eval-planner-quality",
+                    "--online",
+                    "--output",
+                    str(Path(temp_dir) / "live.json"),
+                ]
+            )
+
+        self.assertEqual(exit_code, 7)
+        self.assertIn("--authorize-live", stderr.getvalue())
+
+    def test_quality_cli_preflight_starts_no_runner(self) -> None:
+        config = LLMPlannerConfig(
+            model="preflight-cli-model",
+            api_key_present=True,
+        )
+        output = StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "zevorinth.planner_quality.LLMPlannerConfig.from_environment",
+            return_value=config,
+        ), patch(
+            "zevorinth.planner_quality.openai_sdk_status",
+            return_value={
+                "installed": True,
+                "version": "3.35.1",
+                "minimum_version": "3.35.1",
+                "compatible": True,
+                "module_path": "/fake/openai/__init__.py",
+            },
+        ), patch(
+            "zevorinth.cli.run_live_planner_quality",
+            side_effect=AssertionError("preflight must not run the model"),
+        ), redirect_stdout(output):
+            exit_code = main(
+                [
+                    "eval-planner-quality",
+                    "--online",
+                    "--preflight",
+                    "--output",
+                    str(Path(temp_dir) / "live.json"),
+                    "--json",
+                ]
+            )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(report["ready_for_authorization"])
+        self.assertFalse(report["network_request_sent"])
+
+    def test_authorized_online_cli_writes_result_path(self) -> None:
+        fake_report = {
+            "mode": "online-planner-only",
+            "model": "fake-model",
+            "live_model_quality_measured": True,
+            "all_passed": True,
+            "passed": 25,
+            "case_count": 25,
+            "metrics": {},
+            "failures": [],
+        }
+        output = StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "zevorinth.cli.run_live_planner_quality",
+            return_value=fake_report,
+        ) as runner, redirect_stdout(output):
+            output_path = Path(temp_dir) / "live.json"
+            exit_code = main(
+                [
+                    "eval-planner-quality",
+                    "--online",
+                    "--authorize-live",
+                    "--output",
+                    str(output_path),
+                    "--json",
+                ]
+            )
+            persisted = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        runner.assert_called_once_with(authorized=True)
+        self.assertEqual(persisted["report_path"], str(output_path.resolve()))
 
     def test_independent_scorer_rejects_wrong_classification_and_parameters(
         self,

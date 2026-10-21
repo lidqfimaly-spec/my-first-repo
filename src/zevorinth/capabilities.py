@@ -147,14 +147,19 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             "status": "conditional",
             "implemented": True,
             "verified": True,
-            "access": ["python_api", "report:planner_quality"],
+            "access": [
+                "cli:eval-planner-quality",
+                "python_api",
+                "report:planner_quality",
+            ],
             "requirements": [
                 "separate explicit authorization",
                 "exact provider, model, cases, budget, and output path",
+                "explicit --authorize-live confirmation",
             ],
             "limitations": [
-                "protocol and report contract only",
-                "no live model quality runner is enabled",
+                "default-deny live planning runner",
+                "verified with injected clients; no provider run completed",
             ],
         },
         "recovery_audit": {

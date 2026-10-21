@@ -148,8 +148,9 @@ class CapabilityRegistryTests(unittest.TestCase):
             "planner_live_baseline_protocol", SUPPORTED_TASK_OPERATIONS
         )
         joined = " ".join(details["limitations"]).lower()
-        self.assertIn("no live model quality runner", joined)
+        self.assertIn("default-deny live planning runner", joined)
         report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(report["capabilities"]["planner_live_baseline_runner"])
         self.assertFalse(report["capabilities"]["planner_live_baseline_enabled"])
 
 
