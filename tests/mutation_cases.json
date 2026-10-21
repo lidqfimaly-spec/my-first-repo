@@ -2542,6 +2542,103 @@
         "tests.test_planner_text_execution.PlannerTextExecutionTests.test_post_write_content_tamper_fails_independent_verification"
       ],
       "expected": "killed"
+    },
+    {
+      "id": "workbench_read_only_connection_writable",
+      "property": "the workbench database connection is query-only",
+      "patches": [
+        {
+          "path": "src/zevorinth/workbench.py",
+          "old": "                f\"file:{self.database_path}?mode=ro\",\n",
+          "new": "                f\"file:{self.database_path}?mode=rw\",\n"
+        },
+        {
+          "path": "src/zevorinth/workbench.py",
+          "old": "            connection.execute(\"PRAGMA query_only = ON\")\n",
+          "new": "            pass\n"
+        }
+      ],
+      "tests": [
+        "tests.test_workbench.WorkbenchProjectionTests.test_repository_connection_rejects_writes"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_non_loopback_host_accepted",
+      "property": "the workbench rejects non-loopback Host headers",
+      "path": "src/zevorinth/workbench_server.py",
+      "old": "            if host_name not in LOOPBACK_HOSTS:\n                raise WorkbenchError(\n                    \"invalid_host\",\n                    \"workbench requests must use a loopback Host header\",\n                    status=421,\n                )\n",
+      "new": "            if False:\n                raise WorkbenchError(\n                    \"invalid_host\",\n                    \"workbench requests must use a loopback Host header\",\n                    status=421,\n                )\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_head_supported_and_non_loopback_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_post_mutation_accepted",
+      "property": "the workbench HTTP surface is read-only",
+      "path": "src/zevorinth/workbench_server.py",
+      "old": "    def do_POST(self) -> None:\n        self._method_not_allowed()\n",
+      "new": "    def do_POST(self) -> None:\n        self._handle(send_body=True)\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_mutation_methods_and_unknown_routes_are_rejected"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_artifact_query_path_accepted",
+      "property": "artifact routes reject query-driven path input",
+      "path": "src/zevorinth/workbench_server.py",
+      "old": "                _reject_unknown_query(\n                    parse_qs(parsed.query, strict_parsing=False),\n                    set(),\n                )\n",
+      "new": "                pass\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_registered_artifact_preview_is_bounded_to_task_evidence"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_sensitive_event_key_exposed",
+      "property": "workbench event summaries omit sensitive keys",
+      "path": "src/zevorinth/workbench.py",
+      "old": "        if _SENSITIVE_KEY.search(str(key)):\n            continue\n",
+      "new": "        if False:\n            continue\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_task_discovery_detail_and_attention_are_read_only"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_sensitive_event_value_not_redacted",
+      "property": "workbench event summaries redact bearer values",
+      "path": "src/zevorinth/workbench.py",
+      "old": "    redacted = value\n    for pattern in _SECRET_PATTERNS:\n        redacted = pattern.sub(\"[redacted]\", redacted)\n    return redacted\n",
+      "new": "    redacted = value\n    return redacted\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_task_discovery_detail_and_attention_are_read_only"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_artifact_drift_hidden",
+      "property": "artifact drift is visible without changing the file",
+      "path": "src/zevorinth/workbench.py",
+      "old": "            \"state\": \"current\" if matches else \"modified_since_registration\",\n",
+      "new": "            \"state\": \"current\",\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_artifact_change_is_reported_without_restoring_it"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "workbench_stale_approval_hidden",
+      "property": "workbench identifies stale recovery approvals",
+      "path": "src/zevorinth/workbench.py",
+      "old": "                if approval.status == \"approved\" and (\n                    current_digest != approval.state_digest\n                ):\n",
+      "new": "                if False:\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchHTTPTests.test_task_discovery_detail_and_attention_are_read_only"
+      ],
+      "expected": "killed"
     }
   ]
 }

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Zevorinth Workbench</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#task-detail">Skip to task detail</a>
+  <header class="app-header">
+    <div class="brand-block">
+      <span class="eyebrow">ZEVORINTH / LOCAL</span>
+      <h1>Evidence workbench</h1>
+    </div>
+    <div class="header-actions">
+      <span class="readonly-badge" title="All workbench requests are read-only">
+        Read-only
+      </span>
+      <button id="refresh-button" class="button button-quiet" type="button">
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="overview" aria-labelledby="overview-heading">
+      <div>
+        <p class="eyebrow">Current state</p>
+        <h2 id="overview-heading">Tasks under supervision</h2>
+        <p class="overview-copy">
+          Every status, event and verification fact below is read from the
+          persisted runtime. The browser does not infer success.
+        </p>
+      </div>
+      <dl class="metric-grid" aria-label="Task overview metrics">
+        <div class="metric">
+          <dt>All tasks</dt>
+          <dd id="metric-all">—</dd>
+        </div>
+        <div class="metric metric-attention">
+          <dt>Needs attention</dt>
+          <dd id="metric-attention">—</dd>
+        </div>
+        <div class="metric">
+          <dt>In progress</dt>
+          <dd id="metric-progress">—</dd>
+        </div>
+        <div class="metric metric-verified">
+          <dt>Succeeded</dt>
+          <dd id="metric-verified">—</dd>
+        </div>
+      </dl>
+    </section>
+
+    <div id="global-message" class="global-message" role="status" aria-live="polite"></div>
+
+    <div class="workspace-layout">
+      <aside class="task-pane" aria-labelledby="task-list-heading">
+        <div class="pane-heading">
+          <div>
+            <p class="eyebrow">Index</p>
+            <h2 id="task-list-heading">Tasks</h2>
+          </div>
+          <span id="task-count-label" class="count-label"></span>
+        </div>
+
+        <div class="filter-bar" aria-label="Task filters">
+          <div class="segmented" role="group" aria-label="Task scope">
+            <button id="show-all" class="segment is-active" type="button" aria-pressed="true">
+              All
+            </button>
+            <button id="show-attention" class="segment" type="button" aria-pressed="false">
+              Needs attention
+            </button>
+          </div>
+          <label class="select-label" for="status-filter">
+            Status
+            <select id="status-filter">
+              <option value="">Any status</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="awaiting_clarification">Awaiting clarification</option>
+              <option value="blocked">Blocked</option>
+              <option value="verifying">Verifying</option>
+              <option value="succeeded">Succeeded</option>
+              <option value="failed">Failed</option>
+              <option value="planning_failed">Planning failed</option>
+              <option value="interrupted">Interrupted</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="simulated">Simulated</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="task-list" class="task-list" aria-live="polite"></div>
+        <button id="load-more" class="button button-secondary load-more" type="button" hidden>
+          Load more
+        </button>
+      </aside>
+
+      <section id="task-detail" class="detail-pane" tabindex="-1" aria-label="Task detail">
+        <section class="empty-detail" aria-labelledby="empty-detail-heading">
+          <p class="eyebrow">Task detail</p>
+          <h2 id="empty-detail-heading">Select a task</h2>
+          <p>
+            Open any task to inspect its current phase, event timeline,
+            independent verification and read-only recovery preview.
+          </p>
+          <div id="attention-inbox" class="attention-inbox" aria-live="polite"></div>
+        </section>
+      </section>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <p>
+      Local workbench v1. No submit, retry, cancel, recovery or delete action is
+      available here. Authentication and online model quality are not measured.
+    </p>
+  </footer>
+
+  <noscript>
+    <p class="noscript">
+      This workbench requires JavaScript to render persisted task data. No task
+      was changed by loading this page.
+    </p>
+  </noscript>
+</body>
+</html>

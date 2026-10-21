@@ -53,6 +53,7 @@ from .safety_gate import (
     SafetyGateConfigurationError,
     run_safety_gate,
 )
+from .workbench_server import serve_workbench
 
 
 STATUS_EXIT_CODES = {
@@ -133,11 +134,13 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_text_precision_contract": True,
             "planner_text_precision_gate": True,
             "planner_text_precision_execution": True,
+            "local_read_only_workbench": True,
             "live_evaluation_integration_contract": True,
             "planner_precision_regression": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
-            "web_ui": False,
+            "web_ui": True,
+            "interactive_web_ui": False,
             "general_shell": False,
             "automatic_recovery": False,
             "automatic_cleanup": False,
@@ -547,6 +550,12 @@ def build_parser() -> argparse.ArgumentParser:
     planner_quality.add_argument("--output", type=Path, default=None)
     planner_quality.add_argument("--json", action="store_true")
 
+    workbench = subparsers.add_parser(
+        "workbench",
+        help="serve the loopback-only read-only local workbench",
+    )
+    workbench.add_argument("--port", type=int, default=8765)
+
     run = subparsers.add_parser(
         "run",
         help="submit and execute one structured artifact task",
@@ -717,6 +726,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         else:
             _print_human(report)
+        return 0
+    if args.command == "workbench":
+        try:
+            serve_workbench(
+                _project_root(args.home),
+                port=args.port,
+            )
+        except ValueError as exc:
+            print(f"workbench configuration error: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(
+                f"workbench server error: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 6
+        except KeyboardInterrupt:
+            return 0
         return 0
     if args.command == "recovery-audit":
         report = audit_controlled_recovery(

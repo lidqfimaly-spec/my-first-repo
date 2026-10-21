@@ -239,6 +239,28 @@ class CapabilityRegistryTests(unittest.TestCase):
             report["capabilities"]["planner_text_precision_execution"]
         )
 
+    def test_read_only_workbench_is_registered_without_execution_controls(
+        self,
+    ) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "local_read_only_workbench"
+        ]
+        self.assertEqual(details["status"], "available")
+        self.assertTrue(details["verified"])
+        self.assertIn("cli:workbench", details["access"])
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn("no task submission", joined)
+        self.assertIn("no remote hosting", joined)
+        report = doctor_report(PROJECT_ROOT)
+        self.assertTrue(
+            report["capabilities"]["local_read_only_workbench"]
+        )
+        self.assertTrue(report["capabilities"]["web_ui"])
+        self.assertFalse(report["capabilities"]["interactive_web_ui"])
+        web = CAPABILITY_REGISTRY["capabilities"]["web_ui"]
+        self.assertEqual(web["status"], "conditional")
+        self.assertIn("read-only operator surface", web["limitations"][0])
+
     def test_live_evaluation_metric_contract_is_registered(self) -> None:
         details = CAPABILITY_REGISTRY["capabilities"][
             "live_evaluation_integration_contract"

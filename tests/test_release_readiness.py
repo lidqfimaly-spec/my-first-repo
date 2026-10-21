@@ -129,7 +129,7 @@ class ReleaseReadinessTests(unittest.TestCase):
             tomllib.loads(
                 (PROJECT_ROOT / "pyproject.toml").read_text()
             )["tool"]["setuptools"]["package-data"]["zevorinth"],
-            ["evals/*.json"],
+            ["evals/*.json", "workbench_static/*"],
         )
 
 

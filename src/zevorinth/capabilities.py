@@ -21,7 +21,7 @@ CAPABILITY_STATUSES = frozenset(
 
 CAPABILITY_REGISTRY: dict[str, Any] = {
     "version": CAPABILITY_REGISTRY_VERSION,
-    "product_stage": "3.90",
+    "product_stage": "3.91",
     "deployment_scope": "single_host_local_alpha",
     "task_operations": {
         WRITE_TEXT_ARTIFACT: {
@@ -251,6 +251,23 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "does not provide L2 or L3 provenance authentication",
             ],
         },
+        "local_read_only_workbench": {
+            "status": "available",
+            "implemented": True,
+            "verified": True,
+            "access": ["cli:workbench", "loopback_http_read_only"],
+            "requirements": [
+                "loopback-only bind",
+                "existing read-only task database",
+                "registered artifact evidence for previews",
+            ],
+            "limitations": [
+                "task list and detail are read-only",
+                "no task submission, retry, cancellation, recovery or deletion",
+                "no remote hosting or multi-user authentication",
+                "event payload display is bounded and redacted",
+            ],
+        },
         "live_evaluation_integration_contract": {
             "status": "available",
             "implemented": True,
@@ -344,9 +361,18 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
             "verified": False,
         },
         "web_ui": {
-            "status": "not_implemented",
-            "implemented": False,
-            "verified": False,
+            "status": "conditional",
+            "implemented": True,
+            "verified": True,
+            "requirements": [
+                "local process and browser access",
+                "loopback-only workbench server",
+            ],
+            "limitations": [
+                "read-only operator surface only",
+                "no remote, multi-user or authentication support",
+                "no execution controls",
+            ],
         },
         "multi_host_execution": {
             "status": "not_implemented",

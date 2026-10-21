@@ -24,4 +24,4 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-zevorinth = ["evals/*.json"]
+zevorinth = ["evals/*.json", "workbench_static/*"]

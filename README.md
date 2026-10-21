@@ -1,6 +1,8 @@
 # Zevorinth（衍序）
 
-Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前系统级基线为 Phase 3.75：单机、本地、受控执行切片 Alpha。系统提供确定性 Planner、可选受限 LLM Planner、严格本地校验、持久化任务生命周期、独立验证、恢复/清理治理和 L0/L1 审计。
+Zevorinth 是一个以**可验证执行**为核心的 AI Agent 系统。当前系统级基线为 Phase 3.91：
+单机、本地、受控执行切片 Alpha。系统提供确定性 Planner、可选受限 LLM Planner、严格
+本地校验、持久化任务生命周期、独立验证、恢复/清理治理、L0/L1 审计和只读本地工作台。
 
 当前只有两个受控任务操作：
 
@@ -25,6 +27,8 @@ LLM 只负责规划。认领、状态转换、Policy、工具执行、独立验�
 - `task-audit`、`recovery-audit` 和机器可读 capability registry。
 - `recover-prepublish`：仅针对已验证的 `publish_lock_timeout` 创建一次确定性 replacement task。
 - `real`、`simulated`、`not_executed` 三态区分。
+- loopback-only 只读本地工作台：任务发现、状态/事件详情、Attention Inbox、受控
+  artifact preview 和只读 recovery preview。
 - 离线 Planner 评测集、统计报告和确定性基线对照。
 - 手动启用的在线 Planner 评测入口。
 
@@ -347,6 +351,23 @@ PYTHONPATH=src python3 -m zevorinth \
 
 相同 `client-message-id` 和相同内容返回原消息与 turn；相同 ID 但内容不同会明确报冲突。`process` 返回结构化 outcome 和待回答的问题 ID；自然语言的补充/修改不会直接覆盖已有计划，需要结构化更新或确认。
 
+## 只读本地工作台
+
+工作台只投影现有 SQLite、事件、验证和 recovery preview，不保存第二套任务状态，也不提供
+提交、重试、取消、恢复或删除操作：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  workbench --port 8765
+```
+
+然后打开 `http://127.0.0.1:8765/`。服务只允许绑定和访问 loopback Host，SQLite 以
+`mode=ro` 打开。任务列表和恢复预演不会改变任务；artifact preview 不接受任意路径，
+只读取任务已登记的 artifact evidence，并同时显示 registered/current SHA-256。页面加载
+或工作台进程退出不影响执行内核、任务持久化或审计记录。事件 payload 只展示有界、
+脱敏后的摘要；工作台没有多用户认证，不应暴露到非本机网络。
+
 ## 模拟与未执行
 
 ```bash
@@ -376,8 +397,8 @@ PYTHONPATH=src python3 -m zevorinth --home "$DEMO_ROOT" run \
 
 ## 当前限制
 
-- 只有一种操作和一种真实工具。
-- 只支持单次规划，不支持多轮会话记忆或复杂任务分解。
+- 只有 `write_text_artifact` 和被条件约束的 `run_tests` 两种操作。
+- 每个任务只进行一次 Planner 调用；持久会话支持澄清，但尚无复杂任务分解。
 - 在线模型行为仍需用户显式评测，离线结果不能替代。
 - 不执行 shell、网络、动态代码、删除或任意路径写入。
 - 无多 Agent、自我修改或无限自主循环。
