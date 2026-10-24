@@ -19,8 +19,10 @@
   --shadow: 0 12px 30px rgb(43 48 44 / 8%);
   --radius-sm: 2px;
   --radius-md: 6px;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang SC",
+    "Microsoft YaHei", monospace;
 }
 
 * {
@@ -131,6 +133,12 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
+.readonly-badge.control-mode {
+  border-color: var(--info);
+  color: var(--info);
+  background: var(--info-soft);
+}
+
 .button {
   min-height: 40px;
   border: 1px solid var(--border-strong);
@@ -139,6 +147,7 @@ a:focus-visible {
   color: var(--ink);
   cursor: pointer;
   padding: 8px 14px;
+  white-space: nowrap;
 }
 
 .button:hover {
@@ -158,6 +167,30 @@ a:focus-visible {
 .button-secondary {
   width: 100%;
   margin-top: 10px;
+}
+
+.button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.button-primary:hover:not(:disabled) {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.button-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--surface);
+}
+
+.button-danger:hover:not(:disabled) {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
 }
 
 .mobile-back {
@@ -323,7 +356,8 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
-.select-label select {
+.select-label select,
+.select-label input {
   min-height: 36px;
   max-width: 160px;
   border: 1px solid var(--border-strong);
@@ -365,6 +399,7 @@ a:focus-visible {
 
 .task-row-top {
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .task-goal {
@@ -374,6 +409,7 @@ a:focus-visible {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   font-weight: 620;
+  overflow-wrap: anywhere;
 }
 
 .task-meta,
@@ -467,10 +503,12 @@ a:focus-visible {
 
 .detail-heading {
   align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .detail-heading h2 {
   max-width: 78ch;
+  overflow-wrap: anywhere;
 }
 
 .detail-id {
@@ -521,6 +559,11 @@ a:focus-visible {
   background: var(--attention-soft);
 }
 
+.callout p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .callout-danger {
   border-color: var(--danger);
   background: var(--danger-soft);
@@ -545,6 +588,7 @@ a:focus-visible {
 .panel-copy {
   margin: 6px 0 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .evidence-grid {
@@ -593,6 +637,41 @@ a:focus-visible {
 .evidence-list span:last-child {
   overflow-wrap: anywhere;
   font-family: var(--mono);
+}
+
+.plan-summary {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.plan-summary h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.plan-steps {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.plan-steps li {
+  margin-bottom: 10px;
+}
+
+.plan-steps p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.status-guidance .next-step {
+  border-left: 2px solid var(--accent);
+  margin: 12px 0 0;
+  padding-left: 10px;
+  color: var(--accent);
+  font-weight: 620;
 }
 
 .preview-frame {
@@ -652,6 +731,7 @@ a:focus-visible {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .action-detail strong {
@@ -689,6 +769,146 @@ a:focus-visible {
   margin: 4px 0 0;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+.audit-boundary {
+  margin: 12px 0 0;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.control-panel {
+  border-left: 3px solid var(--accent);
+  padding-left: 15px;
+}
+
+.control-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.control-form h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.create-panel {
+  margin-bottom: 18px;
+  border-left: 3px solid var(--accent);
+}
+
+.create-form {
+  margin-top: 8px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.form-grid .form-field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.create-preview {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.create-preview strong {
+  color: var(--ink);
+}
+
+.create-preview p {
+  margin: 0;
+}
+
+.create-preview pre {
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.form-field {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.form-field input,
+.form-field textarea,
+.form-field select {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 9px 10px;
+  font: inherit;
+}
+
+.form-field textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.field-hint,
+.control-immutable {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.control-immutable {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.confirm-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.confirm-row input {
+  margin-top: 3px;
+}
+
+.control-status {
+  min-height: 21px;
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.control-status-action {
+  margin-top: 10px;
 }
 
 .attention-inbox {
@@ -826,6 +1046,16 @@ button.attention-item:hover {
 }
 
 @media (max-width: 719px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .button,
+  .segment,
+  .select-label select,
+  .select-label input {
+    min-height: 44px;
+  }
+
   .app-header {
     align-items: flex-start;
     padding: 18px 16px;
@@ -885,11 +1115,22 @@ button.attention-item:hover {
     flex-direction: column;
   }
 
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .segment {
+    border-right: 1px solid var(--border-strong);
+  }
+
   .mobile-back {
     display: inline-flex;
   }
 
-  .select-label select {
+  .select-label select,
+  .select-label input {
     max-width: 100%;
     width: 100%;
   }

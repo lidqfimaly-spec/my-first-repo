@@ -135,12 +135,22 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "planner_text_precision_gate": True,
             "planner_text_precision_execution": True,
             "local_read_only_workbench": True,
+            "task_control_center_clarification": True,
             "live_evaluation_integration_contract": True,
             "planner_precision_regression": True,
             "recovery_assurance_levels": ["L0", "L1"],
             "recovery_authentication": "not_authenticated",
             "web_ui": True,
-            "interactive_web_ui": False,
+            "interactive_web_ui": True,
+            "control_center_task_creation": True,
+            "control_center_task_notes": True,
+            "control_center_actions": [
+                "add_task_note",
+                "answer_clarification",
+                "cancel_queued_task",
+                "revise_unstarted_task",
+                "start_queued_task",
+            ],
             "general_shell": False,
             "automatic_recovery": False,
             "automatic_cleanup": False,
@@ -556,6 +566,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workbench.add_argument("--port", type=int, default=8765)
 
+    control_center = subparsers.add_parser(
+        "control-center",
+        help="serve the loopback-only workbench with confirmed lightweight actions",
+    )
+    control_center.add_argument("--port", type=int, default=8766)
+
     run = subparsers.add_parser(
         "run",
         help="submit and execute one structured artifact task",
@@ -739,6 +755,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         except OSError as exc:
             print(
                 f"workbench server error: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 6
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    if args.command == "control-center":
+        try:
+            serve_workbench(
+                _project_root(args.home),
+                port=args.port,
+                control_enabled=True,
+            )
+        except ValueError as exc:
+            print(f"control center configuration error: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(
+                "control center server error: "
+                f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return 6

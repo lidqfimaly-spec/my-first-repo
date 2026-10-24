@@ -118,6 +118,10 @@ class EventType(str, Enum):
     CANCEL_REQUESTED = "cancel_requested"
     PLAN_REVISED = "plan_revised"
     STAGING_CLEANED = "staging_cleaned"
+    CONTROL_ACTION_REQUESTED = "control_action_requested"
+    CONTROL_ACTION_COMPLETED = "control_action_completed"
+    CONTROL_ACTION_FAILED = "control_action_failed"
+    TASK_NOTE_ADDED = "task_note_added"
 
 
 @dataclass(slots=True)

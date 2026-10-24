@@ -6,7 +6,12 @@ Status: Active
 
 Date: 2026-10-21
 
-Product surface: Zevorinth local read-only workbench v1.
+Product surfaces:
+
+- Simplified Chinese Zevorinth read-only workbench;
+- opt-in local control center v1 with real task creation, auditable task notes,
+  confirmed clarification, unstarted-task revision, queued cancellation and
+  controlled artifact start.
 
 Evidence reviewed:
 
@@ -16,9 +21,15 @@ Evidence reviewed:
 - `src/zevorinth/models.py`: authoritative task, event, artifact and verification fields.
 - `src/zevorinth/cli.py`: existing status, events, audit, resume and recovery commands.
 - `src/zevorinth/service.py`: lifecycle audit, recovery preview and task execution boundaries.
-- `src/zevorinth/capabilities.py`: `web_ui=not_implemented`, fixed recovery and general-recovery limits.
+- `src/zevorinth/workbench_static/`: existing Simplified Chinese workbench HTML,
+  CSS, JavaScript and display mappings.
+- `tests/test_workbench.py`: read-only behavior, workbench routing, projection,
+  safety and localization regressions.
+- `src/zevorinth/capabilities.py`: conditional read-only `web_ui`, fixed recovery
+  and general-recovery limits.
 
-No existing frontend framework, visual system, screenshots or design tokens were present.
+No frontend framework or external visual dependency was present; the workbench
+uses the Python standard library and vanilla browser assets.
 
 ## Brand
 
@@ -26,7 +37,7 @@ Personality: restrained, forensic, calm and explicit about uncertainty.
 
 Trust signals:
 
-- “Read-only” is visible on every screen.
+- “只读”在页面上持续可见。
 - Task state comes from the authoritative backend and is never inferred by the client.
 - Missing, stale or unverified evidence is shown as such.
 - Artifact hashes and verifier reasons use monospace and remain selectable.
@@ -48,10 +59,22 @@ Goals:
 - Surface items requiring human attention, including stale recovery approvals.
 - Preview only artifacts registered to a task.
 - Provide useful evidence for deciding later lifecycle or recovery investment.
+- Answer an outstanding clarification through a server-validated, explicitly
+  confirmed action.
+- Create a real persisted task through a server-validated, idempotent form
+  without conflating creation with execution.
+- Append a task-scoped note to the audit trail without treating ordinary prose
+  as a lifecycle instruction.
+- Revise the goal or parameter patch of a task that has not produced execution
+  evidence.
+- Cancel a queued task that has never acquired execution ownership.
+- Start a queued deterministic artifact task through the existing execution,
+  verification, and persistence path.
 
 Non-goals:
 
-- submitting, retrying, cancelling, resuming, recovering, overwriting or deleting tasks;
+- starting `run_tests` from the control center, retrying, cancelling after
+  execution starts, resuming, recovering, overwriting or deleting tasks;
 - arbitrary file browsing or arbitrary database queries;
 - a second task state store;
 - live model evaluation;
@@ -105,6 +128,13 @@ Task detail:
 5. Recovery preview: read-only actions, preconditions, risk, expected result and verification.
 6. Event timeline: sequence, timestamp, event type, safe payload summary.
 7. Lifecycle audit: completeness, assurance, authenticity and certification limits.
+8. Control actions: only when served by the opt-in control center; action
+   eligibility, field input, explicit confirmation and server result status.
+9. Task creation: a real persisted queue entry with a preview of the goal,
+   operation, parameters and stage boundaries; create-only and
+   create-and-submit remain distinct outcomes.
+10. Task conversation: task-scoped notes and clarification evidence with an
+    explicit non-instruction boundary; ordinary prose never changes the task.
 
 Attention Inbox:
 
@@ -115,7 +145,8 @@ Attention Inbox:
 - stale or consuming recovery approvals: manual review;
 - recovery preview candidates: view-only explanation in v1.
 
-There is no separate settings, recovery-execution or task-submission screen.
+There is no separate settings or recovery-execution screen. Task creation and
+submission are sections of the control center, not a second state store.
 
 ## Design principles
 
@@ -150,8 +181,10 @@ Color:
 
 Typography:
 
-- system sans stack for prose and controls;
-- system monospace stack for task IDs, hashes, event types and timestamps;
+- system sans stack with PingFang SC, Hiragino Sans GB, Microsoft YaHei and
+  Noto Sans CJK SC fallbacks for prose and controls;
+- system monospace stack with CJK fallbacks for task IDs, hashes, raw identifiers
+  and timestamps;
 - display sizes: 32/24/18px; body 15px; metadata 12–13px;
 - no externally loaded fonts.
 
@@ -177,6 +210,8 @@ Imagery/iconography: no raster imagery; small inline symbols for status and disc
 - `RecoveryPreview`: read-only action cards and risk labels.
 - `EventTimeline`: ordered events with safe summaries.
 - `LifecycleAuditPanel`: assurance, completeness, authenticity and certification.
+- `ControlActionPanel`: opt-in server-validated actions, confirmation checkbox,
+  stale-state error and authoritative refresh after completion.
 - `StatusBadge`, `RiskBadge`, `Metric`, `EmptyState`, `ErrorState`.
 
 Token ownership: CSS custom properties in the workbench stylesheet. No parallel design system.
@@ -228,19 +263,26 @@ Mobile < 720px:
 - Disconnected request: inline error, page remains read-only and unchanged.
 - Slow request: bounded loading state; no request retries in v1.
 - No JavaScript: static read-only explanation and fallback text, no false data.
+- Controlled action submitting: disable the button, announce progress and never
+  report success until the server returns a completed action.
+- Controlled action rejected: show the server error and require a fresh preview.
 
 ## Content voice
 
 Tone: direct, specific and non-anthropomorphic.
 
+Language: Simplified Chinese for all fixed interface copy. Raw model/user text,
+backend error messages and machine identifiers remain unchanged and must be
+visually identified as original backend information rather than translated.
+
 Terminology:
 
-- “Task”, “event”, “artifact”, “verification”, “recovery preview”.
-- “Needs your answer” only for clarification.
-- “Review required” for interrupted, blocked or inconsistent evidence.
-- “View only” for terminal failures and recovery previews.
-- “Verified” only when the persisted verifier says passed and lifecycle audit supports it.
-- “Unverified” for missing, stale or inconsistent evidence.
+- 固定术语统一使用“任务”“事件”“任务产物”“验证结果”“恢复方案预览”。
+- “需要你补充信息”只用于 clarification。
+- “需要人工复核”用于中断、阻止或证据不一致。
+- “仅查看”用于终态失败和恢复方案预览。
+- “当前已通过验证”只在持久化 verifier 通过且当前产物仍匹配登记证据时使用。
+- “当前未通过验证”用于缺失、过期或不一致证据。
 
 Microcopy rules:
 
@@ -248,6 +290,10 @@ Microcopy rules:
 - show error codes beside friendly descriptions;
 - never say “completed successfully” when only planning or tool execution succeeded;
 - mention read-only and assurance limits near controls/evidence.
+- known status, phase, event, verification and error codes receive Chinese display
+  labels while original identifiers stay available for diagnosis;
+- unknown codes show a Chinese fallback plus the raw identifier, never a guessed
+  translation.
 
 ## Implementation constraints
 
@@ -260,6 +306,59 @@ Data access:
 - no task mutations, lease recovery or schema migration from workbench requests;
 - artifact preview only through `task.artifact.relative_path` and existing safe reader;
 - no arbitrary filesystem paths, SQL or shell input.
+
+Control actions:
+
+- the existing read-only `/api` surface remains `GET`/`HEAD` only;
+- actions use a separate `/control/api` surface available only through the
+  `control-center` command;
+- action POSTs require matching loopback Origin and a per-process CSRF token;
+- the backend rechecks task status, updated timestamp, plan version and missing
+  fields before execution;
+- unstarted-task revisions also bind to a SHA-256 digest of the task definition;
+- revisions reuse the existing atomic plan-revision path and never execute a tool;
+- queued cancellation checks the expected plan version atomically and races with
+  revision through the same version boundary;
+- supported artifact start claims only at the expected plan version and records
+  request and attempt provenance in `task_claimed`;
+- clarification and controlled start reserve the request ID and acquire the
+  exclusive SQLite task claim in one `BEGIN IMMEDIATE` transaction;
+- revisions and queued cancellation use optimistic plan versions, and plan
+  revision fails closed while any execution lease is present;
+- action IDs are recorded as task events for replay detection and audit;
+- ambiguous submissions can be queried by task and request ID through a
+  token-protected read-only receipt endpoint;
+- completion and failure receipts share one fail-closed classifier; conflicting
+  evidence is `inconsistent` for both replay and query;
+- clarification claims bind to the previewed plan version, while historical
+  revision reconciliation uses the exact request/source ID rather than a
+  bounded task-list projection;
+- `interrupted` tasks are not offered revision because the lifecycle state
+  machine does not permit a safe transition back to queued;
+- the browser refetches authoritative task state after every action;
+- task creation uses a client UUIDv4 as the real task ID, persists an idempotent
+  definition digest and never executes a tool; only the separate
+  create-and-submit path can request the existing controlled start;
+- an unresolved create-and-submit start keeps its original request ID and
+  manual receipt query, and blocks a second submission until reconciliation;
+- `run_tests` tasks may be created but cannot be started from the control
+  center; create-and-submit is disabled for that type rather than silently
+  falling back to create-only, and server-side clarification is limited to
+  artifact tasks so clarification cannot bypass the start boundary;
+- task notes append audit evidence only and cannot change task definition,
+  plan version or lifecycle state;
+- no recovery, retry, in-progress cancellation or high-risk file action is
+  enabled in control-center v1; only an unstarted queued task may be cancelled.
+
+Localization:
+
+- fixed copy lives in HTML/JavaScript;
+- dynamic display mappings live in the static `i18n.zh-CN.json` resource;
+- mappings are presentation-only and do not change API values, audit results,
+  recovery decisions or persisted data;
+- user and backend text is rendered with `textContent`, never HTML interpolation;
+- visible timestamps use `zh-CN` formatting, while raw ISO timestamps remain in
+  diagnostic fields.
 
 Network:
 

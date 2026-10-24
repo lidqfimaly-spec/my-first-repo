@@ -221,22 +221,47 @@ def _evaluate_mutation(
             )
         for path, mutated in contents.items():
             path.write_text(mutated, encoding="utf-8")
-        compile_result = _run(
-            [
-                sys.executable,
-                "-m",
-                "py_compile",
-                *[str(path) for path in contents],
-            ],
-            cwd=root,
+        python_paths = [
+            path for path in contents if path.suffix == ".py"
+        ]
+        javascript_paths = [
+            path for path in contents if path.suffix == ".js"
+        ]
+        compile_results: list[dict[str, Any]] = []
+        if python_paths:
+            compile_results.append(
+                _run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "py_compile",
+                        *[str(path) for path in python_paths],
+                    ],
+                    cwd=root,
+                )
+            )
+        if javascript_paths:
+            compile_results.append(
+                _run(
+                    ["node", "--check", *[str(path) for path in javascript_paths]],
+                    cwd=root,
+                )
+            )
+        invalid_compile = next(
+            (
+                result
+                for result in compile_results
+                if result["exit_code"] != 0
+            ),
+            None,
         )
-        if compile_result["exit_code"] != 0:
+        if invalid_compile is not None:
             return {
                 "id": case["id"],
                 "expected": case.get("expected", "killed"),
                 "result": "invalid",
                 "reason": "mutated file does not compile",
-                "compile": compile_result,
+                "compile": invalid_compile,
             }
         trace_path = root / ".mutation-trace.json"
         if command_override:
@@ -258,7 +283,16 @@ def _evaluate_mutation(
             trace_path, root, mutated_lines
         )
         result, reason = _classify_result(test_result, list(case["tests"]))
-        scope = "in_process" if executed["executed"] else "unverified"
+        static_source_check = all(
+            path.suffix == ".js" for path in contents
+        )
+        scope = (
+            "static_source_check"
+            if static_source_check
+            else "in_process"
+            if executed["executed"]
+            else "unverified"
+        )
         return {
             "id": case["id"],
             "property": case.get("property"),
@@ -273,12 +307,16 @@ def _evaluate_mutation(
             "execution_evidence": {
                 "scope": scope,
                 "executed_in_process": bool(executed["executed"]),
+                "static_source_check": static_source_check,
                 # Child processes are not traced, so this is never claimed.
                 "executed_in_child_process": False,
                 "child_trace_supported": False,
                 "trace_missing": bool(executed.get("trace_missing")),
             },
-            "test": test_result,
+            "test": {
+                "command": test_result["command"],
+                "exit_code": test_result["exit_code"],
+            },
         }
 
 
@@ -294,6 +332,14 @@ def run_mutations(cases_path: Path | None = None) -> dict[str, Any]:
         result: sum(1 for item in results if item["result"] == result)
         for result in ("killed", "survived", "invalid", "error")
     }
+    evidence_scope_counts = {
+        scope: sum(
+            1
+            for item in results
+            if item.get("execution_evidence", {}).get("scope") == scope
+        )
+        for scope in ("in_process", "static_source_check", "unverified")
+    }
     unexpected = [
         item
         for item in results
@@ -303,7 +349,8 @@ def run_mutations(cases_path: Path | None = None) -> dict[str, Any]:
     unverified = [
         item["id"]
         for item in results
-        if item.get("execution_evidence", {}).get("scope") != "in_process"
+        if item.get("execution_evidence", {}).get("scope")
+        == "unverified"
     ]
     # A survived result is only meaningful when the mutated line ran; an
     # untraced survival could simply mean the test never reached the edit.
@@ -316,9 +363,12 @@ def run_mutations(cases_path: Path | None = None) -> dict[str, Any]:
         "version": payload.get("version", "unknown"),
         "case_count": len(results),
         "counts": counts,
+        "evidence_scope_counts": evidence_scope_counts,
         "execution_evidence_counts": {
-            "in_process": len(results) - len(unverified),
-            "unverified": len(unverified),
+            "in_process": evidence_scope_counts["in_process"],
+            "static_source_check":
+                evidence_scope_counts["static_source_check"],
+            "unverified": evidence_scope_counts["unverified"],
             "child_process": 0,
         },
         "execution_unverified": unverified,

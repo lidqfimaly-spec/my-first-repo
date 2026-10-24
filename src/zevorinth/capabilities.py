@@ -268,6 +268,33 @@ CAPABILITY_REGISTRY: dict[str, Any] = {
                 "event payload display is bounded and redacted",
             ],
         },
+        "task_control_center_clarification": {
+            "status": "conditional",
+            "implemented": True,
+            "verified": True,
+            "access": [
+                "cli:control-center",
+                "loopback_control_http",
+                "loopback_control_request_status",
+            ],
+            "requirements": [
+                "request-id idempotent queued-task creation with planner preview",
+                "deterministic planner task for clarification, revision and supported start",
+                "unclaimed queued task for queued cancellation",
+                "task notes are explicitly non-lifecycle audit messages",
+                "matching loopback Origin and per-process CSRF token",
+                "explicit confirmation and fresh task version",
+                "exactly the currently missing clarification fields",
+                "exclusive SQLite task claim for clarification; optimistic plan version for revision",
+            ],
+            "limitations": [
+                "task creation, add_task_note, answer_clarification, revise_unstarted_task, start_queued_task and cancel_queued_task are enabled",
+                "the existing read-only /api mutation boundary remains unchanged",
+                "no run_tests start, retry, running-task cancel, recovery, tool governance or high-risk file action is enabled",
+                "cross-process actions are not merged; a losing claim fails closed",
+                "requests without a terminal control event require manual reconciliation",
+            ],
+        },
         "live_evaluation_integration_contract": {
             "status": "available",
             "implemented": True,

@@ -256,10 +256,46 @@ class CapabilityRegistryTests(unittest.TestCase):
             report["capabilities"]["local_read_only_workbench"]
         )
         self.assertTrue(report["capabilities"]["web_ui"])
-        self.assertFalse(report["capabilities"]["interactive_web_ui"])
+        self.assertTrue(report["capabilities"]["interactive_web_ui"])
         web = CAPABILITY_REGISTRY["capabilities"]["web_ui"]
         self.assertEqual(web["status"], "conditional")
         self.assertIn("read-only operator surface", web["limitations"][0])
+
+    def test_control_center_v1_limits_write_actions(self) -> None:
+        details = CAPABILITY_REGISTRY["capabilities"][
+            "task_control_center_clarification"
+        ]
+        self.assertEqual(details["status"], "conditional")
+        self.assertTrue(details["verified"])
+        self.assertIn("cli:control-center", details["access"])
+        joined = " ".join(details["limitations"]).lower()
+        self.assertIn(
+            "task creation, add_task_note, answer_clarification, revise_unstarted_task, start_queued_task and cancel_queued_task",
+            joined,
+        )
+        self.assertIn("read-only /api", joined)
+        self.assertIn("losing claim fails closed", joined)
+        self.assertIn("manual reconciliation", joined)
+        self.assertIn(
+            "exclusive sqlite task claim",
+            " ".join(details["requirements"]).lower(),
+        )
+        self.assertIn(
+            "optimistic plan version",
+            " ".join(details["requirements"]).lower(),
+        )
+        report = doctor_report(PROJECT_ROOT)
+        self.assertEqual(
+            report["capabilities"]["control_center_actions"],
+            [
+                "add_task_note",
+                "answer_clarification",
+                "cancel_queued_task",
+                "revise_unstarted_task",
+                "start_queued_task",
+            ],
+        )
+        self.assertFalse(report["capabilities"]["automatic_recovery"])
 
     def test_live_evaluation_metric_contract_is_registered(self) -> None:
         details = CAPABILITY_REGISTRY["capabilities"][

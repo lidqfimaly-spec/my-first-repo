@@ -32,7 +32,33 @@ from .models import (
     TaskStatus,
     TurnStatus,
 )
+from .control_receipt import (
+    CONTROL_RECEIPT_EVENT_TYPES,
+    resolve_control_receipt,
+)
 from .state_machine import ensure_transition, is_terminal
+
+
+def lease_state(
+    lease_token: str | None,
+    lease_expires_at: str | None,
+    now: str,
+) -> str:
+    """Return none, active, or expired with one fail-closed UTC policy."""
+    if lease_token is None:
+        return "none"
+    if lease_expires_at is None:
+        return "active"
+    try:
+        expires = datetime.fromisoformat(lease_expires_at)
+        current = datetime.fromisoformat(now)
+    except (TypeError, ValueError):
+        return "active"
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return "active" if expires > current else "expired"
 
 
 class TaskNotFound(LookupError):
@@ -2051,6 +2077,7 @@ class EventStore:
         expected_plan_version: int,
         updated_task: Task,
         event: Event,
+        allowed_statuses: frozenset[TaskStatus] | None = None,
     ) -> Task:
         """Apply an optimistic, side-effect-free plan revision."""
         with self._connection() as connection:
@@ -2060,14 +2087,32 @@ class EventStore:
                 raise PlanRevisionConflict(
                     "task plan version changed before revision committed"
                 )
-            if current.status not in {
-                TaskStatus.QUEUED,
-                TaskStatus.AWAITING_CLARIFICATION,
-                TaskStatus.BLOCKED,
-                TaskStatus.INTERRUPTED,
-            }:
+            allowed = (
+                {
+                    TaskStatus.QUEUED,
+                    TaskStatus.AWAITING_CLARIFICATION,
+                    TaskStatus.BLOCKED,
+                    TaskStatus.INTERRUPTED,
+                }
+                if allowed_statuses is None
+                else allowed_statuses
+            )
+            if current.status not in allowed:
                 raise PlanRevisionConflict(
                     "task state does not allow safe plan revision"
+                )
+            if current.lease_token is not None:
+                current_lease_state = lease_state(
+                    current.lease_token,
+                    current.lease_expires_at,
+                    event.occurred_at,
+                )
+                if current_lease_state == "active":
+                    raise PlanRevisionConflict(
+                        "task has an active execution lease"
+                    )
+                raise PlanRevisionConflict(
+                    "task has an expired execution lease requiring recovery"
                 )
             if (
                 current.tool_result is not None
@@ -2084,22 +2129,58 @@ class EventStore:
             connection.commit()
         return updated_task
 
-    def cancel_task(self, task_id: str, *, now: str) -> Task:
+    def cancel_task(
+        self,
+        task_id: str,
+        *,
+        now: str,
+        expected_plan_version: int | None = None,
+        expected_claim_generation: int | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Task:
         """Cancel only a task without an active execution Lease."""
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = self._load_task(connection, task_id)
             if is_terminal(task.status):
+                if expected_plan_version is not None:
+                    raise PlanRevisionConflict("task is already terminal")
                 connection.commit()
                 return task
             if (
-                task.lease_token is not None
-                and task.lease_expires_at is not None
-                and self._lease_is_active(task.lease_expires_at, now)
+                expected_plan_version is not None
+                and task.plan_version != expected_plan_version
             ):
+                raise PlanRevisionConflict(
+                    "task plan version changed before cancellation"
+                )
+            strict_control = expected_claim_generation is not None
+            current_lease_state = lease_state(
+                task.lease_token,
+                task.lease_expires_at,
+                now,
+            )
+            if current_lease_state == "active":
                 raise PlanRevisionConflict(
                     "task has an active execution lease"
                 )
+            if strict_control and current_lease_state == "expired":
+                raise PlanRevisionConflict(
+                    "task has an expired execution lease requiring recovery"
+                )
+            if expected_claim_generation is not None:
+                if task.claim_generation != expected_claim_generation:
+                    raise PlanRevisionConflict(
+                        "task execution claim changed before cancellation"
+                    )
+                if (
+                    task.execution_mode.value != "not_executed"
+                    or task.tool_result is not None
+                    or task.artifact is not None
+                ):
+                    raise PlanRevisionConflict(
+                        "task has execution evidence and cannot be cancelled"
+                    )
             ensure_transition(task.status, TaskStatus.CANCELLED)
             task.status = TaskStatus.CANCELLED
             task.phase = "cancelled"
@@ -2115,7 +2196,10 @@ class EventStore:
                 task_id,
                 EventType.TASK_CANCELLED,
                 now,
-                {"reason": "explicit_user_cancellation"},
+                {
+                    "reason": "explicit_user_cancellation",
+                    **dict(metadata or {}),
+                },
             )
             self._update_task(connection, task)
             self._insert_event(connection, event)
@@ -2190,11 +2274,41 @@ class EventStore:
         payload: Mapping[str, Any] | None = None,
         updates: Mapping[str, Any] | None = None,
         lease_token: str | None = None,
+        require_no_lease: bool = False,
+        expected_updated_at: str | None = None,
+        expected_plan_version: int | None = None,
     ) -> tuple[Task, Event]:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = self._load_task(connection, task_id)
             self._require_lease(task, lease_token)
+            if require_no_lease and task.lease_token is not None:
+                current_lease_state = lease_state(
+                    task.lease_token,
+                    task.lease_expires_at,
+                    occurred_at,
+                )
+                if current_lease_state == "active":
+                    raise PlanRevisionConflict(
+                        "task has an active execution lease"
+                    )
+                raise PlanRevisionConflict(
+                    "task has an expired execution lease requiring recovery"
+                )
+            if (
+                expected_updated_at is not None
+                and task.updated_at != expected_updated_at
+            ):
+                raise PlanRevisionConflict(
+                    "task changed before the control event committed"
+                )
+            if (
+                expected_plan_version is not None
+                and task.plan_version != expected_plan_version
+            ):
+                raise PlanRevisionConflict(
+                    "task plan version changed before the control event committed"
+                )
             task.updated_at = occurred_at
             for key, value in (updates or {}).items():
                 setattr(task, key, value)
@@ -2203,6 +2317,449 @@ class EventStore:
             stored_event = self._insert_event(connection, event)
             connection.commit()
         return task, stored_event
+
+    def reserve_control_action(
+        self,
+        task_id: str,
+        *,
+        request_id: str,
+        action: str,
+        request_digest: str,
+        expected_updated_at: str,
+        expected_plan_version: int,
+        occurred_at: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically reserve a control request ID across processes."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            evidence = self._control_action_evidence(
+                connection,
+                task=task,
+                request_id=request_id,
+                action=action,
+                request_digest=request_digest,
+            )
+            if evidence["receipt"] is not None:
+                connection.commit()
+                if evidence["conflict"]:
+                    return {"reserved": False, "state": "conflict"}
+                return {
+                    "reserved": False,
+                    "state": evidence["receipt"]["state"],
+                    "receipt": evidence["receipt"],
+                }
+            if (
+                task.updated_at != expected_updated_at
+                or task.plan_version != expected_plan_version
+            ):
+                raise PlanRevisionConflict(
+                    "task changed before control action reservation"
+                )
+            task.updated_at = occurred_at
+            event = Event.new(
+                task_id,
+                EventType.CONTROL_ACTION_REQUESTED,
+                occurred_at,
+                payload,
+            )
+            self._update_task(connection, task)
+            self._insert_event(connection, event)
+            connection.commit()
+        return {
+            "reserved": True,
+            "state": "requested",
+            "task": task,
+        }
+
+    def inspect_control_action(
+        self,
+        task_id: str,
+        *,
+        request_id: str,
+        action: str,
+        request_digest: str,
+    ) -> dict[str, Any] | None:
+        """Read the authoritative state of an existing control request."""
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            task = self._load_task(connection, task_id)
+            evidence = self._control_action_evidence(
+                connection,
+                task=task,
+                request_id=request_id,
+                action=action,
+                request_digest=request_digest,
+            )
+            connection.execute("COMMIT")
+        if evidence["receipt"] is None:
+            return None
+        if evidence["conflict"]:
+            return {"reserved": False, "state": "conflict"}
+        return {
+            "reserved": False,
+            "state": evidence["receipt"]["state"],
+            "receipt": evidence["receipt"],
+        }
+
+    def record_control_action_preclaim_failure(
+        self,
+        task_id: str,
+        *,
+        request_id: str,
+        action: str,
+        request_digest: str,
+        occurred_at: str,
+        requested_payload: Mapping[str, Any],
+        error_code: str,
+        error_type: str,
+        task_status: str,
+    ) -> dict[str, Any]:
+        """Record a rejected request before any claim is acquired."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            evidence = self._control_action_evidence(
+                connection,
+                task=task,
+                request_id=request_id,
+                action=action,
+                request_digest=request_digest,
+            )
+            if evidence["receipt"] is not None:
+                connection.commit()
+                if evidence["conflict"]:
+                    return {"recorded": False, "state": "conflict"}
+                return {
+                    "recorded": False,
+                    "state": evidence["receipt"]["state"],
+                    "receipt": evidence["receipt"],
+                }
+            self._insert_events(
+                connection,
+                [
+                    Event.new(
+                        task_id,
+                        EventType.CONTROL_ACTION_REQUESTED,
+                        occurred_at,
+                        requested_payload,
+                    ),
+                    Event.new(
+                        task_id,
+                        EventType.CONTROL_ACTION_FAILED,
+                        occurred_at,
+                        {
+                            "request_id": request_id,
+                            "action": action,
+                            "request_digest": request_digest,
+                            "error_code": error_code,
+                            "error_type": error_type,
+                            "task_status": task_status,
+                        },
+                    ),
+                ],
+            )
+            connection.commit()
+        return {"recorded": True, "state": "failed"}
+
+    def reserve_control_action_with_claim(
+        self,
+        task_id: str,
+        *,
+        request_id: str,
+        action: str,
+        request_digest: str,
+        expected_updated_at: str,
+        expected_plan_version: int,
+        occurred_at: str,
+        payload: Mapping[str, Any],
+        owner_id: str,
+        lease_token: str,
+        attempt_id: str,
+        expires_at: str,
+        allowed_statuses: frozenset[TaskStatus],
+        max_execution_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically reserve a request and acquire a task lease."""
+        if max_execution_seconds is not None and max_execution_seconds <= 0:
+            raise ValueError("max_execution_seconds must be positive")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            evidence = self._control_action_evidence(
+                connection,
+                task=task,
+                request_id=request_id,
+                action=action,
+                request_digest=request_digest,
+            )
+            if evidence["receipt"] is not None:
+                connection.commit()
+                if evidence["conflict"]:
+                    return {"reserved": False, "state": "conflict"}
+                return {
+                    "reserved": False,
+                    "state": evidence["receipt"]["state"],
+                    "receipt": evidence["receipt"],
+                }
+            if task.plan_version != expected_plan_version:
+                raise PlanRevisionConflict(
+                    "task changed before control action reservation"
+                )
+            claim_reason: str | None = None
+            claim_error_code = "task_claim_not_acquired"
+            if task.status not in allowed_statuses:
+                claim_reason = f"status_not_runnable:{task.status.value}"
+            elif task.lease_token is not None:
+                if (
+                    task.lease_expires_at is None
+                    or self._lease_is_active(
+                        task.lease_expires_at,
+                        occurred_at,
+                    )
+                ):
+                    claim_reason = "active_lease"
+                else:
+                    claim_reason = "expired_lease_recovery_required"
+                    claim_error_code = "task_claim_recovery_required"
+            if claim_reason is not None:
+                requested_event = Event.new(
+                    task_id,
+                    EventType.CONTROL_ACTION_REQUESTED,
+                    occurred_at,
+                    payload,
+                )
+                failed_event = Event.new(
+                    task_id,
+                    EventType.CONTROL_ACTION_FAILED,
+                    occurred_at,
+                    {
+                        "request_id": request_id,
+                        "action": action,
+                        "request_digest": request_digest,
+                        "error_code": claim_error_code,
+                        "error_type": "claim_rejected",
+                        "claim_reason": claim_reason,
+                        "task_status": task.status.value,
+                    },
+                )
+                self._insert_events(
+                    connection,
+                    [requested_event, failed_event],
+                )
+                connection.commit()
+                receipt = {
+                    "state": "failed",
+                    "action": action,
+                    "request_digest": request_digest,
+                    "task_status": task.status.value,
+                    "error_code": claim_error_code,
+                    "claim_reason": claim_reason,
+                    "occurred_at": occurred_at,
+                }
+                return {
+                    "reserved": False,
+                    "state": "claim_not_acquired",
+                    "receipt": receipt,
+                }
+            if task.updated_at != expected_updated_at:
+                raise PlanRevisionConflict(
+                    "task changed before control action reservation"
+                )
+
+            previous_status = task.status
+            task.execution_owner = owner_id
+            task.lease_token = lease_token
+            task.lease_expires_at = expires_at
+            task.claim_generation += 1
+            task.attempt_id = attempt_id
+            if (
+                task.execution_deadline_at is None
+                and max_execution_seconds is not None
+            ):
+                task.execution_started_at = occurred_at
+                task.execution_deadline_at = (
+                    datetime.fromisoformat(occurred_at)
+                    + timedelta(seconds=max_execution_seconds)
+                ).isoformat(timespec="milliseconds")
+            task.phase = "claimed"
+            task.updated_at = occurred_at
+            events = [
+                Event.new(
+                    task_id,
+                    EventType.CONTROL_ACTION_REQUESTED,
+                    occurred_at,
+                    payload,
+                ),
+                Event.new(
+                    task_id,
+                    EventType.TASK_CLAIMED,
+                    occurred_at,
+                    {
+                        "owner_id": owner_id,
+                        "attempt_id": attempt_id,
+                        "generation": task.claim_generation,
+                        "previous_status": previous_status.value,
+                        "lease_expires_at": expires_at,
+                        "control_request_id": request_id,
+                        "control_action": action,
+                        "source": "control_center",
+                    },
+                ),
+            ]
+            self._update_task(connection, task)
+            self._insert_events(connection, events)
+            connection.commit()
+        return {
+            "reserved": True,
+            "state": "requested",
+            "task": task,
+            "lease_token": lease_token,
+        }
+
+    def _control_action_evidence(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        task: Task,
+        request_id: str,
+        action: str,
+        request_digest: str,
+    ) -> dict[str, Any]:
+        control_types = tuple(sorted(CONTROL_RECEIPT_EVENT_TYPES))
+        related_types = (
+            *control_types,
+            EventType.PLAN_REVISED.value,
+            EventType.TASK_CANCELLED.value,
+            EventType.TASK_CLAIMED.value,
+            EventType.TASK_NOTE_ADDED.value,
+        )
+        control_placeholders = ",".join("?" for _ in control_types)
+        related_placeholders = ",".join("?" for _ in related_types)
+        rows = connection.execute(
+            f"""
+                SELECT event_type, occurred_at, payload_json
+                FROM events
+                WHERE task_id = ?
+                  AND event_type IN ({related_placeholders})
+                  AND (
+                    (
+                        event_type IN ({control_placeholders})
+                        AND json_extract(payload_json, '$.request_id') = ?
+                    )
+                    OR (
+                        event_type = ?
+                        AND json_extract(
+                            payload_json, '$.revision.source_id'
+                        ) = ?
+                    )
+                    OR (
+                        event_type = ?
+                        AND json_extract(payload_json, '$.request_id') = ?
+                    )
+                    OR (
+                        event_type = ?
+                        AND json_extract(
+                            payload_json, '$.control_request_id'
+                        ) = ?
+                    )
+                    OR (
+                        event_type = ?
+                        AND json_extract(payload_json, '$.request_id') = ?
+                    )
+                  )
+                ORDER BY sequence ASC
+                LIMIT 65
+            """,
+            (
+                task.task_id,
+                *related_types,
+                *control_types,
+                request_id,
+                EventType.PLAN_REVISED.value,
+                request_id,
+                EventType.TASK_CANCELLED.value,
+                request_id,
+                EventType.TASK_CLAIMED.value,
+                request_id,
+                EventType.TASK_NOTE_ADDED.value,
+                request_id,
+            ),
+        ).fetchall()
+        if len(rows) > 64:
+            return {
+                "conflict": False,
+                "receipt": {
+                    "state": "inconsistent",
+                    "action": action,
+                    "error_code": "action_receipt_inconsistent",
+                }
+            }
+        matching: list[tuple[str, Mapping[str, Any], str]] = []
+        revision: Mapping[str, Any] | None = None
+        cancelled_event: Mapping[str, Any] | None = None
+        claimed_event: Mapping[str, Any] | None = None
+        note_event: Mapping[str, Any] | None = None
+        for row in rows:
+            event_payload = json.loads(row["payload_json"])
+            event_type = str(row["event_type"])
+            if event_type in CONTROL_RECEIPT_EVENT_TYPES:
+                matching.append(
+                    (event_type, event_payload, str(row["occurred_at"]))
+                )
+            elif event_type == EventType.PLAN_REVISED.value:
+                candidate = event_payload.get("revision")
+                if (
+                    isinstance(candidate, Mapping)
+                    and candidate.get("source_id") == request_id
+                ):
+                    revision = candidate
+            elif event_type == EventType.TASK_CANCELLED.value:
+                cancelled_event = {
+                    "payload": event_payload,
+                    "occurred_at": str(row["occurred_at"]),
+                }
+            elif event_type == EventType.TASK_CLAIMED.value:
+                claimed_event = {
+                    "payload": event_payload,
+                    "occurred_at": str(row["occurred_at"]),
+                }
+            elif event_type == EventType.TASK_NOTE_ADDED.value:
+                note_event = {
+                    "payload": event_payload,
+                    "occurred_at": str(row["occurred_at"]),
+                }
+        if not (
+            matching
+            or revision
+            or cancelled_event
+            or claimed_event
+            or note_event
+        ):
+            return {"conflict": False, "receipt": None}
+        receipt, _ = resolve_control_receipt(
+            matching,
+            task_status=task.status.value,
+            task_attempt_id=task.attempt_id,
+            lease_active=lease_state(
+                task.lease_token,
+                task.lease_expires_at,
+                self._now(),
+            )
+            == "active",
+            revision=revision,
+            cancelled_event=cancelled_event,
+            claimed_event=claimed_event,
+            note_event=note_event,
+        )
+        assert receipt is not None
+        conflict = receipt["state"] != "inconsistent" and any(
+            event_payload.get("action") != action
+            or event_payload.get("request_digest") != request_digest
+            for _, event_payload, _ in matching
+        )
+        return {"conflict": conflict, "receipt": receipt}
 
     def find_tasks_by_statuses(self, statuses: set[TaskStatus]) -> list[Task]:
         if not statuses:
@@ -2227,6 +2784,8 @@ class EventStore:
         expires_at: str,
         allowed_statuses: frozenset[TaskStatus],
         max_execution_seconds: float | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        expected_plan_version: int | None = None,
     ) -> ClaimResult:
         if max_execution_seconds is not None and max_execution_seconds <= 0:
             raise ValueError("max_execution_seconds must be positive")
@@ -2234,6 +2793,14 @@ class EventStore:
             connection.execute("BEGIN IMMEDIATE")
             task = self._load_task(connection, task_id)
             events: list[Event] = []
+
+            if (
+                expected_plan_version is not None
+                and task.plan_version != expected_plan_version
+            ):
+                raise PlanRevisionConflict(
+                    "task plan version changed before execution claim"
+                )
 
             if (
                 task.execution_deadline_at is not None
@@ -2289,27 +2856,32 @@ class EventStore:
                 connection.commit()
                 return ClaimResult(False, task, reason)
 
-            if task.lease_token and task.lease_expires_at:
-                if self._lease_is_active(task.lease_expires_at, now):
-                    reason = "active_lease"
-                    events.append(
-                        Event.new(
-                            task_id,
-                            EventType.CLAIM_REJECTED,
-                            now,
-                            {
-                                "owner_id": owner_id,
-                                "reason": reason,
-                                "current_owner": task.execution_owner,
-                                "current_generation": task.claim_generation,
-                                "lease_expires_at": task.lease_expires_at,
-                            },
-                        )
+            current_lease_state = lease_state(
+                task.lease_token,
+                task.lease_expires_at,
+                now,
+            )
+            if current_lease_state == "active":
+                reason = "active_lease"
+                events.append(
+                    Event.new(
+                        task_id,
+                        EventType.CLAIM_REJECTED,
+                        now,
+                        {
+                            "owner_id": owner_id,
+                            "reason": reason,
+                            "current_owner": task.execution_owner,
+                            "current_generation": task.claim_generation,
+                            "lease_expires_at": task.lease_expires_at,
+                        },
                     )
-                    self._insert_events(connection, events)
-                    connection.commit()
-                    return ClaimResult(False, task, reason)
+                )
+                self._insert_events(connection, events)
+                connection.commit()
+                return ClaimResult(False, task, reason)
 
+            if current_lease_state == "expired":
                 previous_status = task.status
                 previous_owner = task.execution_owner
                 events.append(
@@ -2390,9 +2962,11 @@ class EventStore:
                     now,
                     {
                         "owner_id": owner_id,
+                        "attempt_id": attempt_id,
                         "generation": task.claim_generation,
                         "previous_status": previous_status.value,
                         "lease_expires_at": expires_at,
+                        **dict(metadata or {}),
                     },
                 )
             )
@@ -2481,6 +3055,40 @@ class EventStore:
             connection.commit()
             return task, stored_event
 
+    def rollback_control_claim(
+        self,
+        task_id: str,
+        *,
+        lease_token: str,
+        previous: Task,
+        now: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> tuple[Task, Event]:
+        """Release a pre-execution control claim and restore claim metadata."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._load_task(connection, task_id)
+            self._require_lease(task, lease_token)
+            task.execution_owner = None
+            task.lease_token = None
+            task.lease_expires_at = None
+            task.attempt_id = previous.attempt_id
+            task.claim_generation = previous.claim_generation
+            task.phase = previous.phase
+            task.execution_started_at = previous.execution_started_at
+            task.execution_deadline_at = previous.execution_deadline_at
+            task.updated_at = now
+            event = Event.new(
+                task_id,
+                EventType.LEASE_RELEASED,
+                now,
+                payload or {},
+            )
+            self._update_task(connection, task)
+            stored_event = self._insert_event(connection, event)
+            connection.commit()
+            return task, stored_event
+
     def _load_task(self, connection: sqlite3.Connection, task_id: str) -> Task:
         row = connection.execute(
             "SELECT task_json FROM tasks WHERE task_id = ?", (task_id,)
@@ -2498,12 +3106,7 @@ class EventStore:
 
     @staticmethod
     def _lease_is_active(expires_at: str, now: str) -> bool:
-        try:
-            expires = datetime.fromisoformat(expires_at)
-            current = datetime.fromisoformat(now)
-        except ValueError:
-            return True
-        return expires > current
+        return lease_state("lease", expires_at, now) == "active"
 
     def _insert_task(self, connection: sqlite3.Connection, task: Task) -> None:
         connection.execute(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import stat
@@ -30,6 +31,7 @@ from .event_store import (
     EventStoreError,
     PlanRevisionConflict,
     StoreBusyError,
+    lease_state,
 )
 from .lease_renewal import LeaseRenewer
 from .models import (
@@ -84,6 +86,17 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def _task_request_digest(request: TaskRequest) -> str:
+    encoded = json.dumps(
+        request.to_dict(),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 FaultHook = Callable[[str, Task], None]
 _ACTIVE_RENEWER: ContextVar[LeaseRenewer | None] = ContextVar(
     "zevorinth_active_lease_renewer",
@@ -93,6 +106,25 @@ _ACTIVE_RENEWER: ContextVar[LeaseRenewer | None] = ContextVar(
 
 class CancellationRequested(Exception):
     pass
+
+
+class TaskClaimNotAcquired(RuntimeError):
+    """Raised when a strict resume request could not acquire the task."""
+
+    code = "task_claim_not_acquired"
+
+    def __init__(
+        self,
+        task_id: str,
+        reason: str,
+        current_status: str,
+    ) -> None:
+        super().__init__(
+            f"task {task_id} could not be resumed: {reason} "
+            f"(status={current_status})"
+        )
+        self.reason = reason
+        self.current_status = current_status
 
 
 def _collection_status(
@@ -203,6 +235,7 @@ class TaskService:
         publish_lock_timeout_seconds: float = 10.0,
         busy_timeout_ms: int = 10_000,
         owner_id: str | None = None,
+        recover_leases: bool = True,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
@@ -245,18 +278,21 @@ class TaskService:
             busy_timeout_ms=busy_timeout_ms,
         )
         self.store.initialize()
-        self.recover_expired_leases()
+        if recover_leases:
+            self.recover_expired_leases()
 
     def enqueue(
         self,
         request: TaskRequest,
         *,
+        task_id: str | None = None,
         conversation_id: str | None = None,
         turn_id: str | None = None,
+        creation_preview: Mapping[str, Any] | None = None,
     ) -> Task:
         now = self.clock()
         task = Task(
-            task_id=str(uuid4()),
+            task_id=task_id or str(uuid4()),
             status=TaskStatus.QUEUED,
             request=request,
             execution_mode=ExecutionMode.NOT_EXECUTED,
@@ -278,6 +314,12 @@ class TaskService:
                     "goal_present": bool(request.goal),
                     "conversation_id": conversation_id,
                     "turn_id": turn_id,
+                    "request_digest": _task_request_digest(request),
+                    "creation_preview": (
+                        dict(creation_preview)
+                        if creation_preview is not None
+                        else None
+                    ),
                 },
             ),
             turn_id=turn_id,
@@ -298,12 +340,56 @@ class TaskService:
         )
         return self.execute_task(task.task_id)
 
-    def execute_task(self, task_id: str) -> Task:
+    def execute_task(
+        self,
+        task_id: str,
+        *,
+        require_claim: bool = False,
+        claim_metadata: Mapping[str, Any] | None = None,
+        expected_plan_version: int | None = None,
+        preclaimed_lease_token: str | None = None,
+    ) -> Task:
         task = self.store.require_task(task_id)
         if is_terminal(task.status):
+            if require_claim:
+                raise TaskClaimNotAcquired(
+                    task_id,
+                    "task_already_terminal",
+                    task.status.value,
+                )
             return task
-        claim = self._claim(task_id, allowed=self.RUNNABLE_STATUSES)
+        if preclaimed_lease_token is not None:
+            if (
+                expected_plan_version is not None
+                and task.plan_version != expected_plan_version
+            ):
+                raise PlanRevisionConflict(
+                    "task plan version changed before preclaimed execution"
+                )
+            if task.lease_token != preclaimed_lease_token:
+                raise TaskClaimNotAcquired(
+                    task_id,
+                    "preclaimed_lease_not_owned",
+                    task.status.value,
+                )
+            return self._run_claimed(task, preclaimed_lease_token)
+        claim_options: dict[str, Any] = {}
+        if claim_metadata is not None:
+            claim_options["metadata"] = claim_metadata
+        if expected_plan_version is not None:
+            claim_options["expected_plan_version"] = expected_plan_version
+        claim = self._claim(
+            task_id,
+            allowed=self.RUNNABLE_STATUSES,
+            **claim_options,
+        )
         if not claim.acquired:
+            if require_claim:
+                raise TaskClaimNotAcquired(
+                    task_id,
+                    claim.reason,
+                    claim.task.status.value,
+                )
             return claim.task
         return self._run_claimed(claim.task, claim.task.lease_token)
 
@@ -311,11 +397,27 @@ class TaskService:
         self,
         task_id: str,
         request_patch: Mapping[str, object] | None = None,
+        *,
+        require_claim: bool = False,
+        expected_plan_version: int | None = None,
+        preclaimed_lease_token: str | None = None,
     ) -> Task:
         task = self.store.require_task(task_id)
         if is_terminal(task.status):
+            if require_claim:
+                raise TaskClaimNotAcquired(
+                    task_id,
+                    "task_already_terminal",
+                    task.status.value,
+                )
             return task
         if task.status is TaskStatus.BLOCKED and request_patch is None:
+            if require_claim:
+                raise TaskClaimNotAcquired(
+                    task_id,
+                    "clarification_patch_required",
+                    task.status.value,
+                )
             return task
 
         updated_request = task.request
@@ -328,11 +430,41 @@ class TaskService:
                 raise ValueError(f"unsupported request fields: {sorted(unknown)}")
             updated_request = task.request.merged(request_patch)
 
-        claim = self._claim(task_id, allowed=self.RESUMABLE_STATUSES)
-        if not claim.acquired:
-            return claim.task
-        claimed = claim.task
-        lease_token = claimed.lease_token
+        if preclaimed_lease_token is not None:
+            claimed = self.store.require_task(task_id)
+            if (
+                expected_plan_version is not None
+                and claimed.plan_version != expected_plan_version
+            ):
+                raise PlanRevisionConflict(
+                    "task plan version changed before preclaimed resume"
+                )
+            if claimed.lease_token != preclaimed_lease_token:
+                raise TaskClaimNotAcquired(
+                    task_id,
+                    "preclaimed_lease_not_owned",
+                    claimed.status.value,
+                )
+            lease_token = preclaimed_lease_token
+        else:
+            claim_options: dict[str, Any] = {}
+            if expected_plan_version is not None:
+                claim_options["expected_plan_version"] = expected_plan_version
+            claim = self._claim(
+                task_id,
+                allowed=self.RESUMABLE_STATUSES,
+                **claim_options,
+            )
+            if not claim.acquired:
+                if require_claim:
+                    raise TaskClaimNotAcquired(
+                        task_id,
+                        claim.reason,
+                        claim.task.status.value,
+                    )
+                return claim.task
+            claimed = claim.task
+            lease_token = claimed.lease_token
         assert lease_token is not None
 
         if claimed.status in {
@@ -346,7 +478,15 @@ class TaskService:
                     claimed.task_id,
                     EventType.CLARIFICATION_UPDATED,
                     self.clock(),
-                    payload={"missing_fields": missing},
+                    payload={
+                        "missing_fields": missing,
+                        "provided_parameters": (
+                            dict(request_patch.get("parameters", {}))
+                            if isinstance(request_patch, Mapping)
+                            and isinstance(request_patch.get("parameters"), Mapping)
+                            else {}
+                        ),
+                    },
                     updates={
                         "request": updated_request,
                         "missing_fields": missing,
@@ -378,7 +518,15 @@ class TaskService:
                 TaskStatus.QUEUED,
                 EventType.CLARIFICATION_UPDATED,
                 self.clock(),
-                payload={"missing_fields": []},
+                payload={
+                    "missing_fields": [],
+                    "provided_parameters": (
+                        dict(request_patch.get("parameters", {}))
+                        if isinstance(request_patch, Mapping)
+                        and isinstance(request_patch.get("parameters"), Mapping)
+                        else {}
+                    ),
+                },
                 updates={
                     "request": updated_request,
                     "missing_fields": [],
@@ -389,6 +537,63 @@ class TaskService:
             )
 
         return self._run_claimed(claimed, lease_token)
+
+    def reserve_control_action(
+        self,
+        task_id: str,
+        *,
+        request_id: str,
+        action: str,
+        request_digest: str,
+        expected_updated_at: str,
+        expected_plan_version: int,
+        payload: Mapping[str, Any],
+        require_claim: bool,
+        allowed_statuses: frozenset[TaskStatus],
+    ) -> dict[str, Any]:
+        occurred_at = self._normalize_time(self.clock())
+        if not require_claim:
+            return self.store.reserve_control_action(
+                task_id,
+                request_id=request_id,
+                action=action,
+                request_digest=request_digest,
+                expected_updated_at=expected_updated_at,
+                expected_plan_version=expected_plan_version,
+                occurred_at=occurred_at,
+                payload=payload,
+            )
+        return self.store.reserve_control_action_with_claim(
+            task_id,
+            request_id=request_id,
+            action=action,
+            request_digest=request_digest,
+            expected_updated_at=expected_updated_at,
+            expected_plan_version=expected_plan_version,
+            occurred_at=occurred_at,
+            payload=payload,
+            owner_id=self.owner_id,
+            lease_token=str(uuid4()),
+            attempt_id=str(uuid4()),
+            expires_at=self._lease_deadline(occurred_at),
+            allowed_statuses=allowed_statuses,
+            max_execution_seconds=self.max_execution_seconds,
+        )
+
+    def inspect_control_action(
+        self,
+        task_id: str,
+        *,
+        request_id: str,
+        action: str,
+        request_digest: str,
+    ) -> dict[str, Any] | None:
+        return self.store.inspect_control_action(
+            task_id,
+            request_id=request_id,
+            action=action,
+            request_digest=request_digest,
+        )
 
     def recover_prepublish_publish_lock_failure(
         self,
@@ -1231,8 +1436,21 @@ class TaskService:
     def events(self, task_id: str) -> list[Event]:
         return self.store.list_events(task_id)
 
-    def cancel(self, task_id: str) -> Task:
-        return self.store.cancel_task(task_id, now=self.clock())
+    def cancel(
+        self,
+        task_id: str,
+        *,
+        expected_plan_version: int | None = None,
+        expected_claim_generation: int | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Task:
+        return self.store.cancel_task(
+            task_id,
+            now=self.clock(),
+            expected_plan_version=expected_plan_version,
+            expected_claim_generation=expected_claim_generation,
+            metadata=metadata,
+        )
 
     def request_cancel(
         self,
@@ -1293,6 +1511,7 @@ class TaskService:
         source_id: str,
         expected_plan_version: int,
         confirmed: bool,
+        allowed_statuses: frozenset[TaskStatus] | None = None,
     ) -> Task:
         """Revise an unexecuted task with an optimistic version check."""
         if not source_id.strip():
@@ -1309,20 +1528,38 @@ class TaskService:
             raise PlanRevisionConflict(
                 "expected plan version does not match current version"
             )
-        if (
-            current.status
-            not in {
+        allowed = (
+            {
                 TaskStatus.QUEUED,
                 TaskStatus.AWAITING_CLARIFICATION,
                 TaskStatus.BLOCKED,
                 TaskStatus.INTERRUPTED,
             }
+            if allowed_statuses is None
+            else allowed_statuses
+        )
+        if (
+            current.status not in allowed
             or current.tool_result is not None
             or current.artifact is not None
             or current.execution_mode is not ExecutionMode.NOT_EXECUTED
         ):
             raise PlanRevisionConflict(
                 "task cannot be revised after execution evidence"
+            )
+        now = self._normalize_time(self.clock())
+        current_lease_state = lease_state(
+            current.lease_token,
+            current.lease_expires_at,
+            now,
+        )
+        if current_lease_state != "none":
+            if current_lease_state == "active":
+                raise PlanRevisionConflict(
+                    "task has an active execution lease"
+                )
+            raise PlanRevisionConflict(
+                "task has an expired execution lease requiring recovery"
             )
         unknown = set(patch) - {"goal", "operation", "parameters"}
         if unknown:
@@ -1398,6 +1635,7 @@ class TaskService:
                     "classification": outcome.classification.value,
                 },
             ),
+            allowed_statuses=allowed_statuses,
         )
 
     @staticmethod
@@ -1662,7 +1900,14 @@ class TaskService:
         """Compatibility alias with lease-safe semantics."""
         return self.recover_expired_leases()
 
-    def _claim(self, task_id: str, *, allowed: frozenset[TaskStatus]) -> ClaimResult:
+    def _claim(
+        self,
+        task_id: str,
+        *,
+        allowed: frozenset[TaskStatus],
+        metadata: Mapping[str, Any] | None = None,
+        expected_plan_version: int | None = None,
+    ) -> ClaimResult:
         now = self._normalize_time(self.clock())
         expires_at = self._lease_deadline(now)
         current = self.store.require_task(task_id)
@@ -1696,6 +1941,8 @@ class TaskService:
                     expires_at=expires_at,
                     allowed_statuses=allowed,
                     max_execution_seconds=self.max_execution_seconds,
+                    metadata=metadata,
+                    expected_plan_version=expected_plan_version,
                 )
         except ArtifactToolError as exc:
             raise StoreBusyError(

@@ -1,26 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Zevorinth Workbench</title>
+  <title>Zevorinth 任务工作台</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#task-detail">Skip to task detail</a>
+  <a class="skip-link" href="#task-detail">跳到任务详情</a>
   <header class="app-header">
     <div class="brand-block">
-      <span class="eyebrow">ZEVORINTH / LOCAL</span>
-      <h1>Evidence workbench</h1>
+      <span class="eyebrow">ZEVORINTH / 本地</span>
+      <h1>任务工作台</h1>
     </div>
     <div class="header-actions">
-      <span class="readonly-badge" title="All workbench requests are read-only">
-        Read-only
+      <span id="mode-badge" class="readonly-badge" title="工作台的全部请求均为只读">
+        只读
       </span>
       <button id="refresh-button" class="button button-quiet" type="button">
-        Refresh
+        刷新
       </button>
     </div>
   </header>
@@ -28,28 +28,27 @@
   <main class="shell">
     <section class="overview" aria-labelledby="overview-heading">
       <div>
-        <p class="eyebrow">Current state</p>
-        <h2 id="overview-heading">Tasks under supervision</h2>
+        <p class="eyebrow">当前状态</p>
+        <h2 id="overview-heading">任务总览</h2>
         <p class="overview-copy">
-          Every status, event and verification fact below is read from the
-          persisted runtime. The browser does not infer success.
+          所有状态、事件和验证信息均来自已持久化的运行时记录；页面不会自行推断任务成功。
         </p>
       </div>
-      <dl class="metric-grid" aria-label="Task overview metrics">
+      <dl class="metric-grid" aria-label="任务总览统计">
         <div class="metric">
-          <dt>All tasks</dt>
+          <dt>全部任务</dt>
           <dd id="metric-all">—</dd>
         </div>
         <div class="metric metric-attention">
-          <dt>Needs attention</dt>
+          <dt>待处理</dt>
           <dd id="metric-attention">—</dd>
         </div>
         <div class="metric">
-          <dt>In progress</dt>
+          <dt>进行中</dt>
           <dd id="metric-progress">—</dd>
         </div>
         <div class="metric metric-verified">
-          <dt>Succeeded</dt>
+          <dt>已完成</dt>
           <dd id="metric-verified">—</dd>
         </div>
       </dl>
@@ -57,57 +56,102 @@
 
     <div id="global-message" class="global-message" role="status" aria-live="polite"></div>
 
+    <section id="task-create-panel" class="panel create-panel" hidden aria-labelledby="create-task-heading">
+      <div class="pane-heading">
+        <div>
+          <p class="eyebrow">受控操作</p>
+          <h2 id="create-task-heading">创建任务</h2>
+        </div>
+      </div>
+      <p id="create-task-copy" class="panel-copy"></p>
+      <form id="create-task-form" class="control-form create-form">
+        <label class="form-field">
+          <span id="create-goal-label">任务目标</span>
+          <textarea id="create-goal" rows="3" required autocomplete="off"></textarea>
+        </label>
+        <label class="form-field">
+          <span id="create-operation-label">任务类型</span>
+          <select id="create-operation">
+            <option value="write_text_artifact">写入任务产物</option>
+            <option value="run_tests">运行本地测试</option>
+          </select>
+        </label>
+        <div id="create-parameters" class="form-grid"></div>
+        <div id="create-task-preview" class="create-preview" aria-live="polite"></div>
+        <label class="confirm-row">
+          <input id="create-confirm" type="checkbox">
+          <span id="create-confirm-label">我已确认任务目标、类型和参数，并理解创建不等于执行。</span>
+        </label>
+        <div class="form-actions">
+          <button id="create-only" class="button button-secondary" type="submit" value="create" disabled>
+            创建排队任务
+          </button>
+          <button id="create-and-submit" class="button" type="submit" value="submit" disabled>
+            创建并提交
+          </button>
+        </div>
+        <p id="create-task-status" class="control-status" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
     <div class="workspace-layout">
       <aside class="task-pane" aria-labelledby="task-list-heading">
         <div class="pane-heading">
           <div>
-            <p class="eyebrow">Index</p>
-            <h2 id="task-list-heading">Tasks</h2>
+            <p class="eyebrow">索引</p>
+            <h2 id="task-list-heading">任务列表</h2>
           </div>
           <span id="task-count-label" class="count-label"></span>
         </div>
 
-        <div class="filter-bar" aria-label="Task filters">
-          <div class="segmented" role="group" aria-label="Task scope">
+        <div class="filter-bar" aria-label="任务筛选">
+          <div class="segmented" role="group" aria-label="任务范围">
             <button id="show-all" class="segment is-active" type="button" aria-pressed="true">
-              All
+              全部
             </button>
             <button id="show-attention" class="segment" type="button" aria-pressed="false">
-              Needs attention
+              待处理
             </button>
           </div>
           <label class="select-label" for="status-filter">
-            Status
+            状态
             <select id="status-filter">
-              <option value="">Any status</option>
-              <option value="queued">Queued</option>
-              <option value="running">Running</option>
-              <option value="awaiting_clarification">Awaiting clarification</option>
-              <option value="blocked">Blocked</option>
-              <option value="verifying">Verifying</option>
-              <option value="succeeded">Succeeded</option>
-              <option value="failed">Failed</option>
-              <option value="planning_failed">Planning failed</option>
-              <option value="interrupted">Interrupted</option>
-              <option value="cancelled">Cancelled</option>
-              <option value="simulated">Simulated</option>
+              <option value="">全部状态</option>
+              <option value="queued">排队中</option>
+              <option value="running">执行中</option>
+              <option value="awaiting_clarification">等待补充信息</option>
+              <option value="blocked">已阻止</option>
+              <option value="verifying">验证中</option>
+              <option value="succeeded">已完成</option>
+              <option value="failed">执行失败</option>
+              <option value="planning_failed">规划失败</option>
+              <option value="interrupted">执行已中断</option>
+              <option value="cancelled">已取消</option>
+              <option value="simulated">已模拟</option>
             </select>
           </label>
         </div>
+        <form id="task-search-form" class="filter-bar" role="search">
+          <label class="select-label" for="task-search">
+            搜索任务
+            <input id="task-search" type="search" maxlength="200" autocomplete="off"
+                   placeholder="任务 ID、目标或操作">
+          </label>
+          <button class="button button-quiet" type="submit">搜索</button>
+        </form>
 
         <div id="task-list" class="task-list" aria-live="polite"></div>
         <button id="load-more" class="button button-secondary load-more" type="button" hidden>
-          Load more
+          加载更多
         </button>
       </aside>
 
-      <section id="task-detail" class="detail-pane" tabindex="-1" aria-label="Task detail">
+      <section id="task-detail" class="detail-pane" tabindex="-1" aria-label="任务详情">
         <section class="empty-detail" aria-labelledby="empty-detail-heading">
-          <p class="eyebrow">Task detail</p>
-          <h2 id="empty-detail-heading">Select a task</h2>
+          <p class="eyebrow">任务详情</p>
+          <h2 id="empty-detail-heading">选择一个任务</h2>
           <p>
-            Open any task to inspect its current phase, event timeline,
-            independent verification and read-only recovery preview.
+            打开任务后可查看当前阶段、事件时间线、独立验证结果和只读恢复方案预览。
           </p>
           <div id="attention-inbox" class="attention-inbox" aria-live="polite"></div>
         </section>
@@ -116,16 +160,14 @@
   </main>
 
   <footer class="app-footer">
-    <p>
-      Local workbench v1. No submit, retry, cancel, recovery or delete action is
-      available here. Authentication and online model quality are not measured.
+    <p id="footer-copy">
+      本地任务工作台 v1。默认仅提供任务、事件、审计、验证结果和任务产物的只读视图；控制操作仅在独立控制会话验证可用能力后开放。页面不代表已完成身份认证或真实模型质量评测。
     </p>
   </footer>
 
   <noscript>
     <p class="noscript">
-      This workbench requires JavaScript to render persisted task data. No task
-      was changed by loading this page.
+      任务工作台需要 JavaScript 才能展示持久化任务数据。加载本页面不会修改任何任务。
     </p>
   </noscript>
 </body>

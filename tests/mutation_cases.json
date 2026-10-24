@@ -2578,10 +2578,10 @@
       "id": "workbench_post_mutation_accepted",
       "property": "the workbench HTTP surface is read-only",
       "path": "src/zevorinth/workbench_server.py",
-      "old": "    def do_POST(self) -> None:\n        self._method_not_allowed()\n",
-      "new": "    def do_POST(self) -> None:\n        self._handle(send_body=True)\n",
+      "old": "        if (\n            self.server.control_enabled\n            and _CONTROL_ACTIONS_PATH.fullmatch(path)\n        ):\n            self._handle_control_post()\n            return\n",
+      "new": "        if (\n            self.server.control_enabled\n            and True\n        ):\n            self._handle_control_post()\n            return\n",
       "tests": [
-        "tests.test_workbench.WorkbenchHTTPTests.test_mutation_methods_and_unknown_routes_are_rejected"
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_read_only_api_remains_405_and_workbench_has_no_control_session"
       ],
       "expected": "killed"
     },
@@ -2589,8 +2589,8 @@
       "id": "workbench_artifact_query_path_accepted",
       "property": "artifact routes reject query-driven path input",
       "path": "src/zevorinth/workbench_server.py",
-      "old": "                _reject_unknown_query(\n                    parse_qs(parsed.query, strict_parsing=False),\n                    set(),\n                )\n",
-      "new": "                pass\n",
+      "old": "                _reject_unknown_query(\n                    parse_qs(parsed.query, strict_parsing=False),\n                    set(),\n                )\n                task_id, artifact_suffix = match.groups()\n",
+      "new": "                pass\n                task_id, artifact_suffix = match.groups()\n",
       "tests": [
         "tests.test_workbench.WorkbenchHTTPTests.test_registered_artifact_preview_is_bounded_to_task_evidence"
       ],
@@ -2681,6 +2681,595 @@
       "new": "AUDITOR_VERSION = \"lifecycle-audit-v1\"\n",
       "tests": [
         "tests.test_lifecycle_audit_coverage.LifecycleAuditCoverageTests.test_success_is_consistent_and_not_retryable"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_origin_validation_bypassed",
+      "property": "control actions require the matching local Origin",
+      "path": "src/zevorinth/workbench_server.py",
+      "old": "        if origin not in self.server.control_origins:\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_control_action_requires_token_origin_confirmation_and_version"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_token_validation_bypassed",
+      "property": "control actions require the process CSRF token",
+      "path": "src/zevorinth/workbench_server.py",
+      "old": "        if not token or not hmac.compare_digest(token, expected):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_control_action_requires_token_origin_confirmation_and_version"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_confirmation_bypassed",
+      "property": "control actions require explicit confirmation",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "        if (\n            action != ADD_TASK_NOTE\n            and payload.get(\"confirmed\") is not True\n        ):\n            raise ControlActionError(\n                \"confirmation_required\",\n                \"the action requires explicit confirmation\",\n                status=403,\n            )\n",
+      "new": "        if False:\n            raise ControlActionError(\n                \"confirmation_required\",\n                \"the action requires explicit confirmation\",\n                status=403,\n            )\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_control_action_requires_token_origin_confirmation_and_version"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_task_version_check_bypassed",
+      "property": "execution claims reject stale plan versions",
+      "path": "src/zevorinth/service.py",
+      "old": "        if claim_metadata is not None:\n            claim_options[\"metadata\"] = claim_metadata\n        if expected_plan_version is not None:\n            claim_options[\"expected_plan_version\"] = expected_plan_version\n",
+      "new": "        if claim_metadata is not None:\n            claim_options[\"metadata\"] = claim_metadata\n        if False:\n            claim_options[\"expected_plan_version\"] = expected_plan_version\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_service_start_and_cancel_guard_stale_plan_versions"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_claim_acquisition_bypassed",
+      "property": "control actions only complete after acquiring the task claim",
+      "patches": [
+        {
+          "path": "src/zevorinth/event_store.py",
+          "old": "            elif task.lease_token is not None:\n",
+          "new": "            elif False:\n"
+        },
+        {
+          "path": "src/zevorinth/workbench_control.py",
+          "old": "        if not preclaimed and task.lease_token is not None:\n",
+          "new": "        if False:\n"
+        }
+      ],
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_active_external_claim_fails_clarification_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_request_reservation_digest_bypassed",
+      "property": "cross-process request reservation binds the exact content",
+      "path": "src/zevorinth/event_store.py",
+      "old": "        conflict = receipt[\"state\"] != \"inconsistent\" and any(\n",
+      "new": "        conflict = False and any(\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_same_request_id_concurrent_conflict_preserves_exact_content"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_request_unknown_overclaimed",
+      "property": "request status never infers completion from task state",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "            \"state\": state,\n            \"manual_review_required\": state in {\"unknown\", \"inconsistent\"},\n",
+      "new": "            \"state\": \"completed\",\n            \"manual_review_required\": False,\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_lost_completion_is_reported_for_manual_review"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_revision_operation_change_allowed",
+      "property": "control-center revisions keep operation type immutable",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "    unknown = set(value) - {\"goal\", \"parameters\"}\n",
+      "new": "    unknown = set(value) - {\"goal\", \"parameters\", \"operation\"}\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_rejects_invalid_changes_and_reused_request_content"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_revision_noop_allowed",
+      "property": "control revisions reject no-op task definitions",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "            if revised_request.to_dict() == task.request.to_dict():\n",
+      "new": "            if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_rejects_noop_stale_and_execution_evidence"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_revision_reconciliation_hidden",
+      "property": "persisted plan revisions reconcile lost completion events",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "    if revision is not None:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_completion_loss_reconciles_from_plan_revision"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_cancel_reconciliation_hidden",
+      "property": "persisted task cancellation reconciles lost completion events",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "    if cancelled_event is not None:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_cancel_completion_loss_reconciles_from_task_event"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_start_claim_provenance_hidden",
+      "property": "artifact execution records the controlling request in the claim",
+      "path": "src/zevorinth/event_store.py",
+      "old": "                        \"control_request_id\": request_id,\n",
+      "new": "                        \"ignored_request_id\": request_id,\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_start_queued_task_executes_once_and_links_claim_receipt"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_start_reconciliation_hidden",
+      "property": "terminal execution reconciles a lost control completion",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "    if claimed_event is not None:\n",
+      "new": "    if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_start_completion_loss_reconciles_from_claim_terminal"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_start_attempt_binding_bypassed",
+      "property": "start reconciliation requires the same execution attempt",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "        claimed_attempt = claimed_payload.get(\"attempt_id\")\n",
+      "new": "        claimed_attempt = task_attempt_id\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_start_reconciliation_requires_same_attempt_id"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_completed_claim_attempt_bypassed",
+      "property": "completed receipts reject a claim from a different attempt",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "                and claimed_event.get(\"payload\", {}).get(\"attempt_id\")\n                == task_attempt_id\n",
+      "new": "                and True\n",
+      "tests": [
+        "tests.test_workbench_control.ControlReceiptClassificationTests.test_completed_receipt_rejects_mismatched_claim_attempt"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_completed_request_replayed",
+      "property": "completed control request IDs are idempotent",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                if reservation[\"state\"] == \"completed\":\n",
+      "new": "                if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_confirmed_clarification_action_executes_and_rereads_state"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_unknown_request_replayed",
+      "property": "an incomplete prior control request fails closed",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                raise ControlActionError(\n                    \"action_state_unknown\",\n                    \"a prior request with this ID has no verified completion\",\n                )\n",
+      "new": "                pass\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_requested_without_completion_fails_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_request_id_conflict_hidden",
+      "property": "request IDs are bound to the exact action content",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                if reservation[\"state\"] == \"conflict\":\n",
+      "new": "                if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_same_request_id_concurrent_conflict_preserves_exact_content"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_clarification_claim_version_bypassed",
+      "property": "atomic clarification claims bind task and plan versions",
+      "patches": [
+        {
+          "path": "src/zevorinth/event_store.py",
+          "old": "            if task.plan_version != expected_plan_version:\n                raise PlanRevisionConflict(\n                    \"task changed before control action reservation\"\n                )\n            claim_reason: str | None = None\n",
+          "new": "            if False:\n                raise PlanRevisionConflict(\n                    \"task changed before control action reservation\"\n                )\n            claim_reason: str | None = None\n"
+        },
+        {
+          "path": "src/zevorinth/event_store.py",
+          "old": "            if task.updated_at != expected_updated_at:\n                raise PlanRevisionConflict(\n                    \"task changed before control action reservation\"\n                )\n\n            previous_status = task.status\n",
+          "new": "            if False:\n                raise PlanRevisionConflict(\n                    \"task changed before control action reservation\"\n                )\n\n            previous_status = task.status\n"
+        }
+      ],
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_control_claim_atomically_rejects_stale_plan_version"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_receipt_completion_failure_conflict_hidden",
+      "property": "completion and failure evidence are never normalized to success",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "        or (completed and failed)\n",
+      "new": "        or False\n",
+      "tests": [
+        "tests.test_workbench_control.ControlReceiptClassificationTests.test_receipt_states_are_fail_closed_and_shared",
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_replay_and_status_share_conflicting_receipt_state"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_inconsistent_replay_overclaimed",
+      "property": "conflicting control evidence cannot replay as success",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                if reservation[\"state\"] == \"inconsistent\":\n",
+      "new": "                if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_replay_and_status_share_conflicting_receipt_state"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_interrupted_revision_advertised",
+      "property": "interrupted tasks do not advertise an unsatisfiable revision",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "        TaskStatus.BLOCKED,\n    }\n)\n_REQUEST_ID",
+      "new": "        TaskStatus.BLOCKED,\n        TaskStatus.INTERRUPTED,\n    }\n)\n_REQUEST_ID",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_interrupted_task_is_not_advertised_as_revisable"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_history_revision_substitution",
+      "property": "historical reconciliation reports the exact revision version",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                evidence[\"revision\"][\"to_version\"]\n",
+      "new": "                task.plan_version\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_reconciliation_finds_evidence_after_many_revisions"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_active_lease_revision_bypassed",
+      "property": "active execution claims cannot be overwritten by plan revision",
+      "patches": [
+        {
+          "path": "src/zevorinth/event_store.py",
+          "old": "            if current.lease_token is not None:\n                current_lease_state = lease_state(\n                    current.lease_token,\n                    current.lease_expires_at,\n                    event.occurred_at,\n                )\n                if current_lease_state == \"active\":\n                    raise PlanRevisionConflict(\n                        \"task has an active execution lease\"\n                    )\n                raise PlanRevisionConflict(\n                    \"task has an expired execution lease requiring recovery\"\n                )\n",
+          "new": "            if False:\n                current_lease_state = lease_state(\n                    current.lease_token,\n                    current.lease_expires_at,\n                    event.occurred_at,\n                )\n                if current_lease_state == \"active\":\n                    raise PlanRevisionConflict(\n                        \"task has an active execution lease\"\n                    )\n                raise PlanRevisionConflict(\n                    \"task has an expired execution lease requiring recovery\"\n                )\n"
+        },
+        {
+          "path": "src/zevorinth/service.py",
+          "old": "        current_lease_state = lease_state(\n            current.lease_token,\n            current.lease_expires_at,\n            now,\n        )\n        if current_lease_state != \"none\":\n            if current_lease_state == \"active\":\n                raise PlanRevisionConflict(\n                    \"task has an active execution lease\"\n                )\n            raise PlanRevisionConflict(\n                \"task has an expired execution lease requiring recovery\"\n            )\n",
+          "new": "        current_lease_state = lease_state(\n            current.lease_token,\n            current.lease_expires_at,\n            now,\n        )\n        if False:\n            if current_lease_state == \"active\":\n                raise PlanRevisionConflict(\n                    \"task has an active execution lease\"\n                )\n            raise PlanRevisionConflict(\n                \"task has an expired execution lease requiring recovery\"\n            )\n"
+        }
+      ],
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_cannot_overwrite_active_clarification_claim"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_lost_completion_replay_resolution_hidden",
+      "property": "query and replay share completion-loss reconciliation",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            revision=revision,\n",
+      "new": "            revision=None,\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_completion_loss_reconciles_from_plan_revision"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_atomic_claim_committed_early",
+      "property": "control reservation and claim commit in one transaction",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            self._update_task(connection, task)\n            self._insert_events(connection, events)\n            connection.commit()\n        return {\n            \"reserved\": True,\n            \"state\": \"requested\",\n            \"task\": task,\n            \"lease_token\": lease_token,\n        }\n",
+      "new": "            self._update_task(connection, task)\n            connection.commit()\n            self._insert_events(connection, events)\n            connection.commit()\n        return {\n            \"reserved\": True,\n            \"state\": \"requested\",\n            \"task\": task,\n            \"lease_token\": lease_token,\n        }\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_control_reservation_and_claim_roll_back_together"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_preclaim_failure_duplicate_allowed",
+      "property": "preclaim failures preserve request-ID idempotency",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            evidence = self._control_action_evidence(\n                connection,\n                task=task,\n                request_id=request_id,\n                action=action,\n                request_digest=request_digest,\n            )\n            if evidence[\"receipt\"] is not None:\n                connection.commit()\n                if evidence[\"conflict\"]:\n                    return {\"recorded\": False, \"state\": \"conflict\"}\n",
+      "new": "            evidence = self._control_action_evidence(\n                connection,\n                task=task,\n                request_id=request_id,\n                action=action,\n                request_digest=request_digest,\n            )\n            if False:\n                connection.commit()\n                if evidence[\"conflict\"]:\n                    return {\"recorded\": False, \"state\": \"conflict\"}\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_preclaim_failure_is_idempotent_across_instances"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_active_claim_preview_action_leaked",
+      "property": "previews do not advertise actions blocked by a held claim",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "            deterministic\n            and lease_state == \"none\"\n            and status in {item.value for item in _REVISABLE_STATUSES}\n",
+      "new": "            deterministic\n            and True\n            and status in {item.value for item in _REVISABLE_STATUSES}\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_active_external_claim_fails_clarification_closed"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_expired_claim_recovery_reason_hidden",
+      "property": "expired lease previews require explicit recovery",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "        elif lease_state == \"expired\":\n            unavailable_reason = \"task_claim_recovery_required\"\n        elif status == TaskStatus.INTERRUPTED.value and deterministic:\n",
+      "new": "        elif False:\n            unavailable_reason = \"task_claim_recovery_required\"\n        elif status == TaskStatus.INTERRUPTED.value and deterministic:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_expired_claim_preview_and_submit_require_recovery"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_postclaim_unknown_downgraded",
+      "property": "post-claim unexpected failures remain outcome-unknown",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                outcome_unknown = reservation.get(\"lease_token\") is not None\n",
+      "new": "                outcome_unknown = False\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_unexpected_postclaim_error_requires_manual_reconciliation"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_note_lease_recheck_removed",
+      "property": "task notes recheck the lease inside the write transaction",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                        require_no_lease=True,\n",
+      "new": "                        require_no_lease=False,\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_note_race_after_reservation_cannot_mutate_claimed_task"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_revision_expired_lease_cleared",
+      "property": "plan revision rejects any unreleased lease atomically",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            if current.lease_token is not None:\n                current_lease_state = lease_state(\n                    current.lease_token,\n                    current.lease_expires_at,\n                    event.occurred_at,\n                )\n                if current_lease_state == \"active\":\n",
+      "new": "            if False:\n                current_lease_state = lease_state(\n                    current.lease_token,\n                    current.lease_expires_at,\n                    event.occurred_at,\n                )\n                if current_lease_state == \"active\":\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_revision_race_after_reservation_cannot_clear_expired_lease"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_note_missing_expiry_misclassified",
+      "property": "note write transaction reports missing-expiry leases as active",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            if require_no_lease and task.lease_token is not None:\n                current_lease_state = lease_state(\n                    task.lease_token,\n                    task.lease_expires_at,\n                    occurred_at,\n                )\n                if current_lease_state == \"active\":\n                    raise PlanRevisionConflict(\n                        \"task has an active execution lease\"\n                    )\n                raise PlanRevisionConflict(\n                    \"task has an expired execution lease requiring recovery\"\n                )\n",
+      "new": "            if require_no_lease and task.lease_token is not None:\n                current_lease_state = lease_state(\n                    task.lease_token,\n                    task.lease_expires_at,\n                    occurred_at,\n                )\n                if False:\n                    raise PlanRevisionConflict(\n                        \"task has an active execution lease\"\n                    )\n                raise PlanRevisionConflict(\n                    \"task has an expired execution lease requiring recovery\"\n                )\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_missing_expiry_lease_atomic_paths_use_active_conflict"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_receipt_missing_expiry_not_active",
+      "property": "receipt reconciliation uses the centralized lease state",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            lease_active=lease_state(\n                task.lease_token,\n                task.lease_expires_at,\n                self._now(),\n            )\n            == \"active\",\n",
+      "new": "            lease_active=(\n                task.lease_token is not None\n                and task.lease_expires_at is not None\n                and self._lease_is_active(\n                    task.lease_expires_at,\n                    self._now(),\n                )\n            ),\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_released_or_expired_claim_is_not_reported_in_progress"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_naive_lease_timezone_not_normalized",
+      "property": "naive lease timestamps use the same UTC comparison in preview and submit",
+      "path": "src/zevorinth/event_store.py",
+      "old": "    if expires.tzinfo is None:\n        expires = expires.replace(tzinfo=timezone.utc)\n",
+      "new": "    if False:\n        expires = expires.replace(tzinfo=timezone.utc)\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_naive_lease_timestamp_has_consistent_preview_and_submit"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_cancel_expired_lease_reason_hidden",
+      "property": "strict cancellation reports expired leases as recovery required",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            if strict_control and current_lease_state == \"expired\":\n                raise PlanRevisionConflict(\n                    \"task has an expired execution lease requiring recovery\"\n                )\n",
+      "new": "            if False:\n                raise PlanRevisionConflict(\n                    \"task has an expired execution lease requiring recovery\"\n                )\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_cancel_race_after_reservation_reports_lease_recovery"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "execution_claim_missing_expiry_bypassed",
+      "property": "execution claims treat missing-expiry leases as active",
+      "path": "src/zevorinth/event_store.py",
+      "old": "            if current_lease_state == \"active\":\n                reason = \"active_lease\"\n",
+      "new": "            if False:\n                reason = \"active_lease\"\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_execution_claim_rejects_missing_expiry_lease"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "frontend_stale_recovery_code_hidden",
+      "property": "expired-lease recovery errors refresh the control preview",
+      "path": "src/zevorinth/workbench_static/app.js",
+      "old": "    \"task_claim_not_acquired\",\n    \"task_claim_recovery_required\",\n",
+      "new": "    \"task_claim_not_acquired\",\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchProjectionTests.test_localization_scripts_use_safe_text_rendering"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_cancel_claim_generation_bypassed",
+      "property": "cancellation rejects any task that previously acquired a claim",
+      "path": "src/zevorinth/event_store.py",
+      "old": "                if task.claim_generation != expected_claim_generation:\n",
+      "new": "                if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_cancel_rechecks_claim_generation_atomically"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_llm_cancel_planner_guard_leaked",
+      "property": "queued cancellation does not require planner execution support",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "            in {\n                ANSWER_CLARIFICATION,\n                REVISE_UNSTARTED_TASK,\n                START_QUEUED_TASK,\n            }\n",
+      "new": "            in {\n                ANSWER_CLARIFICATION,\n                REVISE_UNSTARTED_TASK,\n                START_QUEUED_TASK,\n                CANCEL_QUEUED_TASK,\n            }\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_llm_planner_queued_task_can_still_be_cancelled"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_released_claim_reported_in_progress",
+      "property": "missing or expired lease cannot be reported as active progress",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "            and lease_active\n",
+      "new": "            and True\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_released_or_expired_claim_is_not_reported_in_progress"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "control_receipt_historical_version_hidden",
+      "property": "completed receipts preserve historical plan version",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "        if isinstance(payload.get(\"plan_version\"), int):\n",
+      "new": "        if False:\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_completed_receipt_keeps_historical_version_and_error"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "task_creation_existing_request_recreated",
+      "property": "task creation reuses the request ID and definition digest",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                \"status\": \"created\" if created_now else \"already_exists\",\n",
+      "new": "                \"status\": \"created\",\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_concurrent_identical_task_creation_has_one_created_response"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "task_creation_definition_conflict_hidden",
+      "property": "task creation rejects a reused request ID with different content",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                if existing_digest != request_digest:\n                    raise ControlActionError(\n                        \"task_creation_conflict\",\n                        \"request_id belongs to a different task definition\",\n                    )\n                return {\n                    \"contract_version\": CONTROL_CONTRACT_VERSION,\n                    \"status\": \"already_exists\",\n",
+      "new": "                if False:\n                    raise ControlActionError(\n                        \"task_creation_conflict\",\n                        \"request_id belongs to a different task definition\",\n                    )\n                return {\n                    \"contract_version\": CONTROL_CONTRACT_VERSION,\n                    \"status\": \"already_exists\",\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_task_creation_is_real_idempotent_and_reloadable"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "task_creation_reported_as_executed",
+      "property": "task creation reports the authoritative queued state rather than execution",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                \"task_status\": task.status.value,\n                \"plan_version\": task.plan_version,\n                \"task_request_digest\": request_digest,\n",
+      "new": "                \"task_status\": \"succeeded\",\n                \"plan_version\": task.plan_version,\n                \"task_request_digest\": request_digest,\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_task_creation_is_real_idempotent_and_reloadable"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "task_creation_blank_parameters_filled",
+      "property": "omitted task creation parameters remain clarification inputs",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                    \"parameters\": payload.get(\"parameters\", {}),\n",
+      "new": "                    \"parameters\": {\"content\": \"mutated\"},\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_task_creation_with_omitted_parameters_requires_clarification"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "task_note_not_audited",
+      "property": "task notes persist the exact audit message",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                        EventType.TASK_NOTE_ADDED,\n",
+      "new": "                        EventType.TASK_CREATED,\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_task_note_is_auditable_and_does_not_change_status"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "preclaimed_validation_leaks_lease",
+      "property": "a preclaimed validation failure releases the request-owned lease",
+      "path": "src/zevorinth/workbench_control.py",
+      "old": "                        service.store.rollback_control_claim(\n                            task_id,\n                            lease_token=lease_token,\n                            previous=preclaim_task,\n                            now=_utc_now(),\n                            payload={\n                                \"reason\": \"preclaimed_validation_failed\",\n                                \"request_id\": request_id,\n                                \"action\": action,\n                            },\n                        )\n",
+      "new": "                        None\n",
+      "tests": [
+        "tests.test_workbench_control.WorkbenchControlHTTPTests.test_preclaimed_validation_failure_releases_lease"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "clarification_claim_reported_unknown",
+      "property": "request-linked active claims are reported as in progress",
+      "path": "src/zevorinth/control_receipt.py",
+      "old": "            claimed_action == requested_action\n",
+      "new": "            False\n",
+      "tests": [
+        "tests.test_workbench_control.ControlReceiptClassificationTests.test_request_linked_clarification_claim_is_in_progress"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "create_submit_query_hint_hidden",
+      "property": "lost create-and-submit responses retain a manual receipt query",
+      "path": "src/zevorinth/workbench_static/app.js",
+      "old": "      status.textContent += ` ${ui(\"create_and_submit_query_hint\")}`;\n",
+      "new": "      status.textContent += \"\";\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchProjectionTests.test_localization_scripts_use_safe_text_rendering"
+      ],
+      "expected": "killed"
+    },
+    {
+      "id": "run_tests_create_and_submit_enabled",
+      "property": "run_tests is create-only until a separate execution contract exists",
+      "path": "src/zevorinth/workbench_static/app.js",
+      "old": "      || operation.value !== \"write_text_artifact\";\n",
+      "new": "      || false;\n",
+      "tests": [
+        "tests.test_workbench.WorkbenchProjectionTests.test_localization_scripts_use_safe_text_rendering"
       ],
       "expected": "killed"
     }

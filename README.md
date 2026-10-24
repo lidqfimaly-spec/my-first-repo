@@ -368,6 +368,82 @@ PYTHONPATH=src python3 -m zevorinth \
 或工作台进程退出不影响执行内核、任务持久化或审计记录。事件 payload 只展示有界、
 脱敏后的摘要；工作台没有多用户认证，不应暴露到非本机网络。
 
+需要受控写操作时使用独立的控制台入口：
+
+```bash
+PYTHONPATH=src python3 -m zevorinth \
+  --home "$DEMO_ROOT" \
+  control-center --port 8766
+```
+
+控制台 v1 保留原有只读 `/api` 和 `405` 行为，通过独立 `/control/api` 开放真实任务
+创建、任务说明、`answer_clarification`、`revise_unstarted_task`、
+`start_queued_task` 和 `cancel_queued_task`。动作必须来自同一 loopback Origin、
+携带当前进程令牌、显式确认，并重新校验任务状态、更新时间、计划版本和定义摘要。
+`POST /control/api/tasks` 使用客户端 UUIDv4 作为任务 ID，同一 ID 与相同定义重放时
+返回 `already_exists`，相同 ID 携带不同定义时返回 `task_creation_conflict`。
+“创建排队任务”只持久化规划预览和 `queued` 状态；“创建并提交”随后才重新读取当前
+action preview 并调用受控启动。创建成功不等于任务已执行。受控启动使用独立且可查询
+的 request ID；响应丢失时页面保留“查询操作结果”入口，并阻止在同一请求未解决前创建
+新的提交，不会自动生成新 ID 重试。
+
+任务说明通过 `add_task_note` 追加脱敏审计事件，只用于人工交流；它不修改任务定义、
+计划版本或生命周期状态，普通说明文字也不会被解释为执行指令。
+修订操作只修改尚未产生执行证据的任务，不启动任务或调用工具；操作类型保持不变，
+参数按 JSON 对象进行键级增量合并。
+
+控制动作的 `request_id` 预留、任务更新时间和计划版本校验在同一个 SQLite 写事务内
+完成，因此多个控制进程并发使用同一 ID 时也只能登记一次；相同 ID 携带不同内容会在
+产生第二个操作事件或副作用之前返回冲突。
+
+取消只适用于从未取得执行权、未产生执行证据的排队任务。取消与修订共享计划版本
+乐观检查，不能同时提交；取消后任务进入终态，不提供通过控制台重新排队的能力。
+
+受控启动当前只开放确定性 `write_text_artifact` 任务。启动会取得执行权、写入任务
+artifact 并执行独立验证；执行结果和失败以权威任务状态为准，不自动重试。控制台可以
+创建受条件约束的 `run_tests` 任务并在缺少参数时进入澄清流程，但“创建并提交”对该
+类型禁用，只允许“创建排队任务”；控制台不能启动 `run_tests`，因为其容器、隔离证据
+和既有授权链尚未由本控制契约开放。服务端也不会对 `run_tests` 提供
+`answer_clarification`，因此不能通过“补充澄清后继续”绕过启动限制。其他执行后端
+同样尚未开放。
+
+澄清回答与受控启动在同一 SQLite `BEGIN IMMEDIATE` 事务中完成 request ID
+幂等判定、任务状态/计划版本校验、执行权获取，并同时写入 requested/claimed
+证据；若另一进程或 CLI 已经取得执行权，本次动作以
+`task_claim_not_acquired` 失败关闭。过期但尚未释放的执行租约不会显示可写操作，
+而是返回 `task_claim_recovery_required`；预览不会自动恢复或释放 lease。修订通过既有乐观计划版本和 `plan_revision`
+原子提交，活动 lease 存在时不能修订。控制动作结果以事件记录，重复 `request_id`
+不会再次执行。其他测试执行、重试、执行中取消、恢复、工具治理和高风险操作尚未开放。
+
+若提交结果不明确，可通过只读请求状态接口按 `request_id` 查询持久化回执。该接口
+要求 loopback Host 与进程 CSRF 令牌；只有存在完成事件时才报告完成，不会
+根据任务状态推断成功，也不会自动重试。修订请求还可用持久化的同 ID
+`plan_revision` 对账完成结果；取消和受控启动也可通过关联的
+`task_cancelled`/`task_claimed` 事件对账。
+
+离线验收证据由固定入口生成，而不是手工编辑摘要：
+
+```bash
+RUN_DIR="artifacts/audits/task-control-center-v1/final-validation-$(date -u +%Y%m%dT%H%M%SZ)"
+PYTHONPATH=src python3 tests/task_control_center_evidence.py run \
+  --review-manifest artifacts/audits/task-control-center-v1/independent-review/current-review-manifest.json \
+  --output-dir "$RUN_DIR"
+PYTHONPATH=src python3 tests/task_control_center_evidence.py summarize \
+  --run-metadata "$RUN_DIR/run-metadata.json" \
+  --output artifacts/audits/task-control-center-v1/stable-summary.json \
+  --replace-reason "说明旧摘要被替换的原因"
+```
+
+该流程会失败关闭于缺失/损坏证据、哈希或统计不一致、代码指纹漂移、container/
+Docker/live/online 用例混入、审查 HEAD/指纹不匹配、零文件审查，以及冻结证据
+变化。审查清单分别记录代码审查和架构审查状态；`REQUEST CHANGES`、`WATCH`、
+`BLOCK` 与 `UNAVAILABLE` 不会被转换成通过状态。
+完成报告的 Markdown 必须声明 `Independent review conclusion:`，且其
+归一化结论必须与机器结果一致；审查文件集合必须与当前变更候选完全一致，
+`.idea/` 与 `.env*` 不能作为证据输入路径。
+`run` 输出目录必须为空；上面的 `RUN_DIR` 每次运行都会生成新的版本化目录，并把
+`--output-dir` 与 `--run-metadata` 绑定到同一次执行。
+
 ## 模拟与未执行
 
 ```bash
