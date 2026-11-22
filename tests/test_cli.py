@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from zevorinth.cli import doctor_report, main  # noqa: E402
+from zevorinth.capabilities import CAPABILITY_REGISTRY  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 
 
@@ -37,8 +38,14 @@ class CliTests(unittest.TestCase):
     def test_doctor_reports_current_capabilities_without_overstating_model_support(self) -> None:
         report = doctor_report(PROJECT_ROOT)
 
-        self.assertEqual(report["phase"], "3.75")
-        self.assertEqual(report["hardening_phase"], "3.75")
+        registry_phase = CAPABILITY_REGISTRY["product_stage"]
+        self.assertEqual(report["phase"], registry_phase)
+        self.assertEqual(report["hardening_phase"], registry_phase)
+        self.assertIn(f"Phase {registry_phase}", report["notice"])
+        for operation in CAPABILITY_REGISTRY["task_operations"]:
+            self.assertIn(operation, report["task_types"])
+            self.assertIn(operation, report["notice"])
+        self.assertIn("trusted local task provenance", report["notice"])
         self.assertEqual(report["legacy_phase"], 2)
         self.assertEqual(report["project_root"], str(PROJECT_ROOT.resolve()))
         self.assertEqual(report["runtime_dependencies"], [])
@@ -57,7 +64,9 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["project"], "Zevorinth")
-        self.assertEqual(payload["phase"], "3.75")
+        self.assertEqual(
+            payload["phase"], CAPABILITY_REGISTRY["product_stage"]
+        )
         self.assertEqual(
             payload["capability_registry_version"],
             "capability-registry-v1",
@@ -331,6 +340,104 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), "ok")
+
+
+class HostGrantCliTests(unittest.TestCase):
+    """The three grant commands are the only way to authorize host execution."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.home = Path(self._temp.name)
+        self._env = patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.home),
+                "ZEVORINTH_PLANNER": "deterministic",
+                "OPENAI_API_KEY": "",
+            },
+            clear=False,
+        )
+        self._env.start()
+        self.addCleanup(self._temp.cleanup)
+        self.addCleanup(self._env.stop)
+
+    def _run(self, *args: str) -> tuple[int, str]:
+        out = StringIO()
+        err = StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(["--home", str(self.home), *args])
+        return code, out.getvalue() + err.getvalue()
+
+    def _run_as_human(self, *args: str) -> tuple[int, str]:
+        """Issue through a pseudo-terminal, as the operator would."""
+
+        class _Tty:
+            def isatty(self) -> bool:
+                return True
+
+        with patch.object(sys, "stdin", _Tty()):
+            return self._run(*args)
+
+    def test_issue_list_and_revoke_round_trip(self) -> None:
+        code, output = self._run_as_human(
+            "authorize-host-test",
+            "--workspace",
+            "demo",
+            "--target",
+            "test_demo",
+            "--json",
+        )
+        self.assertEqual(code, 0, output)
+        issued = json.loads(
+            output[output.index("{"):]
+        )
+        grant_id = issued["grant"]["grant_id"]
+        self.assertEqual(issued["grant"]["workspace"], "demo")
+        self.assertEqual(issued["grant"]["target"], "test_demo")
+        self.assertIn(".", issued["token"])
+
+        code, listed = self._run("host-grants", "--json")
+        self.assertEqual(code, 0, listed)
+        payload = json.loads(listed[listed.index("{"):])
+        self.assertEqual(payload["storage"]["mode"], "0o700")
+        self.assertEqual(payload["grants"][0]["grant_id"], grant_id)
+        # The secret never leaves the issuance call.
+        self.assertNotIn(issued["token"].split(".", 1)[1], listed)
+
+        code, revoked = self._run("revoke-host-test", grant_id, "--json")
+        self.assertEqual(code, 0, revoked)
+        record = json.loads(revoked[revoked.index("{"):])
+        self.assertIsNotNone(record["revoked_at"])
+        self.assertEqual(record["revoked_by"], record["issuer"])
+
+    def test_revoke_unknown_grant_uses_the_authorization_exit_code(self) -> None:
+        code, output = self._run(
+            "revoke-host-test", "f" * 32, "--issuer", "operator"
+        )
+        self.assertEqual(code, 7, output)
+        self.assertIn("host_authorization_invalid", output)
+
+    def test_issue_refuses_a_non_interactive_process(self) -> None:
+        code, output = self._run(
+            "authorize-host-test",
+            "--workspace",
+            "demo",
+            "--target",
+            "test_demo",
+        )
+        self.assertEqual(code, 7, output)
+        self.assertIn("host_authorization_issuance_requires_tty", output)
+
+    def test_issue_rejects_invalid_scope(self) -> None:
+        code, output = self._run_as_human(
+            "authorize-host-test",
+            "--workspace",
+            "../outside",
+            "--target",
+            "test_demo",
+        )
+        self.assertEqual(code, 7, output)
+        self.assertIn("host_authorization_invalid", output)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Sequence
 from . import __version__
 from .artifact_tool import SimulatedArtifactWriter
 from .capabilities import (
+    CAPABILITY_REGISTRY,
     CAPABILITY_REGISTRY_VERSION,
     capability_manifest,
     capability_summary,
@@ -48,6 +49,7 @@ from .planner_quality import (
     run_live_planner_quality,
     run_planner_quality,
 )
+from .product_evaluation import write_product_acceptance
 from .service import TaskService
 from .safety_gate import (
     SafetyGateConfigurationError,
@@ -67,6 +69,9 @@ STATUS_EXIT_CODES = {
     TaskStatus.QUEUED: 5,
     TaskStatus.RUNNING: 5,
     TaskStatus.VERIFYING: 5,
+    TaskStatus.PAUSED: 5,
+    TaskStatus.AWAITING_APPROVAL: 5,
+    TaskStatus.PARTIAL: 1,
     TaskStatus.CANCELLED: 5,
 }
 
@@ -89,12 +94,23 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
     root = _project_root(project_root)
     llm_config = LLMPlannerConfig.from_environment()
     sdk_status = openai_sdk_status()
+    product_stage = str(CAPABILITY_REGISTRY["product_stage"])
+    operation_names = task_operation_names()
+    model_operations = [
+        name
+        for name in operation_names
+        if "llm_planner"
+        in CAPABILITY_REGISTRY["task_operations"][name]["access"]
+    ]
+    trusted_operations = [
+        name for name in operation_names if name not in model_operations
+    ]
     return {
         "schema_version": EventStore.SCHEMA_VERSION,
         "project": "Zevorinth",
         "version": __version__,
-        "phase": "3.75",
-        "hardening_phase": "3.75",
+        "phase": product_stage,
+        "hardening_phase": product_stage,
         "legacy_phase": 2,
         "legacy_hardening_phase": "1.5",
         "project_root": str(root),
@@ -112,6 +128,11 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
         "capabilities": {
             "task_runtime": True,
             "write_text_artifact": True,
+            "read_text_artifact": True,
+            "modify_text_artifact": True,
+            "inspect_workspace": True,
+            "edit_text_file": True,
+            "research_report": True,
             "run_tests": True,
             "deterministic_planner": True,
             "model_provider": llm_config.validation_error() is None,
@@ -147,7 +168,12 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "control_center_actions": [
                 "add_task_note",
                 "answer_clarification",
+                "approve_step",
                 "cancel_queued_task",
+                "pause_task",
+                "reject_step",
+                "replan_pending_steps",
+                "resume_task",
                 "revise_unstarted_task",
                 "start_queued_task",
             ],
@@ -156,7 +182,7 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "automatic_cleanup": False,
             "l2_l3_trust": False,
         },
-        "task_types": task_operation_names(),
+        "task_types": operation_names,
         "capability_registry_version": CAPABILITY_REGISTRY_VERSION,
         "capability_summary": capability_summary(),
         "capability_manifest": capability_manifest(),
@@ -169,10 +195,13 @@ def doctor_report(project_root: Path | None = None) -> dict[str, object]:
             "distributed_execution": False,
         },
         "notice": (
-            "Phase 3.75 is a single-host local Alpha with two task operations: "
-            "write_text_artifact and conditional run_tests. LLM planning never "
-            "grants tools or bypasses local validation, Policy, verification, "
-            "isolation evidence, or leases."
+            f"Phase {product_stage} is a single-host local Alpha with "
+            f"{len(operation_names)} task operations: "
+            f"{', '.join(operation_names)}. LLM planning may select only "
+            f"{', '.join(model_operations)}; "
+            f"{', '.join(trusted_operations)} require trusted local task "
+            "provenance. LLM planning never grants tools or bypasses local "
+            "validation, Policy, verification, isolation evidence, or leases."
         ),
     }
 
@@ -560,6 +589,13 @@ def build_parser() -> argparse.ArgumentParser:
     planner_quality.add_argument("--output", type=Path, default=None)
     planner_quality.add_argument("--json", action="store_true")
 
+    product_evaluation = subparsers.add_parser(
+        "eval-product",
+        help="run isolated real-task acceptance for the current local V1 slices",
+    )
+    product_evaluation.add_argument("--output", type=Path, required=True)
+    product_evaluation.add_argument("--json", action="store_true")
+
     workbench = subparsers.add_parser(
         "workbench",
         help="serve the loopback-only read-only local workbench",
@@ -571,6 +607,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="serve the loopback-only workbench with confirmed lightweight actions",
     )
     control_center.add_argument("--port", type=int, default=8766)
+
+    authorize_host_test = subparsers.add_parser(
+        "authorize-host-test",
+        help=(
+            "issue one single-use grant for host test execution"
+            " (interactive human action)"
+        ),
+    )
+    authorize_host_test.add_argument("--workspace", required=True)
+    authorize_host_test.add_argument("--target", required=True)
+    authorize_host_test.add_argument(
+        "--ttl-minutes", type=int, default=30,
+    )
+    authorize_host_test.add_argument(
+        "--issuer", default=None,
+        help="operator label recorded in the grant and the audit log",
+    )
+    authorize_host_test.add_argument("--json", action="store_true")
+
+    revoke_host_test = subparsers.add_parser(
+        "revoke-host-test",
+        help="revoke a host test grant so it can never be consumed",
+    )
+    revoke_host_test.add_argument("grant_id")
+    revoke_host_test.add_argument("--issuer", default=None)
+    revoke_host_test.add_argument("--json", action="store_true")
+
+    host_grants = subparsers.add_parser(
+        "host-grants",
+        help="list host test grants and their lifecycle state",
+    )
+    host_grants.add_argument("--json", action="store_true")
 
     run = subparsers.add_parser(
         "run",
@@ -614,7 +682,18 @@ def build_parser() -> argparse.ArgumentParser:
     test_run.add_argument(
         "--allow-host",
         action="store_true",
-        help="authorize the non-isolated host backend (local maintenance)",
+        help=(
+            "select the non-isolated host backend; requires a single-use"
+            " grant from `authorize-host-test`"
+        ),
+    )
+    test_run.add_argument(
+        "--host-authorization",
+        default=None,
+        help=(
+            "single-use host execution grant token issued by"
+            " `zevorinth authorize-host-test`"
+        ),
     )
     test_run.add_argument("--json", action="store_true")
 
@@ -780,6 +859,93 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 6
         except KeyboardInterrupt:
             return 0
+        return 0
+    if args.command in {
+        "authorize-host-test",
+        "revoke-host-test",
+        "host-grants",
+    }:
+        from .host_authorization import (
+            HostAuthorizationError,
+            HostGrantStore,
+            default_issuer,
+            grant_root_permissions,
+            require_interactive_issuer,
+        )
+
+        store = HostGrantStore()
+        issuer = getattr(args, "issuer", None) or default_issuer()
+        if args.command == "host-grants":
+            payload = {
+                "storage": grant_root_permissions(
+                    store, project_root=_project_root(args.home)
+                ),
+                "grants": store.list_grants(),
+            }
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                return 0
+            storage = payload["storage"]
+            print(f"grant store: {storage['root']}")
+            if not storage.get("exists"):
+                print("  (no grants have been issued yet)")
+                return 0
+            print(f"  mode: {storage.get('mode')}")
+            for grant in payload["grants"]:
+                print(
+                    f"  {grant['grant_id']}  {grant['status']:9s}"
+                    f"  {grant['workspace']}/{grant['target']}"
+                    f"  expires {grant['expires_at']}"
+                    f"  issuer {grant['issuer']}"
+                )
+            return 0
+        if args.command == "revoke-host-test":
+            try:
+                revoked = store.revoke(args.grant_id, issuer=issuer)
+            except HostAuthorizationError as exc:
+                print(
+                    f"host authorization refused: {exc.code}: {exc.message}",
+                    file=sys.stderr,
+                )
+                return 7
+            if args.json:
+                print(json.dumps(revoked, ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                print(
+                    f"revoked grant {revoked['grant_id']}"
+                    f" (status={revoked['status']}"
+                    f", revoked_at={revoked['revoked_at']})"
+                )
+            return 0
+        try:
+            require_interactive_issuer()
+            issued = store.issue(
+                workspace=args.workspace,
+                target=args.target,
+                issuer=issuer,
+                ttl_minutes=args.ttl_minutes,
+            )
+        except HostAuthorizationError as exc:
+            print(
+                f"host authorization refused: {exc.code}: {exc.message}",
+                file=sys.stderr,
+            )
+            return 7
+        if args.json:
+            print(json.dumps(issued, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+        grant = issued["grant"]
+        print("host execution grant issued (single use)")
+        print(f"  grant_id : {grant['grant_id']}")
+        print(f"  workspace: {grant['workspace']}")
+        print(f"  target   : {grant['target']}")
+        print(f"  issuer   : {grant['issuer']}")
+        print(f"  expires  : {grant['expires_at']}")
+        print(f"  token    : {issued['token']}")
+        print(
+            "  pass it as the run_tests parameter host_authorization;"
+            " it is consumed once and never restored"
+        )
         return 0
     if args.command == "recovery-audit":
         report = audit_controlled_recovery(
@@ -1285,6 +1451,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 7
 
+    if args.command == "eval-product":
+        try:
+            report = write_product_acceptance(args.output)
+        except Exception as exc:
+            print(
+                f"product acceptance error: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if args.json:
+            print(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            metrics = report["metrics"]
+            print(
+                f"Product acceptance: "
+                f"{'PASS' if report['all_passed'] else 'FAIL'} "
+                f"({metrics['passed']}/"
+                f"{metrics['attempted_positive_scenarios']}) "
+                f"false_success={metrics['false_success_count']} "
+                f"interventions={metrics['interventions']} "
+                f"recovered={metrics['recovered_tasks']}"
+            )
+        return 0 if report["all_passed"] else 1
+
     try:
         service = _service(args)
         if args.command == "run":
@@ -1307,8 +1504,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "timeout_seconds": args.timeout,
                         "max_output_bytes": args.max_output,
                         **(
-                            {"execution_backend": args.backend}
-                            if args.backend
+                            {
+                                "execution_backend": (
+                                    args.backend
+                                    or ("host" if args.allow_host else None)
+                                )
+                            }
+                            if (args.backend or args.allow_host)
                             else {}
                         ),
                         **(
@@ -1318,8 +1520,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         ),
                         **({"image": args.image} if args.image else {}),
                         **(
-                            {"host_authorization": "local-maintenance"}
-                            if args.allow_host
+                            {"host_authorization": args.host_authorization}
+                            if args.host_authorization
                             else {}
                         ),
                     },

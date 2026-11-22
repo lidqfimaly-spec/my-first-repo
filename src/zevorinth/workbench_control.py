@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .artifact_tool import ArtifactToolError, validate_artifact_name
+from .capabilities import SUPPORTED_TASK_OPERATIONS
 from .control_receipt import resolve_control_receipt
 from .event_store import PlanRevisionConflict, TaskNotFound
 from .models import (
@@ -32,14 +34,24 @@ from .workbench import (
     _redact,
     task_request_digest,
 )
+from .workspace_edit import EDIT_AUTHORIZATION_TOKEN
 
 
 CONTROL_CONTRACT_VERSION = "task-control-v1"
+NATURAL_GOAL_PREVIEW_VERSION = "natural-goal-preview-v1"
 ANSWER_CLARIFICATION = "answer_clarification"
 REVISE_UNSTARTED_TASK = "revise_unstarted_task"
 CANCEL_QUEUED_TASK = "cancel_queued_task"
 START_QUEUED_TASK = "start_queued_task"
 ADD_TASK_NOTE = "add_task_note"
+PAUSE_TASK = "pause_task"
+RESUME_TASK = "resume_task"
+APPROVE_STEP = "approve_step"
+REJECT_STEP = "reject_step"
+REPLAN_PENDING_STEPS = "replan_pending_steps"
+CONTROL_STARTABLE_OPERATIONS = frozenset(
+    set(SUPPORTED_TASK_OPERATIONS) - {"run_tests"}
+)
 SUPPORTED_ACTIONS = frozenset(
     {
         ANSWER_CLARIFICATION,
@@ -47,6 +59,11 @@ SUPPORTED_ACTIONS = frozenset(
         CANCEL_QUEUED_TASK,
         START_QUEUED_TASK,
         ADD_TASK_NOTE,
+        PAUSE_TASK,
+        RESUME_TASK,
+        APPROVE_STEP,
+        REJECT_STEP,
+        REPLAN_PENDING_STEPS,
     }
 )
 LOGGER = logging.getLogger(__name__)
@@ -60,6 +77,105 @@ _REVISABLE_STATUSES = frozenset(
 _REQUEST_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_CREATE_INTENT = re.compile(
+    r"(?:创建|新建|生成|写入|写下|保存|写一个|写一份|做一个|"
+    r"create|write|save|generate)",
+    re.IGNORECASE,
+)
+_CODE_INTENT = re.compile(
+    r"(?:代码|函数|变量|类|补丁|仓库|工作区|workspace|"
+    r"patch|function|class|variable|源码|\.py\b)",
+    re.IGNORECASE,
+)
+_RESEARCH_INTENT = re.compile(
+    r"(?:研究|调研|资料|引用|文献|取证|"
+    r"research|citation|literature)",
+    re.IGNORECASE,
+)
+_COMPLEX_INTENT = re.compile(
+    r"(?:多步|多步骤|依赖|工作流|先.+再|然后|之后|"
+    r"multi[- ]?step|workflow|depends?\s+on|first.+then)",
+    re.IGNORECASE | re.DOTALL,
+)
+_TEST_INTENT = re.compile(
+    r"(?:运行|执行|跑).{0,8}(?:测试|test)|"
+    r"(?:run|execute).{0,12}(?:test)",
+    re.IGNORECASE,
+)
+_CONTINUE_INTENT = re.compile(
+    r"(?:继续|修改|更新|追加|添加|补充|替换|另存|新版本|"
+    r"末尾|刚才.*文件|这份文件|这份报告|保留原文件|"
+    r"continue|modify|append|replace|update|save as|new version)",
+    re.IGNORECASE,
+)
+_APPEND_INTENT = re.compile(
+    r"(?:追加|添加|补充|末尾|再加|append|add to|at the end)",
+    re.IGNORECASE,
+)
+_REPLACE_INTENT = re.compile(
+    r"(?:替换|覆盖|改成|改为|替换成|replace|overwrite)",
+    re.IGNORECASE,
+)
+_ARTIFACT_EXTENSIONS = (
+    "txt",
+    "md",
+    "markdown",
+    "json",
+    "csv",
+    "log",
+    "yaml",
+    "yml",
+    "html",
+)
+_EXTENSION_PATTERN = "|".join(_ARTIFACT_EXTENSIONS)
+_SAVE_AS_PATH = re.compile(
+    rf"(?:另存为|另存到|新文件名为|save as)\s*"
+    rf"[`'\"“”]?(?P<path>[^`'\"“”\s\\/]+\.(?:{_EXTENSION_PATTERN}))"
+    rf"[`'\"“”]?",
+    re.IGNORECASE,
+)
+_QUOTED_ARTIFACT_PATH = re.compile(
+    rf"[`'\"“”](?P<path>[^`'\"“”\r\n]{{1,255}}\.(?:{_EXTENSION_PATTERN}))"
+    rf"[`'\"“”]",
+    re.IGNORECASE,
+)
+_BARE_ARTIFACT_PATH = re.compile(
+    rf"(?<![\w/.-])(?P<path>[\w\u4e00-\u9fff][\w\u4e00-\u9fff.-]{{0,200}}\."
+    rf"(?:{_EXTENSION_PATTERN}))(?![\w.-])",
+    re.IGNORECASE,
+)
+_FENCED_CONTENT = re.compile(
+    r"```(?:text|markdown|md|json)?[ \t]*\r?\n"
+    r"(?P<content>.*?)\r?\n```",
+    re.IGNORECASE | re.DOTALL,
+)
+_QUOTED_CONTENT = re.compile(
+    r"(?:内容|正文|content)\s*(?:(?:写|为|是|使用)\s*)?"
+    r"(?:[:：=]\s*)?"
+    r"[`'\"“](?P<content>.*?)[`'\"”]",
+    re.IGNORECASE | re.DOTALL,
+)
+_INLINE_CONTENT = re.compile(
+    r"(?:内容|正文|content)\s*(?:(?:写|为|是|使用)\s*)?"
+    r"(?:[:：=]\s*)?"
+    r"(?P<content>.+)\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_CONTINUATION_QUOTED_CONTENT = re.compile(
+    r"(?:追加|添加|补充|再写|写入|替换为|替换成|改成|改为|"
+    r"内容写(?:成|为)?)"
+    r"[^:：`'\"“”\r\n]{0,40}?[：:]?\s*"
+    r"[`'\"“](?P<content>.*?)[`'\"”]",
+    re.IGNORECASE,
+)
+_CONTINUATION_INLINE_CONTENT = re.compile(
+    r"(?:追加|添加|补充|再写|写入|替换为|替换成|改成|改为|"
+    r"内容写(?:成|为)?)"
+    r"[^:：`'\"“”\r\n]{0,40}?[：:]\s*"
+    r"(?P<content>[^\r\n]+?)"
+    r"(?=(?:[，,]\s*(?:并\s*)?(?:另存|保存|新文件名为|save as))|\s*$)",
+    re.IGNORECASE,
 )
 
 
@@ -94,6 +210,7 @@ class TaskControlService:
         )
         lease_state = task["lease_state"]
         status = task["status"]
+        is_multi_step = task["operation"] == "execute_plan"
         if status == TaskStatus.AWAITING_CLARIFICATION.value:
             if lease_state == "active":
                 unavailable_reason = "task_claim_active"
@@ -133,7 +250,7 @@ class TaskControlService:
             and status == TaskStatus.QUEUED.value
             and task["claim_generation"] == 0
             and task["execution_mode"] == ExecutionMode.NOT_EXECUTED.value
-            and task["operation"] == "write_text_artifact"
+            and task["operation"] in CONTROL_STARTABLE_OPERATIONS
         ):
             actions.append(
                 {
@@ -150,6 +267,88 @@ class TaskControlService:
             actions.append(
                 {
                     "action": CANCEL_QUEUED_TASK,
+                    "requires_confirmation": True,
+                }
+            )
+        if is_multi_step and status in {
+            TaskStatus.QUEUED.value,
+            TaskStatus.RUNNING.value,
+            TaskStatus.AWAITING_APPROVAL.value,
+        } and task.get("pause_requested_at") is None and (
+            (
+                status == TaskStatus.RUNNING.value
+                and lease_state == "active"
+            )
+            or (
+                status
+                in {
+                    TaskStatus.QUEUED.value,
+                    TaskStatus.AWAITING_APPROVAL.value,
+                }
+                and lease_state == "none"
+            )
+        ):
+            actions.append(
+                {
+                    "action": PAUSE_TASK,
+                    "requires_confirmation": True,
+                    "pause_request_only": status == TaskStatus.RUNNING.value,
+                }
+            )
+        if (
+            is_multi_step
+            and
+            status == TaskStatus.PAUSED.value
+            and lease_state == "none"
+        ):
+            actions.append(
+                {
+                    "action": RESUME_TASK,
+                    "requires_confirmation": True,
+                }
+            )
+        if (
+            is_multi_step
+            and
+            status == TaskStatus.AWAITING_APPROVAL.value
+            and lease_state == "none"
+            and task.get("pending_approval_step_id")
+        ):
+            # F-11: approving a step is a decision about content, so the
+            # preview carries the tool, the full parameters, what the step
+            # touches, and whether this exact content was approved before.
+            # A checkbox alone would be a consent ritual, not consent.
+            form = ReadOnlyWorkbench(self.project_root).approval_form(task_id)
+            actions.append(
+                {
+                    "action": APPROVE_STEP,
+                    "requires_confirmation": True,
+                    "step_id": task["pending_approval_step_id"],
+                    "approval_form": form,
+                }
+            )
+            actions.append(
+                {
+                    "action": REJECT_STEP,
+                    "requires_confirmation": True,
+                    "step_id": task["pending_approval_step_id"],
+                    "approval_form": form,
+                }
+            )
+        if (
+            is_multi_step
+            and
+            status
+            in {
+                TaskStatus.PAUSED.value,
+                TaskStatus.AWAITING_APPROVAL.value,
+            }
+            and lease_state == "none"
+            and task.get("plan")
+        ):
+            actions.append(
+                {
+                    "action": REPLAN_PENDING_STEPS,
                     "requires_confirmation": True,
                 }
             )
@@ -186,6 +385,146 @@ class TaskControlService:
             "actions": actions,
             "unavailable_reason": unavailable_reason,
             "read_only": False,
+        }
+
+    def preview_goal(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Interpret a bounded natural-language goal without mutating state."""
+
+        unknown = set(payload) - {"goal", "selected_task_id"}
+        if unknown:
+            raise ControlActionError(
+                "unknown_goal_preview_fields",
+                "goal preview payload contains unknown fields",
+                status=400,
+            )
+        goal = _required_text(payload, "goal", maximum=16 * 1024)
+        if not goal.strip() or "\x00" in goal:
+            raise ControlActionError(
+                "invalid_task_goal",
+                "task goal must be a non-empty bounded string",
+                status=400,
+            )
+        goal = goal.strip()
+        selected_task_id = payload.get("selected_task_id")
+        if selected_task_id is not None:
+            if (
+                not isinstance(selected_task_id, str)
+                or not _REQUEST_ID.fullmatch(selected_task_id)
+            ):
+                raise ControlActionError(
+                    "invalid_selected_task_id",
+                    "selected_task_id must be a canonical UUIDv4",
+                    status=400,
+                )
+        continuation_context: dict[str, Any] | None = None
+        if selected_task_id and _CONTINUE_INTENT.search(goal):
+            continuation_context = self._continuation_context(selected_task_id)
+        interpretation = _interpret_natural_goal(
+            goal,
+            continuation_context=continuation_context,
+        )
+        request = TaskRequest.from_mapping(
+            {
+                "goal": goal,
+                "operation": interpretation.get("operation"),
+                "parameters": interpretation.get("parameters", {}),
+            }
+        )
+        plan_steps: list[dict[str, Any]] = []
+        plan_classification: str | None = None
+        missing_fields = list(interpretation.get("missing_fields", []))
+        if request.operation in {"write_text_artifact", "modify_text_artifact"}:
+            outcome = DeterministicPlanner().plan_request(request)
+            plan_classification = outcome.classification.value
+            planner_missing = list(outcome.missing_fields)
+            if interpretation.get("requires_task_selection"):
+                planner_missing = [
+                    "selected_task_id"
+                    if item in {"source_task_id", "expected_sha256"}
+                    else item
+                    for item in planner_missing
+                ]
+                planner_missing = list(dict.fromkeys(planner_missing))
+            missing_fields = list(
+                dict.fromkeys([*missing_fields, *planner_missing])
+            )
+            if outcome.plan is not None:
+                plan_steps = [
+                    {
+                        "step_id": step.step_id,
+                        "tool_name": step.tool_name,
+                        "expected_result": step.expected_result,
+                    }
+                    for step in outcome.plan.steps
+                ]
+        confirmable = bool(
+            interpretation.get("supported")
+            and request.operation
+            in {"write_text_artifact", "modify_text_artifact"}
+            and not missing_fields
+        )
+        if not interpretation.get("supported"):
+            state = "unsupported"
+        elif missing_fields:
+            state = "needs_clarification"
+        elif confirmable:
+            state = "ready"
+        else:
+            state = "unsupported"
+        return {
+            "contract_version": CONTROL_CONTRACT_VERSION,
+            "preview_version": NATURAL_GOAL_PREVIEW_VERSION,
+            "state": state,
+            "goal": goal,
+            "supported": bool(interpretation.get("supported")),
+            "guided_flow": interpretation.get("guided_flow"),
+            "continuation_context": continuation_context is not None,
+            "operation": request.operation,
+            "operation_label": interpretation.get("operation_label"),
+            "parameters": dict(request.parameters),
+            "required_fields": list(interpretation.get("required_fields", [])),
+            "missing_fields": missing_fields,
+            "assumptions": list(interpretation.get("assumptions", [])),
+            "plan_classification": plan_classification,
+            "plan_steps": plan_steps,
+            "limits": list(interpretation.get("limits", [])),
+            "reason_code": interpretation.get("reason_code"),
+            "reason": interpretation.get("reason"),
+            "confirmation_required": confirmable,
+            "execution_started": False,
+            "mutation_started": False,
+        }
+
+    def _continuation_context(self, task_id: str) -> dict[str, Any]:
+        """Resolve trusted continuation metadata for a verified artifact."""
+        try:
+            detail = ReadOnlyWorkbench(self.project_root).task_detail(task_id)
+        except WorkbenchError as exc:
+            raise ControlActionError(
+                exc.code,
+                exc.message,
+                status=exc.status,
+            ) from exc
+        task = detail["task"]
+        observation = task.get("artifact_observation")
+        artifact = task.get("artifact")
+        verification = task.get("verification")
+        if (
+            task.get("status") != TaskStatus.SUCCEEDED.value
+            or not isinstance(artifact, Mapping)
+            or not isinstance(verification, Mapping)
+            or verification.get("passed") is not True
+            or not isinstance(observation, Mapping)
+            or observation.get("state") != "current"
+        ):
+            raise ControlActionError(
+                "continuation_source_not_verified",
+                "the selected task has no current, independently verified artifact",
+            )
+        return {
+            "source_task_id": task_id,
+            "artifact_path": str(artifact["relative_path"]),
+            "expected_sha256": str(artifact["sha256"]),
         }
 
     def create_task(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -230,6 +569,14 @@ class TaskControlService:
                 "the task definition is invalid",
                 status=400,
             ) from exc
+        if request.operation == "edit_text_file":
+            parameters = dict(request.parameters)
+            parameters["authorization"] = EDIT_AUTHORIZATION_TOKEN
+            request = TaskRequest(
+                goal=request.goal,
+                operation=request.operation,
+                parameters=parameters,
+            )
         _validate_finite_json(request.to_dict())
         if not request.goal or not request.goal.strip() or "\x00" in request.goal:
             raise ControlActionError(
@@ -443,6 +790,8 @@ class TaskControlService:
         values: Mapping[str, str] | None,
         expected_request_digest: str | None,
         changes: Mapping[str, Any] | None,
+        step_id: str | None = None,
+        replacement_steps: list[Mapping[str, Any]] | None = None,
         preclaimed: bool = False,
     ) -> None:
         if (
@@ -458,7 +807,19 @@ class TaskControlService:
                 "planner_mode_not_supported",
                 "control-center actions require the deterministic planner",
             )
-        if not preclaimed and task.lease_token is not None:
+        permit_running_pause = (
+            action == PAUSE_TASK
+            and task.status
+            in {
+                TaskStatus.RUNNING,
+                TaskStatus.AWAITING_APPROVAL,
+            }
+        )
+        if (
+            not preclaimed
+            and task.lease_token is not None
+            and not permit_running_pause
+        ):
             if _task_lease_is_active(task):
                 raise ControlActionError(
                     "task_claim_not_acquired",
@@ -553,19 +914,65 @@ class TaskControlService:
                     "task_cancel_not_allowed",
                     "only an unstarted queued task can be cancelled",
                 )
-        else:
+        elif action == PAUSE_TASK:
+            if task.status not in {
+                TaskStatus.QUEUED,
+                TaskStatus.RUNNING,
+                TaskStatus.AWAITING_APPROVAL,
+            }:
+                raise ControlActionError(
+                    "task_pause_not_allowed",
+                    "the task state does not permit a pause request",
+                )
+        elif action == RESUME_TASK:
+            if task.status is not TaskStatus.PAUSED:
+                raise ControlActionError(
+                    "task_resume_not_allowed",
+                    "only a paused task can resume",
+                )
+        elif action in {APPROVE_STEP, REJECT_STEP}:
+            if (
+                task.status is not TaskStatus.AWAITING_APPROVAL
+                or not step_id
+                or task.pending_approval_step_id != step_id
+            ):
+                raise ControlActionError(
+                    "approval_step_changed",
+                    "the pending approval step changed or is not eligible",
+                )
+        elif action == REPLAN_PENDING_STEPS:
+            if (
+                task.status
+                not in {
+                    TaskStatus.PAUSED,
+                    TaskStatus.AWAITING_APPROVAL,
+                }
+                or task.plan is None
+                or not replacement_steps
+            ):
+                raise ControlActionError(
+                    "task_replan_not_allowed",
+                    "only a paused or approval-waiting task can be replanned",
+                )
+        elif action == START_QUEUED_TASK:
             if (
                 task.status is not TaskStatus.QUEUED
                 or (not preclaimed and task.claim_generation != 0)
                 or task.execution_mode is not ExecutionMode.NOT_EXECUTED
                 or task.tool_result is not None
                 or task.artifact is not None
-                or task.request.operation != "write_text_artifact"
+                or task.request.operation not in CONTROL_STARTABLE_OPERATIONS
             ):
                 raise ControlActionError(
                     "task_start_not_allowed",
-                    "only an unstarted artifact task can be started",
+                    "only an unstarted supported deterministic task can be started",
                 )
+        else:
+            raise ControlActionError(
+                "unsupported_control_action",
+                "the requested control action is not enabled",
+                status=400,
+            )
 
     def execute(
         self,
@@ -591,6 +998,8 @@ class TaskControlService:
         expected_request_digest = None
         changes = None
         note_message = None
+        step_id = None
+        replacement_steps = None
         if action == ANSWER_CLARIFICATION:
             allowed_fields = common_fields | {
                 "expected_missing_fields",
@@ -603,6 +1012,10 @@ class TaskControlService:
             }
         elif action == ADD_TASK_NOTE:
             allowed_fields = common_fields | {"message"}
+        elif action in {APPROVE_STEP, REJECT_STEP}:
+            allowed_fields = common_fields | {"step_id"}
+        elif action == REPLAN_PENDING_STEPS:
+            allowed_fields = common_fields | {"steps"}
         else:
             allowed_fields = common_fields
         unknown_payload_fields = set(payload) - allowed_fields
@@ -707,6 +1120,37 @@ class TaskControlService:
                 expected_plan_version=expected_plan_version,
                 message=note_message,
             )
+        elif action in {APPROVE_STEP, REJECT_STEP}:
+            step_id = _required_text(payload, "step_id", maximum=128)
+            request_digest = _versioned_request_digest(
+                action=action,
+                expected_updated_at=expected_updated_at,
+                expected_plan_version=expected_plan_version,
+                details={"step_id": step_id},
+            )
+        elif action == REPLAN_PENDING_STEPS:
+            raw_steps = payload.get("steps")
+            if not isinstance(raw_steps, list) or not raw_steps:
+                raise ControlActionError(
+                    "invalid_replan_steps",
+                    "steps must be a non-empty array",
+                    status=400,
+                )
+            replacement_steps = []
+            for item in raw_steps:
+                if not isinstance(item, Mapping):
+                    raise ControlActionError(
+                        "invalid_replan_steps",
+                        "every replacement step must be an object",
+                        status=400,
+                    )
+                replacement_steps.append(dict(item))
+            request_digest = _versioned_request_digest(
+                action=action,
+                expected_updated_at=expected_updated_at,
+                expected_plan_version=expected_plan_version,
+                details={"steps": replacement_steps},
+            )
         else:
             request_digest = _versioned_request_digest(
                 action=action,
@@ -745,6 +1189,15 @@ class TaskControlService:
             elif action == ADD_TASK_NOTE:
                 assert note_message is not None
                 requested_payload["message"] = note_message
+            elif action in {APPROVE_STEP, REJECT_STEP}:
+                assert step_id is not None
+                requested_payload["step_id"] = step_id
+            elif action == REPLAN_PENDING_STEPS:
+                assert replacement_steps is not None
+                requested_payload["step_ids"] = [
+                    str(item.get("step_id") or "")
+                    for item in replacement_steps
+                ]
             reservation = service.inspect_control_action(
                 task_id,
                 request_id=request_id,
@@ -761,6 +1214,8 @@ class TaskControlService:
                         values=values,
                         expected_request_digest=expected_request_digest,
                         changes=changes,
+                        step_id=step_id,
+                        replacement_steps=replacement_steps,
                     )
                 except ControlActionError as exc:
                     service.store.record_control_action_preclaim_failure(
@@ -896,6 +1351,8 @@ class TaskControlService:
                         values=values,
                         expected_request_digest=expected_request_digest,
                         changes=changes,
+                        step_id=step_id,
+                        replacement_steps=replacement_steps,
                         preclaimed=bool(reservation.get("lease_token")),
                     )
                 except ControlActionError:
@@ -956,6 +1413,32 @@ class TaskControlService:
                         },
                         require_no_lease=True,
                         expected_updated_at=task.updated_at,
+                        expected_plan_version=expected_plan_version,
+                    )
+                elif action == PAUSE_TASK:
+                    updated = service.request_pause(
+                        task_id,
+                        requested_by=f"control-center:{request_id}",
+                        reason="control center pause request",
+                    )
+                elif action == RESUME_TASK:
+                    updated = service.resume(
+                        task_id,
+                        expected_plan_version=expected_plan_version,
+                    )
+                elif action in {APPROVE_STEP, REJECT_STEP}:
+                    assert step_id is not None
+                    updated = service.approve_step(
+                        task_id,
+                        step_id,
+                        approved=action == APPROVE_STEP,
+                        expected_plan_version=expected_plan_version,
+                    )
+                elif action == REPLAN_PENDING_STEPS:
+                    assert replacement_steps is not None
+                    updated = service.replan_pending_steps(
+                        task_id,
+                        replacement_steps,
                         expected_plan_version=expected_plan_version,
                     )
                 else:
@@ -1104,6 +1587,289 @@ class TaskControlService:
             }
 
 
+def _interpret_natural_goal(
+    goal: str,
+    *,
+    continuation_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    limits = [
+        "仅写入当前任务的独立 artifacts 目录",
+        "单个文本产物最多 64 KiB",
+        "预览不会创建任务、取得租约或执行工具",
+        "创建成功后仍需显式受控启动",
+    ]
+    test_requested = bool(_TEST_INTENT.search(goal))
+    create_requested = bool(_CREATE_INTENT.search(goal))
+    research_requested = bool(_RESEARCH_INTENT.search(goal))
+    code_requested = bool(_CODE_INTENT.search(goal))
+    continuation_requested = bool(_CONTINUE_INTENT.search(goal)) and not (
+        code_requested or research_requested
+    )
+    complex_requested = bool(_COMPLEX_INTENT.search(goal)) and not (
+        code_requested or research_requested or continuation_requested
+    )
+    if complex_requested:
+        return {
+            "supported": True,
+            "guided_flow": "complex",
+            "operation": "execute_plan",
+            "operation_label": "构建有界多步计划",
+            "parameters": {},
+            "required_fields": ["steps"],
+            "missing_fields": ["steps"],
+            "assumptions": [
+                "自然语言只用于识别复杂任务意图；计划步骤必须由用户检查并确认",
+            ],
+            "limits": [
+                "最多 8 个步骤，每步最多 3 次尝试",
+                "依赖与数据引用必须先通过计划图校验",
+                "预览不会创建任务、取得租约或执行工具",
+            ],
+            "reason_code": "guided_complex_plan_required",
+            "reason": (
+                "已识别为复杂任务。请在多步计划入口补充步骤、依赖和每一步的"
+                "预期结果，系统不会从一句话自动猜测或执行计划。"
+            ),
+        }
+    if research_requested:
+        fields = [
+            "workspace",
+            "sources",
+            "title",
+            "output_path",
+            "findings",
+        ]
+        return {
+            "supported": True,
+            "guided_flow": "research",
+            "operation": "research_report",
+            "operation_label": "生成本地研究可追溯报告",
+            "parameters": {},
+            "required_fields": fields,
+            "missing_fields": list(fields),
+            "assumptions": [
+                "研究来源限定为已注册工作区中的本地文本",
+            ],
+            "limits": [
+                "不联网、不浏览网页",
+                "每条结论必须有可在来源中精确匹配的引文",
+                "预览不会创建任务、取得租约或写入报告",
+            ],
+            "reason_code": "guided_research_fields_required",
+            "reason": (
+                "已识别为本地研究任务。请补充工作区、来源、报告信息和带引文的"
+                " findings；系统不会猜测来源或伪造引文。"
+            ),
+        }
+    if code_requested or test_requested:
+        fields = (
+            [
+                "workspace",
+                "path",
+                "expected_sha256",
+                "old_text",
+                "new_text",
+            ]
+            if code_requested
+            else ["workspace", "target"]
+        )
+        return {
+            "supported": True,
+            "guided_flow": "code",
+            "operation": "edit_text_file" if code_requested else "run_tests",
+            "operation_label": (
+                "检查、审批、修改并测试代码"
+                if code_requested
+                else "运行已注册测试"
+            ),
+            "parameters": {},
+            "required_fields": list(fields),
+            "missing_fields": list(fields),
+            "assumptions": [
+                "代码修改使用精确文本替换并要求当前文件摘要",
+            ],
+            "limits": [
+                "只允许已注册工作区中的安全相对路径",
+                "修改步骤需要单独审批，测试后端权限不能由自然语言推断",
+                "预览不会创建任务、取得租约或修改文件",
+            ],
+            "reason_code": "guided_code_fields_required",
+            "reason": (
+                "已识别为代码任务。请补充工作区、目标文件、当前摘要和精确修改"
+                "文本；若只需测试，请切换到测试引导字段。"
+            ),
+        }
+    if continuation_requested:
+        parameters: dict[str, Any] = {}
+        missing_fields: list[str] = []
+        assumptions: list[str] = []
+        if continuation_context is None:
+            missing_fields.append("selected_task_id")
+            assumptions.append(
+                "请先从任务列表选择一个已完成且当前仍通过验证的产物"
+            )
+        else:
+            parameters.update(dict(continuation_context))
+            parameters["output_path"] = _continuation_output_name(
+                goal,
+                str(continuation_context["artifact_path"]),
+            )
+            assumptions.append(
+                "来源任务、产物路径和预期摘要由当前已验证任务自动绑定"
+            )
+            assumptions.append(
+                f"新版本默认文件名为 {parameters['output_path']}"
+            )
+        mode: str | None = None
+        if _APPEND_INTENT.search(goal):
+            mode = "append"
+        elif _REPLACE_INTENT.search(goal):
+            mode = "replace"
+        if mode is None:
+            missing_fields.append("mode")
+        else:
+            parameters["mode"] = mode
+        content = _extract_continuation_content(goal)
+        if content is None or content == "":
+            missing_fields.append("content")
+        else:
+            parameters["content"] = content
+        return {
+            "supported": True,
+            "guided_flow": "file",
+            "operation": "modify_text_artifact",
+            "operation_label": "创建修改后的新版本",
+            "parameters": parameters,
+            "required_fields": (
+                ([] if continuation_context is not None else ["selected_task_id"])
+                + ["content", "mode"]
+            ),
+            "missing_fields": list(dict.fromkeys(missing_fields)),
+            "requires_task_selection": continuation_context is None,
+            "assumptions": assumptions,
+            "limits": [
+                "只继续当前已验证且未发生变化的产物",
+                "新版本写入当前新任务的独立 artifacts 目录",
+                "源产物保持只读，不会被覆盖",
+                "预览不会创建任务、取得租约或执行工具",
+            ],
+            "reason_code": (
+                "continuation_task_selection_required"
+                if continuation_context is None
+                else None
+            ),
+            "reason": (
+                "请从任务列表选择一个已验证产物后再继续修改。"
+                if continuation_context is None
+                else None
+            ),
+        }
+    if not create_requested:
+        return {
+            "supported": False,
+            "guided_flow": None,
+            "operation": None,
+            "operation_label": None,
+            "parameters": {},
+            "required_fields": [],
+            "missing_fields": [],
+            "assumptions": [],
+            "limits": limits,
+            "reason_code": "natural_goal_unsupported",
+            "reason": (
+                "当前无法把该目标识别为受支持的文本文件创建任务。"
+                "请明确要创建、写入或保存的文件。"
+            ),
+        }
+
+    path, path_match = _extract_artifact_path(goal)
+    assumptions: list[str] = []
+    if path is None:
+        path = "report.md" if "报告" in goal else "task-output.txt"
+        assumptions.append(f"未指定文件名，预览使用 {path}")
+    else:
+        try:
+            path = validate_artifact_name(path)
+        except ArtifactToolError as exc:
+            raise ControlActionError(
+                exc.code,
+                exc.message,
+                status=400,
+            ) from exc
+
+    content = _extract_natural_content(goal, path_match=path_match)
+    parameters: dict[str, Any] = {"artifact_path": path}
+    missing_fields: list[str] = []
+    if content is None or content == "":
+        missing_fields.append("content")
+    else:
+        parameters["content"] = content
+    if missing_fields:
+        assumptions.append("未识别到明确正文；请在下方的内容字段补充或修改")
+    return {
+        "supported": True,
+        "guided_flow": "file",
+        "operation": "write_text_artifact",
+        "operation_label": "创建并验证文本文件",
+        "parameters": parameters,
+        "required_fields": ["artifact_path", "content"],
+        "missing_fields": missing_fields,
+        "assumptions": assumptions,
+        "limits": limits,
+        "reason_code": None,
+        "reason": None,
+    }
+
+
+def _versioned_artifact_name(value: str) -> str:
+    name = validate_artifact_name(value)
+    stem, separator, extension = name.rpartition(".")
+    if not separator:
+        return validate_artifact_name(f"{name}-v2")
+    return validate_artifact_name(f"{stem}-v2.{extension}")
+
+
+def _continuation_output_name(goal: str, source_path: str) -> str:
+    match = _SAVE_AS_PATH.search(goal)
+    if match is not None:
+        return validate_artifact_name(match.group("path"))
+    return _versioned_artifact_name(source_path)
+
+
+def _extract_continuation_content(goal: str) -> str | None:
+    for pattern in (
+        _FENCED_CONTENT,
+        _CONTINUATION_QUOTED_CONTENT,
+        _QUOTED_CONTENT,
+        _CONTINUATION_INLINE_CONTENT,
+    ):
+        match = pattern.search(goal)
+        if match is not None:
+            return match.group("content")
+    return None
+
+
+def _extract_artifact_path(goal: str) -> tuple[str | None, re.Match[str] | None]:
+    for pattern in (_QUOTED_ARTIFACT_PATH, _BARE_ARTIFACT_PATH):
+        match = pattern.search(goal)
+        if match is not None:
+            return match.group("path"), match
+    return None, None
+
+
+def _extract_natural_content(
+    goal: str,
+    *,
+    path_match: re.Match[str] | None,
+) -> str | None:
+    for pattern in (_FENCED_CONTENT, _QUOTED_CONTENT, _INLINE_CONTENT):
+        for match in pattern.finditer(goal):
+            if path_match is not None and match.start() < path_match.end():
+                continue
+            return match.group("content")
+    return None
+
+
 def _validate_revision_changes(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ControlActionError(
@@ -1206,12 +1972,15 @@ def _versioned_request_digest(
     action: str,
     expected_updated_at: str,
     expected_plan_version: int,
+    details: Mapping[str, Any] | None = None,
 ) -> str:
     payload = {
         "action": action,
         "expected_updated_at": expected_updated_at,
         "expected_plan_version": expected_plan_version,
     }
+    if details is not None:
+        payload["details"] = dict(details)
     encoded = json.dumps(
         payload,
         ensure_ascii=False,

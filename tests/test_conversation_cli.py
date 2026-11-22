@@ -258,7 +258,11 @@ class ConversationCliTests(unittest.TestCase):
                         "process",
                         "conversation-1",
                         "--content",
-                        "创建一个文件",
+                        # Under-specified on purpose: a recognised action
+                        # ("创建一个文件") no longer triggers a clarification
+                        # chain, so this CLI flow test needs a goal that really
+                        # lacks an action.
+                        "帮我弄一下",
                         "--client-message-id",
                         "m1",
                         "--json",

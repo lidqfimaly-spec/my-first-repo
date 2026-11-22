@@ -13,6 +13,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from tests.host_grant_support import authorized_service  # noqa: E402
 from zevorinth.models import Event, TaskRequest  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 from zevorinth.task_lifecycle import audit_task_lifecycle  # noqa: E402
@@ -30,7 +31,9 @@ def _host_test_task() -> tuple[TaskService, object, list[Event]]:
         "    def test_ok(self):\n        self.assertTrue(True)\n",
         encoding="utf-8",
     )
-    service = TaskService(root)
+    service, _, token = authorized_service(
+        root, workspace="demo", target="test_ok"
+    )
     task = service.submit(
         TaskRequest(
             goal="run test_ok",
@@ -40,7 +43,7 @@ def _host_test_task() -> tuple[TaskService, object, list[Event]]:
                 "target": "test_ok",
                 "workspace": "demo",
                 "execution_backend": "host",
-                "host_authorization": "local-maintenance",
+                "host_authorization": token,
             },
         )
     )

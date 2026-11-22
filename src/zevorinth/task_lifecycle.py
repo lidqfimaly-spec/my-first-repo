@@ -222,28 +222,60 @@ def audit_task_lifecycle(
         if task.plan is not None and task.plan.steps
         else task.request.operation
     )
-    is_test = tool == RUN_TESTS
+    is_multi_step = bool(
+        task.plan is not None
+        and (
+            task.request.operation == "execute_plan"
+            or len(task.plan.steps) > 1
+        )
+    )
+    is_test = tool == RUN_TESTS and not is_multi_step
     evidence = (
         task.tool_result.test_evidence
         if task.tool_result is not None
         else None
     )
     snapshot = task.execution_plan_snapshot
-    for terminal in ("task_succeeded", "task_failed", "task_cancelled"):
+    for terminal in (
+        "task_succeeded",
+        "task_partial",
+        "task_failed",
+        "task_cancelled",
+    ):
         if event_types.count(terminal) > 1:
             issue("duplicate_terminal_event", terminal)
 
     if task.status is TaskStatus.SUCCEEDED:
         if task.verification is None or not task.verification.passed:
             issue("succeeded_without_passed_verification", task.task_id)
-        if task.tool_result is None or not task.tool_result.success:
+        if (
+            not is_multi_step
+            and (task.tool_result is None or not task.tool_result.success)
+        ):
             issue("succeeded_without_successful_tool", task.task_id)
+        if is_multi_step and (
+            not task.step_results
+            or any(
+                result.status != "succeeded"
+                for result in task.step_results
+            )
+        ):
+            issue("multi_step_success_with_incomplete_steps", task.task_id)
         if task.error is not None:
             issue("succeeded_with_error", task.task_id)
         if "task_succeeded" not in event_types:
             issue("succeeded_without_task_event", task.task_id)
         if "task_failed" in event_types or "task_cancelled" in event_types:
             issue("succeeded_with_terminal_failure_event", task.task_id)
+    elif task.status is TaskStatus.PARTIAL:
+        if task.verification is None or task.verification.passed:
+            issue("partial_without_failed_verification", task.task_id)
+        if not any(
+            result.status == "succeeded" for result in task.step_results
+        ):
+            issue("partial_without_succeeded_step", task.task_id)
+        if "task_partial" not in event_types:
+            issue("partial_without_task_event", task.task_id)
     elif task.status is TaskStatus.FAILED:
         if task.error is None:
             issue("failed_without_error", task.task_id)
@@ -263,6 +295,8 @@ def audit_task_lifecycle(
         issue("failure_event_without_failure_state", task.task_id)
     if "task_cancelled" in event_types and task.status is not TaskStatus.CANCELLED:
         issue("cancel_event_without_cancel_state", task.task_id)
+    if "task_partial" in event_types and task.status is not TaskStatus.PARTIAL:
+        issue("partial_event_without_partial_state", task.task_id)
 
     tool_terminals = [
         event
@@ -348,7 +382,23 @@ def audit_task_lifecycle(
 
     required_events: list[str] = []
     completeness_state = "not_assessed"
-    if task.status is TaskStatus.SUCCEEDED:
+    if task.status is TaskStatus.SUCCEEDED and is_multi_step:
+        required_events = [
+            "task_created",
+            "planning_started",
+            "planning_completed",
+            "task_planned",
+            *[
+                "step_completed"
+                for result in task.step_results
+                if result.status == "succeeded"
+            ],
+            "verification_started",
+            "verification_completed",
+            "task_succeeded",
+        ]
+        completeness_state = "complete"
+    elif task.status is TaskStatus.SUCCEEDED:
         required_events = [
             "task_created",
             "planning_started",
@@ -385,6 +435,31 @@ def audit_task_lifecycle(
     elif task.status is TaskStatus.CANCELLED:
         required_events = ["task_created", "task_cancelled"]
         completeness_state = "minimal_complete"
+    elif task.status is TaskStatus.PARTIAL:
+        required_events = [
+            "task_created",
+            "planning_started",
+            "planning_completed",
+            "task_planned",
+            "verification_started",
+            "verification_completed",
+            "task_partial",
+        ]
+        completeness_state = "complete"
+    elif task.status is TaskStatus.PAUSED:
+        required_events = ["task_created", "pause_requested"]
+        if "task_paused" in event_types:
+            required_events.append("task_paused")
+        completeness_state = "open"
+    elif task.status is TaskStatus.AWAITING_APPROVAL:
+        required_events = [
+            "task_created",
+            "planning_started",
+            "planning_completed",
+            "task_planned",
+            "step_approval_required",
+        ]
+        completeness_state = "open"
     elif task.status is TaskStatus.QUEUED:
         required_events = ["task_created"]
         completeness_state = "open"
@@ -526,6 +601,9 @@ def audit_task_lifecycle(
         TaskStatus.VERIFYING,
         TaskStatus.INTERRUPTED,
         TaskStatus.BLOCKED,
+        TaskStatus.PAUSED,
+        TaskStatus.AWAITING_APPROVAL,
+        TaskStatus.PARTIAL,
         TaskStatus.AWAITING_CLARIFICATION,
     }:
         manual = True

@@ -52,6 +52,8 @@ capability-registry-v1
 - status: `conditional`
 - 需要注册 workspace、bounded unittest target、isolation evidence 和容器环境；
 - host backend 只允许显式 `local-maintenance` 授权，且不视为受信隔离；
+  > **已被取代（S1，2026-11-21）**：改为一次性人工签发凭据（workspace + target + 有效期绑定，单次使用）；
+  > 「host 不视为受信隔离」这一点不变。
 - 已覆盖成功、超时、取消、启动失败、验证器拒绝和真实模型单样本路径。
 
 ## 3. 未实现能力明确排除

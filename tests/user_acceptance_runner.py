@@ -40,6 +40,7 @@ from zevorinth.safety_gate import (  # noqa: E402
     build_effect,
     validate_case_effects,
 )
+from zevorinth.host_authorization import HostGrantStore
 from zevorinth.service import TaskService  # noqa: E402
 from zevorinth.verifier import ArtifactVerifier  # noqa: E402
 
@@ -78,6 +79,9 @@ def _cli(home: Path, *args: str) -> dict[str, Any]:
             "PYTHONDONTWRITEBYTECODE": "1",
             "ZEVORINTH_PLANNER": "deterministic",
             "OPENAI_API_KEY": "",
+            # Keep host grants inside the temporary home: the CLI must never
+            # read or write the operator's real grant directory during a test.
+            "HOME": str(home),
         },
         timeout=120,
     )
@@ -492,6 +496,11 @@ def run_acceptance() -> dict[str, Any]:
             "        self.assertTrue(True)\n",
             encoding="utf-8",
         )
+        grant_store = HostGrantStore(home / ".zevorinth" / "host-grants")
+        grant_token = grant_store.issue(
+            workspace="demo", target="test_demo", issuer="acceptance-runner"
+        )["token"]
+        # (the service below is only used to read the task back)
         run = _cli(
             home,
             "test",
@@ -502,10 +511,12 @@ def run_acceptance() -> dict[str, Any]:
             "--backend",
             "host",
             "--allow-host",
+            "--host-authorization",
+            grant_token,
             "--json",
         )
         task = run["json"] or {}
-        service = TaskService(home)
+        service = TaskService(home, host_grant_store=grant_store)
         stored = service.require_task(task["task_id"])
         evidence = stored.tool_result.test_evidence
         scenarios.append(

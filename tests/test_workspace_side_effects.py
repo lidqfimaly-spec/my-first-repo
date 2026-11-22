@@ -14,6 +14,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from tests.host_grant_support import grant_for  # noqa: E402
 from zevorinth.event_store import EventStore  # noqa: E402
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.planner import RUN_TESTS  # noqa: E402
@@ -323,13 +324,21 @@ def _workspace(root: Path, files: dict[str, str] | None = None) -> Path:
     return workspace
 
 
-def _request(**extra: Any) -> TaskRequest:
+def _service(root: Path, **kwargs: Any) -> tuple[TaskService, str]:
+    """A service wired to a real single-use grant for demo/test_ok."""
+    store, grant_token = grant_for(
+        root, workspace="demo", target="test_ok"
+    )
+    return TaskService(root, host_grant_store=store, **kwargs), grant_token
+
+
+def _request(token: str = "", **extra: Any) -> TaskRequest:
     parameters = {
         "runner": "unittest",
         "target": "test_ok",
         "workspace": "demo",
         "execution_backend": "host",
-        "host_authorization": "local-maintenance",
+        "host_authorization": token,
     }
     parameters.update(extra)
     return TaskRequest(goal="run", operation=RUN_TESTS, parameters=parameters)
@@ -340,8 +349,8 @@ class LifecycleSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root)
-            task = service.submit(_request())
+            service, token = _service(root)
+            task = service.submit(_request(token))
             evidence = task.tool_result.test_evidence
             self.assertEqual(task.status, TaskStatus.SUCCEEDED)
             self.assertEqual(evidence.workspace_diff["change_count"], 0)
@@ -363,9 +372,9 @@ class LifecycleSideEffectTests(unittest.TestCase):
                     )
                 },
             )
-            service = TaskService(root)
+            service, token = _service(root)
             task = service.submit(
-                _request(allowed_side_effects=["reports"])
+                _request(token, allowed_side_effects=["reports"])
             )
             self.assertEqual(task.status, TaskStatus.SUCCEEDED)
             diff = task.tool_result.test_evidence.workspace_diff
@@ -384,8 +393,8 @@ class LifecycleSideEffectTests(unittest.TestCase):
                 "        pathlib.Path('source.py').write_text('tampered')\n",
                 encoding="utf-8",
             )
-            service = TaskService(root)
-            task = service.submit(_request())
+            service, token = _service(root)
+            task = service.submit(_request(token))
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertEqual(
                 task.verification.reason, "unexpected_workspace_change"
@@ -413,9 +422,9 @@ class LifecycleSideEffectTests(unittest.TestCase):
                     )
                 },
             )
-            service = TaskService(root)
+            service, token = _service(root)
             task = service.submit(
-                _request(
+                _request(token,
                     allowed_side_effects=["reports"],
                     protected_paths=["reports/guard.txt"],
                 )
@@ -433,8 +442,8 @@ class LifecycleSideEffectTests(unittest.TestCase):
             locked.mkdir()
             os.chmod(locked, 0)
             try:
-                service = TaskService(root)
-                task = service.submit(_request())
+                service, token = _service(root)
+                task = service.submit(_request(token))
             finally:
                 os.chmod(locked, stat.S_IRWXU)
             self.assertEqual(task.status, TaskStatus.FAILED)
@@ -458,8 +467,8 @@ class LifecycleSideEffectTests(unittest.TestCase):
                     )
                 },
             )
-            service = TaskService(root)
-            task = service.submit(_request(timeout_seconds=1))
+            service, token = _service(root)
+            task = service.submit(_request(token, timeout_seconds=1))
             evidence = task.tool_result.test_evidence
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertEqual(task.error.code, "test_timeout")
@@ -470,25 +479,25 @@ class LifecycleSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root, clock=lambda: "2026-10-20T00:00:00.000+00:00")
-            task = service.enqueue(_request())
+            service, token = _service(root, clock=lambda: "2026-10-20T00:00:00.000+00:00")
+            task = service.enqueue(_request(token))
             claim = service._claim(
                 task.task_id, allowed=TaskService.RUNNABLE_STATUSES
             )
-            token = str(claim.task.lease_token)
+            lease_token = str(claim.task.lease_token)
             service.store.record_event_and_update(
                 task.task_id,
                 "tool_started",
                 "2026-10-20T00:00:00.000+00:00",
                 updates={"phase": "test_started"},
-                lease_token=token,
+                lease_token=lease_token,
             )
             service.store.expire_claim(
                 task.task_id, now="2026-10-20T00:01:00.000+00:00"
             )
-            resumed = TaskService(
+            resumed = _service(
                 root, clock=lambda: "2026-10-20T00:01:00.000+00:00"
-            ).resume(task.task_id)
+            )[0].resume(task.task_id)
             self.assertEqual(resumed.status, TaskStatus.BLOCKED)
             self.assertEqual(resumed.error.code, "test_execution_unknown")
             starts = [
@@ -507,17 +516,17 @@ class LifecycleSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root, clock=lambda: "2026-10-20T00:00:00.000+00:00")
+            service, token = _service(root, clock=lambda: "2026-10-20T00:00:00.000+00:00")
             service.store = FaultStore(service.database_path)
-            task = service.enqueue(_request())
+            task = service.enqueue(_request(token))
             with self.assertRaises(RuntimeError):
                 service.execute_task(task.task_id)
             service.store.expire_claim(
                 task.task_id, now="2026-10-20T00:01:00.000+00:00"
             )
-            resumed = TaskService(
+            resumed = _service(
                 root, clock=lambda: "2026-10-20T00:01:00.000+00:00"
-            ).resume(task.task_id)
+            )[0].resume(task.task_id)
             self.assertEqual(resumed.status, TaskStatus.SUCCEEDED)
             starts = [
                 e.event_type
@@ -529,8 +538,8 @@ class LifecycleSideEffectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root)
-            task = service.submit(_request())
+            service, token = _service(root)
+            task = service.submit(_request(token))
             evidence = task.tool_result.test_evidence
             tampered = dict(evidence.before_snapshot)
             tampered["claim_generation"] = 99
@@ -565,8 +574,8 @@ class LifecycleSideEffectTests(unittest.TestCase):
                     )
                 },
             )
-            service = TaskService(root)
-            task = service.submit(_request())
+            service, token = _service(root)
+            task = service.submit(_request(token))
             evidence = task.tool_result.test_evidence
             forged = json.loads(json.dumps(evidence.workspace_diff))
             forged["changes"] = []

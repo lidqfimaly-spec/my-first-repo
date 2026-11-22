@@ -11,6 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from zevorinth.host_authorization import HostGrantStore  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 
 
@@ -36,6 +37,7 @@ def main() -> int:
         root,
         clock=lambda: timestamp,
         fault_hook=pause_after_test,
+        host_grant_store=HostGrantStore(root / "host-grants"),
     )
     service.execute_task(task_id)
     return 24

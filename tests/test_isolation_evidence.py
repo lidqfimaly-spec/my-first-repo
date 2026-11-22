@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +61,23 @@ def _verify(evidence, **overrides):
     )
     expected.update(overrides)
     return verify_evidence(evidence, **expected)
+
+
+@contextlib.contextmanager
+def _stubbed_runtime(evidence):
+    """Pin the live probes to the evidence identity.
+
+    These tests assert the evidence gate itself; leaving the probes live would
+    make them depend on whether a Docker daemon happens to be running.
+    """
+    with mock.patch(
+        "zevorinth.isolation._live_runtime_identity",
+        return_value=evidence["runtime_identity"],
+    ), mock.patch(
+        "zevorinth.isolation._live_image_digest",
+        return_value=evidence["image_digest"],
+    ):
+        yield
 
 
 class EvidenceVerifierTests(unittest.TestCase):
@@ -134,13 +153,16 @@ class EvidenceVerifierTests(unittest.TestCase):
 
 class ContainerGateTests(unittest.TestCase):
     def test_unverified_evidence_blocks_container_start(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        evidence = _evidence(probes=_probes("NOT_EXECUTED"))
+        with tempfile.TemporaryDirectory() as temp_dir, _stubbed_runtime(
+            evidence
+        ):
             record = run_protected_container(
                 workspace=Path(temp_dir),
                 argv=["true"],
                 image="python:3.13-slim",
                 boundary_result={"state": "verified"},
-                evidence=_evidence(probes=_probes("NOT_EXECUTED")),
+                evidence=evidence,
             )
         self.assertFalse(record["process_started"])
         self.assertEqual(record["isolation_state"], "blocked")
@@ -148,7 +170,9 @@ class ContainerGateTests(unittest.TestCase):
     def test_tampered_evidence_blocks_container_start(self) -> None:
         evidence = _evidence()
         evidence["runtime_identity"] = "docker@other"
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, _stubbed_runtime(
+            evidence
+        ):
             record = run_protected_container(
                 workspace=Path(temp_dir),
                 argv=["true"],

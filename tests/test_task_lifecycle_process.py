@@ -16,6 +16,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from tests.host_grant_support import grant_for  # noqa: E402
+from zevorinth.host_authorization import HostGrantStore  # noqa: E402
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
 
@@ -35,7 +37,12 @@ class TaskLifecycleProcessTests(unittest.TestCase):
             "    def test_ok(self):\n        self.assertTrue(True)\n",
             encoding="utf-8",
         )
-        service = TaskService(root, clock=lambda: NOW)
+        _, token = grant_for(root, workspace="demo", target="test_ok")
+        service = TaskService(
+            root,
+            clock=lambda: NOW,
+            host_grant_store=HostGrantStore(root / "host-grants"),
+        )
         task = service.enqueue(
             TaskRequest(
                 goal="run test_ok",
@@ -45,7 +52,7 @@ class TaskLifecycleProcessTests(unittest.TestCase):
                     "target": "test_ok",
                     "workspace": "demo",
                     "execution_backend": "host",
-                    "host_authorization": "local-maintenance",
+                    "host_authorization": token,
                 },
             )
         )
@@ -85,7 +92,11 @@ class TaskLifecycleProcessTests(unittest.TestCase):
             if process.stderr is not None:
                 process.stderr.close()
 
-        recovery = TaskService(root, clock=lambda: LATER)
+        recovery = TaskService(
+            root,
+            clock=lambda: LATER,
+            host_grant_store=HostGrantStore(root / "host-grants"),
+        )
         recovery.store.expire_claim(task.task_id, now=LATER)
         resumed = recovery.resume(task.task_id)
 

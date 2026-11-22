@@ -14,7 +14,13 @@ from .workspace_snapshot import (
 
 
 SCHEMA_VERSION = "1.0"
-OPERATIONS = frozenset({"write_text_artifact", "run_tests"})
+OPERATIONS = frozenset(
+    {
+        "write_text_artifact",
+        "modify_text_artifact",
+        "run_tests",
+    }
+)
 
 
 def build_workspace_effects(

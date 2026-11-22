@@ -174,6 +174,21 @@ class PlannerQualityTests(unittest.TestCase):
             set(coverage["covered_operations"]),
             {"run_tests", "write_text_artifact"},
         )
+        self.assertEqual(
+            set(coverage["model_selectable_operations"]),
+            {"run_tests", "write_text_artifact"},
+        )
+        self.assertEqual(
+            set(coverage["trusted_only_operations"]),
+            {
+                "controlled_shell",
+                "edit_text_file",
+                "inspect_workspace",
+                "modify_text_artifact",
+                "read_text_artifact",
+                "research_report",
+            },
+        )
         self.assertEqual(coverage["uncovered_supported_operations"], [])
         self.assertIn("no live model samples", coverage["known_gaps"])
 

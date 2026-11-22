@@ -16,6 +16,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from zevorinth.host_authorization import (  # noqa: E402
+    HostAuthorizationError,
+    HostGrantStore,
+)
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.planner import RUN_TESTS  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
@@ -71,13 +75,32 @@ def _workspace(root: Path, files: dict[str, str]) -> Path:
     return workspace
 
 
+#: A well-formed but never-issued token, replaced by a real grant in
+#: ``run`` once the temporary root exists.
+PLACEHOLDER_TOKEN = "0" * 32 + "." + "0" * 64
+
+
+def _issue_grant(root: Path, request: TaskRequest):
+    """Issue a single-use grant for exactly what ``request`` will execute."""
+    store = HostGrantStore(root / "host-grants")
+    try:
+        grant = store.issue(
+            workspace=str(request.parameters.get("workspace")),
+            target=str(request.parameters.get("target")),
+            issuer="side-effect-audit",
+        )["token"]
+    except HostAuthorizationError:
+        return store, PLACEHOLDER_TOKEN
+    return store, grant
+
+
 def _request(**extra: Any) -> TaskRequest:
     parameters = {
         "runner": "unittest",
         "target": "test_ok",
         "workspace": "demo",
         "execution_backend": "host",
-        "host_authorization": "local-maintenance",
+        "host_authorization": PLACEHOLDER_TOKEN,
     }
     parameters.update(extra)
     return TaskRequest(goal="audit", operation=RUN_TESTS, parameters=parameters)
@@ -165,7 +188,9 @@ def run_audit() -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files)
-            service = TaskService(root)
+            store, grant = _issue_grant(root, request)
+            request.parameters["host_authorization"] = grant
+            service = TaskService(root, host_grant_store=store)
             task = service.submit(request)
             scenarios.append(
                 _record(
@@ -214,10 +239,15 @@ def run_audit() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _workspace(root, {"test_ok.py": PASSING})
+        recovery_request = _request()
+        store, grant = _issue_grant(root, recovery_request)
+        recovery_request.parameters["host_authorization"] = grant
         service = TaskService(
-            root, clock=lambda: "2026-10-20T00:00:00.000+00:00"
+            root,
+            clock=lambda: "2026-10-20T00:00:00.000+00:00",
+            host_grant_store=store,
         )
-        task = service.enqueue(_request())
+        task = service.enqueue(recovery_request)
         claim = service._claim(
             task.task_id, allowed=TaskService.RUNNABLE_STATUSES
         )
@@ -233,13 +263,15 @@ def run_audit() -> dict[str, Any]:
             task.task_id, now="2026-10-20T00:01:00.000+00:00"
         )
         resumed = TaskService(
-            root, clock=lambda: "2026-10-20T00:01:00.000+00:00"
+            root,
+            clock=lambda: "2026-10-20T00:01:00.000+00:00",
+            host_grant_store=store,
         ).resume(task.task_id)
         record = _record(
             "S-7-recovery-unknown",
             "blocked",
             resumed,
-            TaskService(root),
+            TaskService(root, host_grant_store=store),
             expected_diff=None,
         )
         record["recovery_reruns"] = max(0, record["started"] - 1)
@@ -256,8 +288,11 @@ def run_audit() -> dict[str, Any]:
 
         os.chmod(locked, 0)
         try:
-            service = TaskService(root)
-            task = service.submit(_request())
+            incomplete_request = _request()
+            store, grant = _issue_grant(root, incomplete_request)
+            incomplete_request.parameters["host_authorization"] = grant
+            service = TaskService(root, host_grant_store=store)
+            task = service.submit(incomplete_request)
         finally:
             os.chmod(locked, stat.S_IRWXU)
         record = _record(

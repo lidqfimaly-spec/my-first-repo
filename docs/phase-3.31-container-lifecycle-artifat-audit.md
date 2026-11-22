@@ -39,6 +39,8 @@
 
 policy 新增：`execution_backend == "host"` 时必须携带 `host_authorization == "local-maintenance"`，否则 BLOCKED `host_execution_not_authorized`，**进程不启动**。
 
+> **已被取代（S1，2026-11-21）**：`local-maintenance` 常量已删除。宿主机执行改用一次性人工签发凭据，缺凭据的拒绝码变为 `host_authorization_required`。见 `docs/product-implementation-roadmap.md` 的 S1 段。
+
 CLI 同步新增 `--allow-host`（映射到该令牌）；离线夹具显式使用 `--allow-host`。
 
 测试：无令牌 → BLOCKED 且无 `tool_result`；错误令牌 → BLOCKED；正确令牌 → 正常执行。

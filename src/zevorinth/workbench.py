@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from contextlib import closing
@@ -13,7 +14,9 @@ from typing import Any, Mapping
 from urllib.parse import quote
 
 from .artifact_tool import ArtifactToolError, read_artifact
+from .approval_preview import build_approval_form
 from .event_store import lease_state
+from .local_test_runner import WORKSPACE_PATTERN
 from .models import (
     Event,
     EventType,
@@ -22,6 +25,7 @@ from .models import (
     TaskStatus,
     VerificationResult,
 )
+from .progress_text import describe_progress
 from .recovery_preview import (
     RecoveryApprovalStore,
     build_recovery_preview,
@@ -44,6 +48,9 @@ ATTENTION_STATUSES = frozenset(
         TaskStatus.FAILED,
         TaskStatus.PLANNING_FAILED,
         TaskStatus.INTERRUPTED,
+        TaskStatus.PAUSED,
+        TaskStatus.AWAITING_APPROVAL,
+        TaskStatus.PARTIAL,
     }
 )
 _SENSITIVE_KEY = re.compile(
@@ -202,7 +209,12 @@ class ReadOnlyWorkbench:
             "read_only": True,
         }
 
-    def task_detail(self, task_id: str) -> dict[str, Any]:
+    def _load_task(
+        self,
+        task_id: str,
+        *,
+        with_events: bool = False,
+    ) -> tuple[Task, list[Event]]:
         _validate_task_id(task_id)
         try:
             with closing(self._connect()) as connection:
@@ -217,16 +229,20 @@ class ReadOnlyWorkbench:
                         "the task does not exist",
                         status=404,
                     )
-                event_rows = connection.execute(
-                    """
-                    SELECT sequence, event_id, task_id, event_type,
-                           occurred_at, payload_json
-                    FROM events
-                    WHERE task_id = ?
-                    ORDER BY sequence ASC
-                    """,
-                    (task_id,),
-                ).fetchall()
+                event_rows = (
+                    connection.execute(
+                        """
+                        SELECT sequence, event_id, task_id, event_type,
+                               occurred_at, payload_json
+                        FROM events
+                        WHERE task_id = ?
+                        ORDER BY sequence ASC
+                        """,
+                        (task_id,),
+                    ).fetchall()
+                    if with_events
+                    else []
+                )
                 connection.execute("COMMIT")
         except WorkbenchError:
             raise
@@ -248,6 +264,78 @@ class ReadOnlyWorkbench:
             )
             for row in event_rows
         ]
+        return task, events
+
+    def approval_form(self, task_id: str) -> dict[str, Any] | None:
+        """Read-only projection of the step waiting for human approval (F-11)."""
+        task, _ = self._load_task(task_id)
+        return build_approval_form(
+            task,
+            project_root=self.project_root,
+            redact=_redact,
+        )
+
+    def _derived_tasks(self, task_id: str) -> list[dict[str, Any]]:
+        """Tasks that declared this task's artifact as their source (F-13).
+
+        This is the only honest notion of a "later version" the data supports:
+        a task whose recorded lineage points here. Two unrelated tasks that
+        happen to write the same file name are *not* versions of each other,
+        so no name-based list is built — that would create a second truth next
+        to the lineage chain.
+        """
+        try:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN")
+                rows = connection.execute(
+                    """
+                    SELECT task_id, status, created_at, task_json
+                    FROM tasks
+                    WHERE json_extract(
+                        task_json, '$.tool_result.lineage.source_task_id'
+                    ) = ?
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                    """,
+                    (task_id,),
+                ).fetchall()
+                connection.execute("COMMIT")
+        except sqlite3.Error:
+            # A broken projection must not take down the detail view; it also
+            # must not invent an empty chain without saying why. The caller
+            # gets None from `task_detail`, not [].
+            raise
+        derived: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                item = Task.from_dict(json.loads(row["task_json"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+            derived.append(
+                {
+                    "task_id": item.task_id,
+                    "status": item.status.value,
+                    "created_at": str(row["created_at"]),
+                    "artifact_path": (
+                        item.artifact.relative_path
+                        if item.artifact is not None
+                        else None
+                    ),
+                    "sha256": (
+                        item.artifact.sha256
+                        if item.artifact is not None
+                        else None
+                    ),
+                    "verified": bool(
+                        item.verification is not None
+                        and item.verification.passed
+                    ),
+                }
+            )
+        return derived
+
+    def task_detail(self, task_id: str) -> dict[str, Any]:
+        task, events = self._load_task(task_id, with_events=True)
         evidence_state = self._persisted_test_evidence_state(task)
         audit = audit_task_lifecycle(
             task,
@@ -269,11 +357,18 @@ class ReadOnlyWorkbench:
             ),
             None,
         )
+        derived: list[dict[str, Any]] | None
+        try:
+            derived = self._derived_tasks(task_id)
+        except sqlite3.Error:
+            # Say "unavailable", never "no later versions".
+            derived = None
         return {
             "task": {
-                **_task_detail(task),
+                **_task_detail(task, artifact_observation=artifact_observation),
                 "creation_preview": creation_preview,
                 "artifact_observation": artifact_observation,
+                "derived_tasks": derived,
                 "integrity_attention": (
                     {
                         "kind": "artifact_integrity",
@@ -291,8 +386,78 @@ class ReadOnlyWorkbench:
             "lifecycle_audit": audit,
             "recovery_preview": preview,
             "test_evidence": evidence_state,
+            "model_usage": _summarize_model_usage(events),
             "read_only": True,
         }
+
+    def task_progress(self, task_id: str) -> dict[str, Any]:
+        """User-facing progress for one task (read-only).
+
+        Reads the persisted task and its event sequence and returns a
+        human-readable view. Emits no events and changes no state.
+        """
+        _validate_task_id(task_id)
+        task = self._require_task(task_id)
+        events = self.task_events_since(task_id)
+        return describe_progress(task, events)
+
+    def task_events_since(
+        self,
+        task_id: str,
+        since_sequence: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return read-only event projections after a sequence boundary.
+
+        The streaming endpoint uses this to push incremental events to the
+        workbench without mutating any task, event, or workspace state. The
+        query mirrors ``task_detail`` but omits task, audit and recovery
+        projection so a streaming poll stays bounded and cheap.
+        """
+        _validate_task_id(task_id)
+        try:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN")
+                task_row = connection.execute(
+                    "SELECT task_id FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                if task_row is None:
+                    raise WorkbenchError(
+                        "task_not_found",
+                        "the task does not exist",
+                        status=404,
+                    )
+                event_rows = connection.execute(
+                    """
+                    SELECT sequence, event_id, task_id, event_type,
+                           occurred_at, payload_json
+                    FROM events
+                    WHERE task_id = ? AND sequence > ?
+                    ORDER BY sequence ASC
+                    """,
+                    (task_id, since_sequence),
+                ).fetchall()
+                connection.execute("COMMIT")
+        except WorkbenchError:
+            raise
+        except sqlite3.Error as exc:
+            raise WorkbenchError(
+                "task_store_unreadable",
+                f"task events could not be read: {type(exc).__name__}",
+                status=503,
+            ) from exc
+        events = [
+            Event(
+                sequence=int(row["sequence"]),
+                event_id=str(row["event_id"]),
+                task_id=str(row["task_id"]),
+                event_type=str(row["event_type"]),
+                occurred_at=str(row["occurred_at"]),
+                payload=json.loads(row["payload_json"]),
+            )
+            for row in event_rows
+        ]
+        return [_event_projection(event) for event in events]
 
     def control_request_evidence(
         self,
@@ -588,6 +753,58 @@ class ReadOnlyWorkbench:
             "read_only": True,
         }
 
+    def artifact_download(self, task_id: str) -> tuple[bytes, str, str]:
+        """Full artifact bytes for a download, with no preview size limit.
+
+        The preview deliberately caps at 64 KiB because it goes into JSON; a
+        download must not, or a 100 KiB report would be undeliverable. The
+        bytes are returned only after the registered digest has been checked,
+        so a user never downloads a file that silently differs from what the
+        task claims to have produced.
+        """
+        _validate_task_id(task_id)
+        task = self._require_task(task_id)
+        evidence = task.artifact
+        if evidence is None:
+            raise WorkbenchError(
+                "artifact_not_registered",
+                "the task has no registered artifact",
+                status=404,
+            )
+        try:
+            raw = read_artifact(
+                self.artifacts_root,
+                task.task_id,
+                evidence.relative_path,
+            )
+        except FileNotFoundError as exc:
+            raise WorkbenchError(
+                "artifact_missing",
+                "the registered artifact is missing",
+                status=404,
+            ) from exc
+        except ArtifactToolError as exc:
+            raise WorkbenchError(exc.code, exc.message, status=409) from exc
+        except OSError as exc:
+            raise WorkbenchError(
+                "artifact_read_failed",
+                f"the registered artifact could not be read: {type(exc).__name__}",
+                status=503,
+            ) from exc
+        observed_sha256 = hashlib.sha256(raw).hexdigest()
+        if (
+            observed_sha256 != evidence.sha256
+            or len(raw) != evidence.byte_count
+        ):
+            raise WorkbenchError(
+                "artifact_changed_since_registration",
+                "the file on disk no longer matches what the task registered;"
+                " refusing to deliver it as the task's result",
+                status=409,
+            )
+        filename = Path(evidence.relative_path).name or f"{task.task_id}.txt"
+        return raw, filename, _content_type_for(filename)
+
     def _require_task(self, task_id: str) -> Task:
         try:
             with closing(self._connect()) as connection:
@@ -758,6 +975,27 @@ def _attention_for(task: Task) -> dict[str, Any] | None:
             "requires_user_answer": False,
             "view_only": True,
         }
+    if task.status is TaskStatus.AWAITING_APPROVAL:
+        return {
+            "kind": "approval_required",
+            "label": "Approval required for the next step",
+            "requires_user_answer": True,
+            "view_only": True,
+        }
+    if task.status is TaskStatus.PAUSED:
+        return {
+            "kind": "paused",
+            "label": "Paused; review completed and pending steps",
+            "requires_user_answer": True,
+            "view_only": True,
+        }
+    if task.status is TaskStatus.PARTIAL:
+        return {
+            "kind": "partial",
+            "label": "Partially completed; review the evidence",
+            "requires_user_answer": False,
+            "view_only": True,
+        }
     if task.status in {TaskStatus.FAILED, TaskStatus.PLANNING_FAILED}:
         return {
             "kind": "terminal_failure",
@@ -768,11 +1006,24 @@ def _attention_for(task: Task) -> dict[str, Any] | None:
     return None
 
 
+def _task_workspace(task: Task) -> str | None:
+    """The registered workspace this task belongs to, if it named one.
+
+    Only a name that passes the workspace grammar is projected: anything else
+    in the parameters is not a workspace and must not be displayed as one.
+    """
+    value = task.request.parameters.get("workspace")
+    if isinstance(value, str) and WORKSPACE_PATTERN.fullmatch(value):
+        return value
+    return None
+
+
 def _task_summary(task: Task) -> dict[str, Any]:
     return {
         "task_id": task.task_id,
         "status": task.status.value,
         "operation": task.request.operation,
+        "workspace": _task_workspace(task),
         "goal": _bounded_text(task.request.goal or "", 320),
         "phase": task.phase,
         "created_at": task.created_at,
@@ -800,7 +1051,11 @@ def _lease_state(task: Task) -> str:
     return "active" if _lease_is_active(task.lease_expires_at) else "expired"
 
 
-def _task_detail(task: Task) -> dict[str, Any]:
+def _task_detail(
+    task: Task,
+    *,
+    artifact_observation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     lease_state = _lease_state(task)
     return {
         **_task_summary(task),
@@ -809,6 +1064,9 @@ def _task_detail(task: Task) -> dict[str, Any]:
         "claim_generation": task.claim_generation,
         "lease_state": lease_state,
         "claim_held": lease_state == "active",
+        "pause_requested_at": task.pause_requested_at,
+        "pending_approval_step_id": task.pending_approval_step_id,
+        "approved_step_ids": list(task.approved_step_ids),
         "plan_version": task.plan_version,
         "plan_revision_count": len(task.plan_revisions),
         "request_digest": task_request_digest(task.request),
@@ -891,6 +1149,8 @@ def _task_detail(task: Task) -> dict[str, Any]:
             if task.artifact is not None
             else None
         ),
+        "lineage": _lineage_projection(task),
+        "continuation": _continuation_projection(task, artifact_observation),
         "verification": (
             _verification_projection(task.verification)
             if task.verification is not None
@@ -902,6 +1162,97 @@ def _task_detail(task: Task) -> dict[str, Any]:
             "security_certification": False,
         },
     }
+
+
+def _lineage_projection(task: Task) -> dict[str, Any] | None:
+    """Where this artifact came from, when it came from another one (F-14).
+
+    Only the recorded lineage keys are exposed — never the whole tool result.
+    A first-generation artifact has no lineage, and the projection says so by
+    returning ``None`` rather than an empty object that could read as "root".
+    """
+    lineage = task.tool_result.lineage if task.tool_result is not None else None
+    if not isinstance(lineage, Mapping):
+        return None
+    fields = (
+        "operation",
+        "source_task_id",
+        "source_artifact_path",
+        "source_sha256",
+        "source_byte_count",
+        "source_attempt_id",
+        "source_content_sha256",
+        "mode",
+        "result_sha256",
+        "result_byte_count",
+    )
+    projected: dict[str, Any] = {}
+    for field in fields:
+        value = lineage.get(field)
+        if isinstance(value, str):
+            projected[field] = _bounded_text(_redact(value), 200)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            projected[field] = value
+        else:
+            projected[field] = None
+    return projected
+
+
+def _continuation_projection(
+    task: Task,
+    artifact_observation: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Whether "continue from this artifact" can be offered, and on what (F-15).
+
+    The engine refuses to build on an artifact that is not verified or whose
+    bytes moved since registration, so the offer must refuse too. Handing out
+    a prefilled form that is guaranteed to be rejected would be a lie dressed
+    as convenience.
+    """
+    if task.artifact is None:
+        return {"available": False, "reason": "no_artifact"}
+    if task.status is not TaskStatus.SUCCEEDED:
+        return {"available": False, "reason": "task_not_succeeded"}
+    if task.verification is None or not task.verification.passed:
+        return {"available": False, "reason": "artifact_not_verified"}
+    if (
+        artifact_observation is None
+        or artifact_observation.get("state") != "current"
+    ):
+        return {
+            "available": False,
+            "reason": "artifact_changed_since_registration",
+        }
+    relative_path = task.artifact.relative_path
+    stem, suffix = os.path.splitext(relative_path)
+    return {
+        "available": True,
+        "reason": None,
+        "operation": "modify_text_artifact",
+        "source_task_id": task.task_id,
+        "artifact_path": relative_path,
+        "expected_sha256": task.artifact.sha256,
+        "source_byte_count": task.artifact.byte_count,
+        "suggested_output_path": f"{stem}-v2{suffix}",
+        "modes": ["replace", "append"],
+    }
+
+
+_CONTENT_TYPES = {
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".py": "text/x-python; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".log": "text/plain; charset=utf-8",
+}
+
+
+def _content_type_for(filename: str) -> str:
+    return _CONTENT_TYPES.get(
+        Path(filename).suffix.lower(), "application/octet-stream"
+    )
 
 
 def _verification_projection(
@@ -953,6 +1304,92 @@ def _event_projection(event: Event) -> dict[str, Any]:
         "event_type": event.event_type,
         "occurred_at": event.occurred_at,
         "payload_summary": _payload_summary(event.payload),
+    }
+
+
+_MODEL_USAGE_INT_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+)
+_MODEL_USAGE_PASSTHROUGH = (
+    "classification",
+    "response_id",
+    "model_call_attempted",
+    "error_type",
+    "http_status",
+    "model_name",
+    "model",
+    "provider",
+)
+
+
+def _summarize_model_usage(events: list[Event]) -> dict[str, Any]:
+    """Aggregate read-only model usage diagnostics from planning events.
+
+    Walks every event payload that carries a ``planning_metadata`` dict and
+    accumulates token, latency and call evidence. Missing usage is reported
+    as ``None`` rather than ``0`` so the UI never implies a cost that was not
+    measured. Deterministic-planner tasks report ``no_model_call``.
+    """
+    calls: list[dict[str, Any]] = []
+    total_input = 0
+    total_output = 0
+    total_tokens = 0
+    has_complete_usage = False
+    missing_usage_count = 0
+    total_latency_ms = 0.0
+    has_latency = False
+    for event in events:
+        metadata = event.payload.get("planning_metadata")
+        if not isinstance(metadata, dict):
+            continue
+        call: dict[str, Any] = {
+            "event_sequence": event.sequence,
+            "event_type": event.event_type,
+            "occurred_at": event.occurred_at,
+        }
+        for field in _MODEL_USAGE_PASSTHROUGH:
+            if field in metadata:
+                call[field] = metadata[field]
+        for field in _MODEL_USAGE_INT_FIELDS:
+            call[field] = metadata.get(field)
+        call["latency_ms"] = metadata.get("latency_ms")
+        calls.append(call)
+        latency = metadata.get("latency_ms")
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+            total_latency_ms += latency
+            has_latency = True
+        input_tokens = metadata.get("input_tokens")
+        output_tokens = metadata.get("output_tokens")
+        total_token_value = metadata.get("total_tokens")
+        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            total_input += input_tokens
+            total_output += output_tokens
+            has_complete_usage = True
+        if isinstance(total_token_value, int):
+            total_tokens += total_token_value
+        elif metadata.get("model_call_attempted"):
+            missing_usage_count += 1
+    if not calls:
+        measurement_note = "no_model_call"
+    elif has_complete_usage:
+        measurement_note = "provider_reported"
+    else:
+        measurement_note = "missing"
+    return {
+        "calls": calls,
+        "call_count": len(calls),
+        "total_input_tokens": total_input if has_complete_usage else None,
+        "total_output_tokens": total_output if has_complete_usage else None,
+        "total_tokens": total_tokens if total_tokens > 0 else None,
+        "total_latency_ms": round(total_latency_ms, 3) if has_latency else None,
+        "missing_usage_count": missing_usage_count,
+        "has_complete_usage": has_complete_usage,
+        "measurement_note": measurement_note,
+        "cost_estimate": None,
+        "cost_note": "no_price_table",
+        "read_only": True,
     }
 
 

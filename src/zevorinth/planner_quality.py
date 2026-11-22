@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .capabilities import SUPPORTED_TASK_OPERATIONS
+from .capabilities import CAPABILITY_REGISTRY, SUPPORTED_TASK_OPERATIONS
 from .evaluation import (
     EvaluationConfigurationError,
     IncrementingClock,
@@ -386,6 +386,16 @@ def _coverage_audit(
         str(case.get("expected_operation") or "none") for case in cases
     }
     covered_operations = sorted(operations - {"none"})
+    model_selectable_operations = {
+        operation
+        for operation, details in CAPABILITY_REGISTRY[
+            "task_operations"
+        ].items()
+        if "llm_planner" in details.get("access", [])
+    }
+    trusted_only_operations = (
+        set(SUPPORTED_TASK_OPERATIONS) - model_selectable_operations
+    )
     return {
         "case_count": len(cases),
         "sample_origin": "synthetic_fixed_contract",
@@ -423,15 +433,17 @@ def _coverage_audit(
             bool(case["dangerous_candidate"]) for case in cases
         ),
         "supported_operations": sorted(SUPPORTED_TASK_OPERATIONS),
+        "model_selectable_operations": sorted(model_selectable_operations),
+        "trusted_only_operations": sorted(trusted_only_operations),
         "covered_operations": covered_operations,
         "uncovered_supported_operations": sorted(
-            SUPPORTED_TASK_OPERATIONS - set(covered_operations)
+            model_selectable_operations - set(covered_operations)
         ),
         "known_gaps": (
             [
                 "no measured real-user task distribution",
                 "no execution outcome verification in this planner-only baseline",
-                "only two currently supported task operations are represented",
+                "only model-selectable task operations are represented",
                 "one live fixed-sample run is insufficient for variance estimates",
                 "no repeated-sample variance or confidence interval",
                 "no verified provider price table",
@@ -441,7 +453,7 @@ def _coverage_audit(
                 "no live model samples",
                 "no measured real-user task distribution",
                 "no execution outcome verification in this planner-only baseline",
-                "only two currently supported task operations are represented",
+                "only model-selectable task operations are represented",
                 "no repeated-sample variance or confidence interval",
                 "no provider, latency, or cost variation",
             ]

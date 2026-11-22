@@ -56,6 +56,43 @@
 
     <div id="global-message" class="global-message" role="status" aria-live="polite"></div>
 
+    <section id="conversation-panel" class="panel conversation-panel" hidden aria-labelledby="conversation-heading">
+      <div class="pane-heading">
+        <div>
+          <p class="eyebrow">对话</p>
+          <h2 id="conversation-heading">告诉我你要做什么</h2>
+        </div>
+        <button id="toggle-form-mode" class="button button-quiet" type="button">
+          高级表单
+        </button>
+      </div>
+      <div class="conversation-switcher">
+        <label class="select-label" for="conversation-select">
+          对话
+          <select id="conversation-select"></select>
+        </label>
+        <button id="new-conversation" class="button button-quiet" type="button">
+          新对话
+        </button>
+      </div>
+      <p class="panel-copy">
+        用自然语言描述目标，系统会理解意图、创建任务并在右侧展示证据。复杂任务会引导你补充信息。
+      </p>
+      <div id="conversation-messages" class="conversation-messages" aria-live="polite"></div>
+      <form id="conversation-form" class="conversation-form">
+        <label class="form-field conversation-input-field">
+          <span id="conversation-input-label" class="sr-only">输入消息</span>
+          <textarea id="conversation-input" rows="2" autocomplete="off"
+                    placeholder="描述你的目标，或回答系统的问题..."
+                    maxlength="2000"></textarea>
+        </label>
+        <button id="conversation-send" class="button" type="submit">
+          发送
+        </button>
+      </form>
+      <p id="conversation-status" class="control-status" role="status" aria-live="polite"></p>
+    </section>
+
     <section id="task-create-panel" class="panel create-panel" hidden aria-labelledby="create-task-heading">
       <div class="pane-heading">
         <div>
@@ -69,14 +106,38 @@
           <span id="create-goal-label">任务目标</span>
           <textarea id="create-goal" rows="3" required autocomplete="off"></textarea>
         </label>
+        <div class="form-actions">
+          <button id="create-preview-goal" class="button button-secondary" type="button">
+            理解目标并生成预览
+          </button>
+        </div>
+        <label class="confirm-row">
+          <input id="create-structured-mode" type="checkbox">
+          <span id="create-structured-mode-label">使用高级结构化任务</span>
+        </label>
+        <label id="create-json-mode-field" class="confirm-row" hidden>
+          <input id="create-json-mode" type="checkbox">
+          <span id="create-json-mode-label">使用原始 JSON（调试/回退）</span>
+        </label>
         <label class="form-field">
-          <span id="create-operation-label">任务类型</span>
+          <span id="create-operation-label">系统识别的任务类型</span>
           <select id="create-operation">
+            <option value="" disabled selected>等待系统识别</option>
             <option value="write_text_artifact">写入任务产物</option>
             <option value="run_tests">运行本地测试</option>
+            <option value="read_text_artifact">读取已验证任务产物</option>
+            <option value="modify_text_artifact">创建新产物版本</option>
+            <option value="inspect_workspace">检查注册工作区</option>
+            <option value="edit_text_file">受控修改代码文件</option>
+            <option value="research_report">生成本地研究可追溯报告</option>
+            <option value="execute_plan">执行有界多步计划</option>
           </select>
         </label>
         <div id="create-parameters" class="form-grid"></div>
+        <label id="create-structured-field" class="form-field" hidden>
+          <span id="create-structured-parameters-label">调试 JSON（仅高级回退）</span>
+          <textarea id="create-structured-parameters" rows="8" spellcheck="false">{}</textarea>
+        </label>
         <div id="create-task-preview" class="create-preview" aria-live="polite"></div>
         <label class="confirm-row">
           <input id="create-confirm" type="checkbox">

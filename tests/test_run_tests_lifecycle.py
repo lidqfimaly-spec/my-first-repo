@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from zevorinth.host_authorization import HostGrantStore  # noqa: E402
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.planner import RUN_TESTS  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
@@ -41,6 +43,8 @@ def _request(**extra) -> TaskRequest:
 
 
 class HostAuthorizationTests(unittest.TestCase):
+    """Host execution is refused unless a one-time grant covers the run."""
+
     def test_host_without_authorization_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -48,9 +52,7 @@ class HostAuthorizationTests(unittest.TestCase):
             service = TaskService(root)
             task = service.submit(_request(execution_backend="host"))
             self.assertEqual(task.status, TaskStatus.BLOCKED)
-            self.assertEqual(
-                task.error.code, "host_execution_not_authorized"
-            )
+            self.assertEqual(task.error.code, "host_authorization_required")
             self.assertIsNone(task.tool_result)
 
     def test_host_with_wrong_token_is_blocked(self) -> None:
@@ -64,19 +66,67 @@ class HostAuthorizationTests(unittest.TestCase):
                 )
             )
             self.assertEqual(task.status, TaskStatus.BLOCKED)
+            self.assertEqual(task.error.code, "host_authorization_invalid")
+
+    def test_host_with_an_expired_grant_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _workspace(root)
+            store = HostGrantStore(root / "host-grants")
+            token = store.issue(
+                workspace="demo",
+                target="test_ok",
+                issuer="pytest",
+                ttl_minutes=1,
+                now=datetime.now(timezone.utc) - timedelta(minutes=10),
+            )["token"]
+            service = TaskService(root, host_grant_store=store)
+            task = service.submit(
+                _request(execution_backend="host", host_authorization=token)
+            )
+            self.assertEqual(task.status, TaskStatus.BLOCKED)
+            self.assertEqual(task.error.code, "host_authorization_expired")
+
+    def test_host_with_a_grant_for_another_target_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _workspace(root)
+            store = HostGrantStore(root / "host-grants")
+            token = store.issue(
+                workspace="demo",
+                target="test_other",
+                issuer="pytest",
+            )["token"]
+            service = TaskService(root, host_grant_store=store)
+            task = service.submit(
+                _request(execution_backend="host", host_authorization=token)
+            )
+            self.assertEqual(task.status, TaskStatus.BLOCKED)
+            self.assertEqual(
+                task.error.code, "host_authorization_scope_mismatch"
+            )
+            # A refused plan must not burn the grant.
+            self.assertEqual(store.list_grants()[0]["status"], "issued")
 
     def test_host_with_token_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root)
+            store = HostGrantStore(root / "host-grants")
+            token = store.issue(
+                workspace="demo", target="test_ok", issuer="pytest"
+            )["token"]
+            service = TaskService(root, host_grant_store=store)
             task = service.submit(
                 _request(
-                    execution_backend="host",
-                    host_authorization="local-maintenance",
+                    execution_backend="host", host_authorization=token
                 )
             )
             self.assertEqual(task.status, TaskStatus.SUCCEEDED)
+            self.assertEqual(
+                task.tool_result.test_evidence.host_grant_issuer, "pytest"
+            )
+            self.assertEqual(store.list_grants()[0]["status"], "consumed")
 
 
 class ArtifactCollectionTests(unittest.TestCase):

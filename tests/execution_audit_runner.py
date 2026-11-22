@@ -23,6 +23,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from zevorinth.host_authorization import (  # noqa: E402
+    HostAuthorizationError,
+    HostGrantStore,
+)
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.planner import RUN_TESTS  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
@@ -65,13 +69,19 @@ def _workspace(root: Path, files: dict[str, str]) -> None:
         (workspace / name).write_text(content, encoding="utf-8")
 
 
+#: A well-formed but never-issued token, used only where validation
+#: rejects the request before authorization is consulted.
+PLACEHOLDER_TOKEN = "0" * 32 + "." + "0" * 64
+
+
 def _request(target: str = "test_demo", **extra: Any) -> TaskRequest:
     parameters = {
         "runner": "unittest",
         "target": target,
         "workspace": "demo",
         "execution_backend": "host",
-        "host_authorization": "local-maintenance",
+        # Replaced by a real grant in ``case`` once the temp root exists.
+        "host_authorization": PLACEHOLDER_TOKEN,
     }
     parameters.update(extra)
     return TaskRequest(
@@ -121,6 +131,26 @@ def _record(
     }
 
 
+
+def _issue_grant(root, request):
+    """Issue a grant for exactly what the request will execute.
+
+    Invalid targets/runners cannot be granted at all; those scenarios are
+    rejected by validation before authorization is consulted, so the
+    placeholder token is the honest value there.
+    """
+    store = HostGrantStore(root / "host-grants")
+    try:
+        token = store.issue(
+            workspace=str(request.parameters.get("workspace")),
+            target=str(request.parameters.get("target")),
+            issuer="execution-audit",
+        )["token"]
+    except HostAuthorizationError:
+        return store, PLACEHOLDER_TOKEN
+    return store, token
+
+
 def run_audit() -> dict[str, Any]:
     scenarios: list[dict[str, Any]] = []
 
@@ -136,7 +166,9 @@ def run_audit() -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files)
-            service = TaskService(root)
+            store, token = _issue_grant(root, request)
+            request.parameters["host_authorization"] = token
+            service = TaskService(root, host_grant_store=store)
             task = service.enqueue(request)
             if cancel_before:
                 # Deterministic "cancel before start": no thread, no race.
@@ -222,6 +254,11 @@ def run_audit() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _workspace(root, {"test_demo.py": PASSING})
+        home = root / "home"
+        cli_store = HostGrantStore(home / ".zevorinth" / "host-grants")
+        cli_token = cli_store.issue(
+            workspace="demo", target="test_demo", issuer="execution-audit"
+        )["token"]
         completed = subprocess.run(
             [
                 sys.executable,
@@ -237,6 +274,8 @@ def run_audit() -> dict[str, Any]:
                 "--backend",
                 "host",
                 "--allow-host",
+                "--host-authorization",
+                cli_token,
                 "--json",
             ],
             cwd=PROJECT_ROOT,
@@ -247,6 +286,7 @@ def run_audit() -> dict[str, Any]:
                 "PYTHONPATH": str(PROJECT_ROOT / "src"),
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "OPENAI_API_KEY": "",
+                "HOME": str(home),
             },
             timeout=120,
         )

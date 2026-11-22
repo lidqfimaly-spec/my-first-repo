@@ -75,7 +75,10 @@ format_constrained, satisfy the declared content_format. If it is exact_text, re
 expected_text as the complete file content without adding, deleting, trimming, normalizing,
 or changing any character, including whitespace, punctuation, Unicode, or newlines. Never
 invent or alter precision_mode, expected_text, or content_format.
-Two executable operations are available: write_text_artifact and run_tests.
+Two model-selectable operations are available: write_text_artifact and run_tests.
+Deterministic continuation operations for reading or creating a modified copy of
+an already verified artifact require trusted local task provenance and are not
+selectable from model output.
 - write_text_artifact: create one text file. Include operation, artifact_path as a
   safe single file name, and the complete text content.
 - run_tests: run one existing Python unittest target in a workspace the system already

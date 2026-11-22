@@ -13,6 +13,7 @@ from .artifact_tool import (
 )
 from .models import (
     ArtifactEvidence,
+    ArtifactReadEvidence,
     ExecutionMode,
     ToolResult,
     VerificationResult,
@@ -144,6 +145,98 @@ class ArtifactVerifier:
             evidence_matches=evidence_matches,
             reason=reason,
             artifact=actual_evidence,
+            checked_at=checked_at,
+        )
+
+    def verify_read(
+        self,
+        *,
+        source_task_id: str,
+        artifact_path: str,
+        expected_sha256: str | None,
+        read_evidence: ArtifactReadEvidence | None,
+        checked_at: str,
+    ) -> VerificationResult:
+        """Re-read a source artifact without trusting the reader result."""
+        if read_evidence is None:
+            return VerificationResult(
+                verifier_name="artifact-readback-v1",
+                passed=False,
+                exists=False,
+                path_safe=False,
+                content_matches=False,
+                evidence_matches=False,
+                reason="read_evidence_missing",
+                artifact=None,
+                checked_at=checked_at,
+            )
+        try:
+            raw = read_artifact(
+                self.artifacts_root,
+                source_task_id,
+                artifact_path,
+            )
+            text = raw.decode("utf-8")
+        except FileNotFoundError:
+            return VerificationResult(
+                verifier_name="artifact-readback-v1",
+                passed=False,
+                exists=False,
+                path_safe=True,
+                content_matches=False,
+                evidence_matches=False,
+                reason="source_artifact_missing",
+                artifact=None,
+                checked_at=checked_at,
+            )
+        except UnicodeDecodeError:
+            return VerificationResult(
+                verifier_name="artifact-readback-v1",
+                passed=False,
+                exists=True,
+                path_safe=True,
+                content_matches=False,
+                evidence_matches=False,
+                reason="source_artifact_not_utf8",
+                artifact=None,
+                checked_at=checked_at,
+            )
+        except ArtifactToolError as exc:
+            return VerificationResult(
+                verifier_name="artifact-readback-v1",
+                passed=False,
+                exists=False,
+                path_safe=False,
+                content_matches=False,
+                evidence_matches=False,
+                reason=exc.code,
+                artifact=None,
+                checked_at=checked_at,
+            )
+        digest = hashlib.sha256(raw).hexdigest()
+        content_matches = text == read_evidence.content
+        evidence_matches = (
+            read_evidence.source_task_id == source_task_id
+            and read_evidence.relative_path == artifact_path
+            and read_evidence.byte_count == len(raw)
+            and read_evidence.sha256 == digest
+            and (expected_sha256 is None or digest == expected_sha256)
+        )
+        if not content_matches:
+            reason = "source_content_mismatch"
+        elif not evidence_matches:
+            reason = "source_evidence_mismatch"
+        else:
+            reason = "source_artifact_verified"
+        return VerificationResult(
+            verifier_name="artifact-readback-v1",
+            passed=content_matches and evidence_matches,
+            exists=True,
+            path_safe=True,
+            content_matches=content_matches,
+            evidence_matches=evidence_matches,
+            reason=reason,
+            artifact=None,
             checked_at=checked_at,
         )
 

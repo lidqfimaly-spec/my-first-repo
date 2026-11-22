@@ -18,6 +18,22 @@ from typing import Any
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
+
+class ContainerBackendUnavailable(RuntimeError):
+    """Raised when the container runtime cannot be reached or probed.
+
+    This is an environment condition, not a transient task failure and not an
+    executor crash: callers must surface it as
+    ``container_backend_unavailable`` and must never fall back to host
+    execution.
+    """
+
+    code = "container_backend_unavailable"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
 #: Operations explicitly allowed to run without OS isolation.  This is a
 #: policy declaration, never an exception-based fallback.
 UNISOLATED_ALLOWED_OPERATIONS = frozenset({"run_tests"})
@@ -632,12 +648,17 @@ def _live_runtime_identity() -> str:
     binary = shutil.which("docker")
     if binary is None:
         return "unavailable"
-    completed = subprocess.run(
-        [binary, "version", "--format", "{{.Server.Version}}"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        completed = subprocess.run(
+            [binary, "version", "--format", "{{.Server.Version}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ContainerBackendUnavailable(
+            f"container runtime probe failed: {type(exc).__name__}"
+        ) from exc
     return completed.stdout.strip() or "unknown"
 
 
@@ -647,23 +668,33 @@ def _live_image_digest(image: str) -> str:
     binary = shutil.which("docker")
     if binary is None:
         return "unavailable"
-    completed = subprocess.run(
-        [binary, "image", "inspect", image, "--format", "{{index .RepoDigests 0}}"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        completed = subprocess.run(
+            [binary, "image", "inspect", image, "--format", "{{index .RepoDigests 0}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ContainerBackendUnavailable(
+            f"container image probe failed: {type(exc).__name__}"
+        ) from exc
     digest = completed.stdout.strip()
     if digest:
         return digest
     # Docker Desktop occasionally loses the tag->image mapping while the
     # image is still listed; fall back to the digests listing.
-    listed = subprocess.run(
-        [binary, "images", "--digests", image, "--format", "{{.Repository}}@{{.Digest}}"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        listed = subprocess.run(
+            [binary, "images", "--digests", image, "--format", "{{.Repository}}@{{.Digest}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ContainerBackendUnavailable(
+            f"container image listing failed: {type(exc).__name__}"
+        ) from exc
     for line in listed.stdout.splitlines():
         if "@sha256:" in line and "none" not in line.lower():
             return line.strip()
@@ -696,10 +727,26 @@ def run_protected_container(
         expected_config = hashlib.sha256(
             " ".join(live_command).encode("utf-8")
         ).hexdigest()
+        try:
+            live_runtime = _live_runtime_identity()
+            live_image = _live_image_digest(image)
+        except ContainerBackendUnavailable as exc:
+            # The runtime cannot be probed, so the evidence cannot be
+            # revalidated and no process may start.  Report the environment
+            # condition instead of raising out of a "returns a verdict" API.
+            return {
+                "isolation_backend": "container",
+                "isolation_state": exc.code,
+                "profile_applied": False,
+                "process_started": False,
+                "exit_code": None,
+                "blocked_reason": exc.message,
+                "argv": list(argv),
+            }
         verdict = verify_evidence(
             evidence,
-            expected_runtime=_live_runtime_identity(),
-            expected_image_digest=_live_image_digest(image),
+            expected_runtime=live_runtime,
+            expected_image_digest=live_image,
             expected_config_digest=expected_config,
             expected_request_id=request_id,
             expected_command_digest=hashlib.sha256(

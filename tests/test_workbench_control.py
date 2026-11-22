@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
@@ -409,6 +410,26 @@ class WorkbenchControlHTTPTests(unittest.TestCase):
         with urlopen(request, timeout=10) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
 
+    def _post_goal_preview(
+        self,
+        payload: dict,
+        *,
+        token: str,
+        origin: str,
+    ) -> tuple[int, dict]:
+        request = Request(
+            f"{self.base}/control/api/preview",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Zevorinth-Control-Token": token,
+                "Origin": origin,
+            },
+            method="POST",
+        )
+        with urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
     def _action_payload(self, preview: dict) -> dict:
         answer = next(
             action
@@ -522,7 +543,12 @@ class WorkbenchControlHTTPTests(unittest.TestCase):
             [
                 "add_task_note",
                 "answer_clarification",
+                "approve_step",
                 "cancel_queued_task",
+                "pause_task",
+                "reject_step",
+                "replan_pending_steps",
+                "resume_task",
                 "revise_unstarted_task",
                 "start_queued_task",
             ],
@@ -718,6 +744,680 @@ class WorkbenchControlHTTPTests(unittest.TestCase):
         error = json.loads(caught.exception.read().decode("utf-8"))
         self.assertEqual(error["error"]["code"], "task_creation_conflict")
         caught.exception.close()
+
+    def test_natural_goal_preview_is_bounded_and_never_creates_a_task(
+        self,
+    ) -> None:
+        session = self._session()
+        self.assertEqual(
+            session["goal_preview"],
+            "natural-goal-preview-v1",
+        )
+        before_status, before = self._get("/api/tasks")
+        self.assertEqual(before_status, 200)
+        before_task_ids = {
+            item["task_id"] for item in before["tasks"]
+        }
+        for token, origin in (
+            ("", self.origin),
+            (session["token"], "http://attacker.example"),
+        ):
+            with self.subTest(token=token, origin=origin), self.assertRaises(
+                HTTPError
+            ) as caught:
+                self._post_goal_preview(
+                    {"goal": "创建 hello.txt，内容写 Hello"},
+                    token=token,
+                    origin=origin,
+                )
+            self.assertEqual(caught.exception.code, 403)
+            caught.exception.close()
+
+        status, preview = self._post_goal_preview(
+            {
+                "goal": (
+                    "创建 `hello.txt`，内容写："
+                    "Hello from the natural-language control center"
+                )
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["state"], "ready")
+        self.assertEqual(preview["operation"], "write_text_artifact")
+        self.assertEqual(
+            preview["operation_label"],
+            "创建并验证文本文件",
+        )
+        self.assertEqual(
+            preview["parameters"],
+            {
+                "artifact_path": "hello.txt",
+                "content": "Hello from the natural-language control center",
+            },
+        )
+        self.assertEqual(preview["missing_fields"], [])
+        self.assertEqual(preview["plan_classification"], "planned")
+        self.assertTrue(preview["confirmation_required"])
+        self.assertFalse(preview["execution_started"])
+        self.assertFalse(preview["mutation_started"])
+        self.assertTrue(preview["limits"])
+        after_status, after = self._get("/api/tasks")
+        self.assertEqual(after_status, 200)
+        self.assertEqual(
+            {item["task_id"] for item in after["tasks"]},
+            before_task_ids,
+        )
+
+    def test_natural_goal_preview_requests_clarification_or_fails_closed(
+        self,
+    ) -> None:
+        session = self._session()
+        _, incomplete = self._post_goal_preview(
+            {"goal": "创建一份简短报告"},
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(incomplete["state"], "needs_clarification")
+        self.assertEqual(
+            incomplete["parameters"],
+            {"artifact_path": "report.md"},
+        )
+        self.assertEqual(incomplete["missing_fields"], ["content"])
+        self.assertIn("未指定文件名", incomplete["assumptions"][0])
+
+        _, unsupported = self._post_goal_preview(
+            {"goal": "运行测试 tests.test_demo"},
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(unsupported["state"], "needs_clarification")
+        self.assertEqual(unsupported["guided_flow"], "code")
+        self.assertEqual(unsupported["operation"], "run_tests")
+        self.assertEqual(
+            unsupported["reason_code"],
+            "guided_code_fields_required",
+        )
+        self.assertFalse(unsupported["confirmation_required"])
+
+        with self.assertRaises(HTTPError) as caught:
+            self._post_goal_preview(
+                {"goal": "创建 `../escape.txt`，内容写 no"},
+                token=session["token"],
+                origin=self.origin,
+            )
+        self.assertEqual(caught.exception.code, 400)
+        error = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(
+            error["error"]["code"],
+            "invalid_artifact_path",
+        )
+        caught.exception.close()
+
+    def test_natural_goal_routes_task_classes_without_mutation(self) -> None:
+        session = self._session()
+        before_status, before = self._get("/api/tasks")
+        self.assertEqual(before_status, 200)
+        before_ids = {item["task_id"] for item in before["tasks"]}
+        cases = (
+            (
+                "检查并修改工作区 demo 的 sample.py，然后运行测试",
+                "code",
+                {"workspace", "path", "expected_sha256", "old_text", "new_text"},
+            ),
+            (
+                "根据本地资料研究这个主题，并生成带来源引用的报告",
+                "research",
+                {"workspace", "sources", "title", "output_path", "findings"},
+            ),
+            (
+                "先创建来源文件，然后创建依赖它的副本",
+                "complex",
+                {"steps"},
+            ),
+        )
+        for goal, flow, required in cases:
+            with self.subTest(flow=flow):
+                status, preview = self._post_goal_preview(
+                    {"goal": goal},
+                    token=session["token"],
+                    origin=self.origin,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(preview["guided_flow"], flow)
+                self.assertTrue(preview["supported"])
+                self.assertEqual(preview["state"], "needs_clarification")
+                self.assertEqual(set(preview["missing_fields"]), required)
+                self.assertFalse(preview["confirmation_required"])
+                self.assertFalse(preview["execution_started"])
+                self.assertFalse(preview["mutation_started"])
+        after_status, after = self._get("/api/tasks")
+        self.assertEqual(after_status, 200)
+        self.assertEqual(
+            {item["task_id"] for item in after["tasks"]},
+            before_ids,
+        )
+
+    def test_natural_goal_preview_to_confirmed_task_delivery(self) -> None:
+        session = self._session()
+        status, preview = self._post_goal_preview(
+            {
+                "goal": (
+                    "创建 `guided.txt`，内容写："
+                    "guided through the natural-language first-use flow"
+                )
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["state"], "ready")
+
+        request_id = str(uuid.uuid4())
+        created_status, created = self._post_create(
+            {
+                "request_id": request_id,
+                "confirmed": True,
+                "goal": preview["goal"],
+                "operation": preview["operation"],
+                "parameters": preview["parameters"],
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(created_status, 201)
+        self.assertEqual(created["task_status"], TaskStatus.QUEUED.value)
+        _, action_preview = self._get(
+            f"/control/api/tasks/{request_id}/actions"
+        )
+        action_status, action = self._post(
+            request_id,
+            self._start_payload(action_preview),
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(action_status, 200)
+        self.assertEqual(action["status"], "completed")
+        task = self.service.require_task(request_id)
+        self.assertEqual(task.status, TaskStatus.SUCCEEDED)
+        artifact = (
+            self.root
+            / "artifacts"
+            / request_id
+            / "guided.txt"
+        )
+        self.assertEqual(
+            artifact.read_text(encoding="utf-8"),
+            "guided through the natural-language first-use flow",
+        )
+
+    def test_natural_goal_continuation_binds_verified_source_context(self) -> None:
+        source = self.service.submit(
+            TaskRequest(
+                goal="创建可继续修改的来源文件",
+                operation="write_text_artifact",
+                parameters={
+                    "artifact_path": "source.txt",
+                    "content": "source\n",
+                },
+            )
+        )
+        session = self._session()
+        status, preview = self._post_goal_preview(
+            {
+                "goal": "在刚才那个文件末尾再加一段说明，内容写：结论已验证。",
+                "selected_task_id": source.task_id,
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["state"], "ready")
+        self.assertTrue(preview["continuation_context"])
+        self.assertEqual(preview["operation"], "modify_text_artifact")
+        self.assertEqual(
+            preview["parameters"],
+            {
+                "source_task_id": source.task_id,
+                "artifact_path": "source.txt",
+                "expected_sha256": source.artifact.sha256,
+                "output_path": "source-v2.txt",
+                "mode": "append",
+                "content": "结论已验证。",
+            },
+        )
+        self.assertTrue(preview["confirmation_required"])
+
+        request_id = str(uuid.uuid4())
+        created_status, _ = self._post_create(
+            {
+                "request_id": request_id,
+                "confirmed": True,
+                "goal": preview["goal"],
+                "operation": preview["operation"],
+                "parameters": preview["parameters"],
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(created_status, 201)
+        _, action_preview = self._get(
+            f"/control/api/tasks/{request_id}/actions"
+        )
+        action_status, _ = self._post(
+            request_id,
+            self._start_payload(action_preview),
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(action_status, 200)
+        revised = self.service.require_task(request_id)
+        self.assertEqual(revised.status, TaskStatus.SUCCEEDED)
+        revised_path = self.root / "artifacts" / request_id / "source-v2.txt"
+        self.assertEqual(
+            revised_path.read_text(encoding="utf-8"),
+            "source\n结论已验证。",
+        )
+        original_path = (
+            self.root / "artifacts" / source.task_id / "source.txt"
+        )
+        self.assertEqual(original_path.read_text(encoding="utf-8"), "source\n")
+
+    def test_natural_continuation_requires_current_verified_source(self) -> None:
+        session = self._session()
+        status, preview = self._post_goal_preview(
+            {"goal": "把这份报告更新一下，保留原文件"},
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["state"], "needs_clarification")
+        self.assertIn("selected_task_id", preview["missing_fields"])
+        self.assertFalse(preview["confirmation_required"])
+
+        source = self.service.submit(
+            TaskRequest(
+                goal="创建可检查来源",
+                operation="write_text_artifact",
+                parameters={
+                    "artifact_path": "checked.txt",
+                    "content": "checked\n",
+                },
+            )
+        )
+        with self.assertRaises(HTTPError) as caught:
+            self._post_goal_preview(
+                {
+                    "goal": "继续修改 checked.txt，替换内容",
+                    "selected_task_id": self.queued_task.task_id,
+                },
+                token=session["token"],
+                origin=self.origin,
+            )
+        self.assertEqual(caught.exception.code, 409)
+        error = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertEqual(
+            error["error"]["code"],
+            "continuation_source_not_verified",
+        )
+        caught.exception.close()
+
+        source_path = (
+            self.root / "artifacts" / source.task_id / "checked.txt"
+        )
+        source_path.write_text("changed outside\n", encoding="utf-8")
+        with self.assertRaises(HTTPError) as changed:
+            self._post_goal_preview(
+                {
+                    "goal": "继续修改 checked.txt，替换内容",
+                    "selected_task_id": source.task_id,
+                },
+                token=session["token"],
+                origin=self.origin,
+            )
+        self.assertEqual(changed.exception.code, 409)
+        changed_error = json.loads(changed.exception.read().decode("utf-8"))
+        self.assertEqual(
+            changed_error["error"]["code"],
+            "continuation_source_not_verified",
+        )
+        changed.exception.close()
+
+    def test_natural_continuation_supports_replace_and_explicit_output(self) -> None:
+        source = self.service.submit(
+            TaskRequest(
+                goal="创建可替换来源",
+                operation="write_text_artifact",
+                parameters={
+                    "artifact_path": "draft.md",
+                    "content": "old\n",
+                },
+            )
+        )
+        session = self._session()
+        status, preview = self._post_goal_preview(
+            {
+                "goal": (
+                    "继续修改 draft.md，把内容替换成“new content”，"
+                    "另存为 final.md"
+                ),
+                "selected_task_id": source.task_id,
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["state"], "ready")
+        self.assertEqual(preview["parameters"]["mode"], "replace")
+        self.assertEqual(preview["parameters"]["content"], "new content")
+        self.assertEqual(preview["parameters"]["output_path"], "final.md")
+        self.assertEqual(
+            preview["parameters"]["expected_sha256"],
+            source.artifact.sha256,
+        )
+
+    def test_natural_continuation_phrases_bind_context_or_clarify(self) -> None:
+        source = self.service.submit(
+            TaskRequest(
+                goal="创建自然语言续版本来源",
+                operation="write_text_artifact",
+                parameters={
+                    "artifact_path": "report.md",
+                    "content": "source\n",
+                },
+            )
+        )
+        session = self._session()
+        cases = (
+            (
+                "在刚才那个文件末尾再加一段说明。",
+                "append",
+                {"content"},
+            ),
+            (
+                "把这份报告更新一下，保留原文件。",
+                None,
+                {"content", "mode"},
+            ),
+            (
+                "继续完善 report.md，另存为新版本。",
+                None,
+                {"content", "mode"},
+            ),
+        )
+        for goal, expected_mode, expected_missing in cases:
+            with self.subTest(goal=goal):
+                status, preview = self._post_goal_preview(
+                    {
+                        "goal": goal,
+                        "selected_task_id": source.task_id,
+                    },
+                    token=session["token"],
+                    origin=self.origin,
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(preview["continuation_context"])
+                self.assertEqual(preview["operation"], "modify_text_artifact")
+                self.assertEqual(preview["state"], "needs_clarification")
+                self.assertEqual(
+                    set(preview["missing_fields"]),
+                    expected_missing,
+                )
+                self.assertEqual(
+                    preview["parameters"].get("mode"),
+                    expected_mode,
+                )
+                self.assertEqual(
+                    preview["parameters"]["expected_sha256"],
+                    source.artifact.sha256,
+                )
+
+    def test_multi_step_actions_pause_approve_resume_and_replan(self) -> None:
+        waiting = self.service.submit_plan(
+            "approval through control center",
+            [
+                {
+                    "step_id": "edit",
+                    "tool_name": "write_text_artifact",
+                    "expected_result": "create approved output",
+                    "parameters": {
+                        "artifact_path": "approved.txt",
+                        "content": "approved through control center\n",
+                    },
+                    "requires_approval": True,
+                }
+            ],
+        )
+        self.assertEqual(waiting.status, TaskStatus.AWAITING_APPROVAL)
+        status, preview = self._get(
+            f"/control/api/tasks/{waiting.task_id}/actions"
+        )
+        self.assertEqual(status, 200)
+        actions = {item["action"]: item for item in preview["actions"]}
+        self.assertEqual(actions["approve_step"]["step_id"], "edit")
+        self.assertEqual(actions["reject_step"]["step_id"], "edit")
+        self.assertIn("pause_task", actions)
+        self.assertIn("replan_pending_steps", actions)
+
+        session = self._session()
+        approve_request = str(uuid.uuid4())
+        approved_status, approved = self._post(
+            waiting.task_id,
+            {
+                "action": "approve_step",
+                "request_id": approve_request,
+                "confirmed": True,
+                "expected_updated_at": preview["task_updated_at"],
+                "expected_plan_version": preview["plan_version"],
+                "step_id": "edit",
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(approved_status, 200)
+        self.assertEqual(approved["status"], "completed")
+        completed = self.service.require_task(waiting.task_id)
+        self.assertEqual(completed.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(
+            (
+                self.root
+                / "artifacts"
+                / waiting.task_id
+                / "approved.txt"
+            ).read_text(encoding="utf-8"),
+            "approved through control center\n",
+        )
+
+        queued = self.service.enqueue(
+            TaskRequest(
+                goal="pause and resume",
+                operation="execute_plan",
+                parameters={
+                    "steps": [
+                        {
+                            "step_id": "one",
+                            "tool_name": "write_text_artifact",
+                            "expected_result": "write one",
+                            "parameters": {
+                                "artifact_path": "one.txt",
+                                "content": "one\n",
+                            },
+                        }
+                    ],
+                    "failure_policy": "fail_fast",
+                },
+            )
+        )
+        _, queued_preview = self._get(
+            f"/control/api/tasks/{queued.task_id}/actions"
+        )
+        pause_id = str(uuid.uuid4())
+        pause_status, _ = self._post(
+            queued.task_id,
+            {
+                "action": "pause_task",
+                "request_id": pause_id,
+                "confirmed": True,
+                "expected_updated_at": queued_preview["task_updated_at"],
+                "expected_plan_version": queued_preview["plan_version"],
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(pause_status, 200)
+        paused = self.service.require_task(queued.task_id)
+        self.assertEqual(paused.status, TaskStatus.PAUSED)
+        _, paused_preview = self._get(
+            f"/control/api/tasks/{queued.task_id}/actions"
+        )
+        resume_id = str(uuid.uuid4())
+        resume_status, _ = self._post(
+            queued.task_id,
+            {
+                "action": "resume_task",
+                "request_id": resume_id,
+                "confirmed": True,
+                "expected_updated_at": paused_preview["task_updated_at"],
+                "expected_plan_version": paused_preview["plan_version"],
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(resume_status, 200)
+        self.assertEqual(
+            self.service.require_task(queued.task_id).status,
+            TaskStatus.SUCCEEDED,
+        )
+
+    def test_pause_action_is_not_advertised_while_claim_blocks_it(self) -> None:
+        queued = self.service.enqueue(
+            TaskRequest(
+                goal="pause only without a claim",
+                operation="execute_plan",
+                parameters={
+                    "steps": [
+                        {
+                            "step_id": "one",
+                            "tool_name": "write_text_artifact",
+                            "expected_result": "write one",
+                            "parameters": {
+                                "artifact_path": "one.txt",
+                                "content": "one\n",
+                            },
+                        }
+                    ],
+                    "failure_policy": "fail_fast",
+                },
+            )
+        )
+        self._set_claim_lease(
+            queued.task_id,
+            expires_at="2999-01-01T00:00:00.000+00:00",
+        )
+        _, active_preview = self._get(
+            f"/control/api/tasks/{queued.task_id}/actions"
+        )
+        self.assertEqual(active_preview["lease_state"], "active")
+        self.assertNotIn(
+            "pause_task",
+            {item["action"] for item in active_preview["actions"]},
+        )
+
+        task = self.service.require_task(queued.task_id)
+        self.service.store.record_event_and_update(
+            queued.task_id,
+            "claim_expiry_fixture",
+            "2026-11-10T00:00:00.000+00:00",
+            updates={"lease_expires_at": "2000-01-01T00:00:00.000+00:00"},
+            lease_token=task.lease_token,
+        )
+        _, expired_preview = self._get(
+            f"/control/api/tasks/{queued.task_id}/actions"
+        )
+        self.assertEqual(expired_preview["lease_state"], "expired")
+        self.assertNotIn(
+            "pause_task",
+            {item["action"] for item in expired_preview["actions"]},
+        )
+
+    def test_advanced_structured_operation_can_be_created_and_started(self) -> None:
+        workspace = self.root / "workspaces" / "inspect-ui"
+        workspace.mkdir(parents=True)
+        (workspace / "sample.txt").write_text("inspect me\n", encoding="utf-8")
+        session = self._session()
+        task_id = str(uuid.uuid4())
+        status, created = self._post_create(
+            {
+                "request_id": task_id,
+                "confirmed": True,
+                "goal": "inspect the registered workspace",
+                "operation": "inspect_workspace",
+                "parameters": {
+                    "workspace": "inspect-ui",
+                    "path": "sample.txt",
+                },
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(created["task_status"], TaskStatus.QUEUED.value)
+        _, preview = self._get(f"/control/api/tasks/{task_id}/actions")
+        self.assertIn(
+            "start_queued_task",
+            {item["action"] for item in preview["actions"]},
+        )
+        action_status, _ = self._post(
+            task_id,
+            self._start_payload(preview),
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(action_status, 200)
+        task = self.service.require_task(task_id)
+        self.assertEqual(task.status, TaskStatus.SUCCEEDED)
+        self.assertEqual(
+            task.tool_result.workspace_inspection["selected_path"],
+            "sample.txt",
+        )
+
+    def test_control_center_injects_code_edit_authorization_server_side(
+        self,
+    ) -> None:
+        workspace = self.root / "workspaces" / "edit-auth"
+        workspace.mkdir(parents=True)
+        source = "VALUE = 1\n"
+        (workspace / "sample.py").write_text(source, encoding="utf-8")
+        session = self._session()
+        task_id = str(uuid.uuid4())
+        status, created = self._post_create(
+            {
+                "request_id": task_id,
+                "confirmed": True,
+                "goal": "edit the sample source",
+                "operation": "edit_text_file",
+                "parameters": {
+                    "workspace": "edit-auth",
+                    "path": "sample.py",
+                    "expected_sha256": hashlib.sha256(
+                        source.encode("utf-8")
+                    ).hexdigest(),
+                    "old_text": "VALUE = 1",
+                    "new_text": "VALUE = 2",
+                    "authorization": "caller-supplied",
+                },
+            },
+            token=session["token"],
+            origin=self.origin,
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(created["task_status"], TaskStatus.QUEUED.value)
+        task = self.service.require_task(task_id)
+        self.assertEqual(
+            task.request.parameters["authorization"],
+            "local-code-edit",
+        )
 
     def test_task_creation_with_omitted_parameters_requires_clarification(self) -> None:
         session = self._session()
@@ -4348,6 +5048,35 @@ class WorkbenchControlHTTPTests(unittest.TestCase):
             read_only.shutdown()
             read_only.server_close()
             thread.join(timeout=5)
+
+
+class EmptyControlRuntimeTests(unittest.TestCase):
+    def test_control_server_initializes_empty_store_before_first_visit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            server = create_server(root, port=0, control_enabled=True)
+            thread = threading.Thread(
+                target=server.serve_forever,
+                daemon=True,
+            )
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                self.assertTrue(
+                    (root / "data" / "zevorinth.sqlite3").is_file()
+                )
+                with urlopen(
+                    f"http://{host}:{port}/api/tasks",
+                    timeout=5,
+                ) as response:
+                    self.assertEqual(response.status, 200)
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["tasks"], [])
+                self.assertEqual(sum(payload["counts"].values()), 0)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
 
 if __name__ == "__main__":

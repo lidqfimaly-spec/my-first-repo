@@ -11,11 +11,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from tests.host_grant_support import authorized_service  # noqa: E402
 from zevorinth.evidence_store import EvidenceStore  # noqa: E402
 from zevorinth.isolation import (  # noqa: E402
     _live_image_digest,
@@ -27,6 +29,7 @@ from zevorinth.isolation_evidence import (  # noqa: E402
     build_evidence,
     evidence_digest,
 )
+from zevorinth.local_test_runner import RUN_TESTS_TOOL  # noqa: E402
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.planner import RUN_TESTS  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
@@ -58,7 +61,10 @@ def _container_names(task_id: str, *, include_stopped: bool = False) -> list[str
     if include_stopped:
         command.append("-a")
     command.extend(["--filter", f"name={prefix}", "--format", "{{.Names}}"])
-    listed = subprocess.run(command, capture_output=True, text=True)
+    try:
+        listed = subprocess.run(command, capture_output=True, text=True)
+    except OSError:
+        return []
     return [
         name
         for name in listed.stdout.split()
@@ -140,14 +146,57 @@ def _request(target: str, **extra) -> TaskRequest:
 
 
 class ContainerTimeoutCancelTests(unittest.TestCase):
+    NON_CONTAINER_TESTS = {
+        "test_container_start_failure_is_explicit",
+        "test_unconfirmed_termination_fails_closed",
+    }
+
     def setUp(self) -> None:
-        if not _ready():
-            self.skipTest("python:3.13-alpine not available")
         self.task_ids: list[str] = []
+        self._tempdirs: list[tempfile.TemporaryDirectory[str]] = []
+        if (
+            self._testMethodName not in self.NON_CONTAINER_TESTS
+            and not _ready()
+        ):
+            self.skipTest("python:3.13-alpine not available")
 
     def tearDown(self) -> None:
         for task_id in self.task_ids:
             _remove_containers_for(task_id)
+        for temporary in self._tempdirs:
+            temporary.cleanup()
+
+    def _non_container_task(
+        self,
+        target: str,
+        *,
+        timeout_seconds: int = 60,
+    ) -> tuple[TaskService, object]:
+        temporary = tempfile.TemporaryDirectory()
+        self._tempdirs.append(temporary)
+        root = Path(temporary.name)
+        workspace = root / "workspaces" / "demo"
+        workspace.mkdir(parents=True)
+        (workspace / f"{target}.py").write_text(
+            "import unittest\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_ok(self):\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        service = TaskService(root)
+        queued = service.enqueue(
+            _request(target, timeout_seconds=timeout_seconds)
+        )
+        evidence_id = "synthetic-evidence"
+        queued.request.parameters["evidence_id"] = evidence_id
+        service.store.record_event_and_update(
+            queued.task_id,
+            "test_fixture",
+            "2026-10-20T00:00:00.000+00:00",
+            updates={"request": queued.request},
+        )
+        return service, queued
 
     def _run(self, module: str, content: str, *, timeout: float = 60, cancel_after=None, **extra):
         root = Path(tempfile.mkdtemp())
@@ -253,6 +302,47 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         )
 
     def test_container_start_failure_is_explicit(self) -> None:
+        service, queued = self._non_container_task("test_ok")
+
+        def fail_popen(*args, **kwargs):
+            del args, kwargs
+            raise OSError("docker unavailable")
+
+        service.container_popen = fail_popen
+        with patch(
+            "zevorinth.evidence_store.EvidenceStore."
+            "verify_stored_evidence",
+            return_value={"state": "verified", "reasons": []},
+        ), patch(
+            "zevorinth.isolation._live_runtime_identity",
+            return_value={"runtime": "test-double"},
+        ), patch(
+            "zevorinth.isolation._live_image_digest",
+            return_value="python@sha256:" + "a" * 64,
+        ):
+            result = service.execute_task(queued.task_id)
+
+        self.assertEqual(result.status, TaskStatus.FAILED)
+        self.assertEqual(result.error.code, "container_start_failed")
+        self.assertEqual(result.tool_result.tool_name, RUN_TESTS_TOOL)
+        self.assertIsNone(result.tool_result.test_evidence)
+        self.assertIsNone(result.verification)
+        self.assertEqual(
+            result.execution_plan_snapshot["evidence_id"],
+            "synthetic-evidence",
+        )
+        self.assertEqual(_container_names(result.task_id), [])
+        event_types = [
+            event.event_type for event in service.events(result.task_id)
+        ]
+        self.assertNotIn("task_succeeded", event_types)
+        self.assertIn("task_failed", event_types)
+        report = service.audit_lifecycle(result.task_id)
+        self.assertTrue(report["ok"], report["issues"])
+
+    def test_container_start_failure_uses_real_evidence_and_runtime(
+        self,
+    ) -> None:
         root = Path(tempfile.mkdtemp())
         workspace = root / "workspaces" / "demo"
         workspace.mkdir(parents=True)
@@ -263,8 +353,12 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         )
         service = TaskService(root)
         queued = service.enqueue(_request("test_ok"))
+        self.task_ids.append(queued.task_id)
         evidence = _probe_evidence(
-            root, workspace, queued.task_id, IMAGE
+            root,
+            workspace,
+            queued.task_id,
+            IMAGE,
         )
         _bind_evidence(evidence, workspace, "test_ok", queued.task_id)
         EvidenceStore(root).save_evidence(evidence)
@@ -275,30 +369,25 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
             "2026-10-20T00:00:00.000+00:00",
             updates={"request": queued.request},
         )
-        def fail_popen(*args, **kwargs):
-            del args, kwargs
-            raise OSError("docker unavailable")
 
-        service.container_popen = fail_popen
+        def launch_missing_runtime(command, **kwargs):
+            return subprocess.Popen(
+                ["/nonexistent/zevorinth-container-runtime"],
+                **kwargs,
+            )
+
+        service.container_popen = launch_missing_runtime
         result = service.execute_task(queued.task_id)
-
         self.assertEqual(result.status, TaskStatus.FAILED)
         self.assertEqual(result.error.code, "container_start_failed")
-        self.assertEqual(result.tool_result.tool_name, "run_tests")
-        self.assertIsNone(result.tool_result.test_evidence)
-        self.assertIsNone(result.verification)
-        self.assertEqual(
-            result.execution_plan_snapshot["evidence_id"],
-            evidence["evidence_id"],
-        )
         self.assertEqual(_container_names(result.task_id), [])
-        event_types = [
-            event.event_type for event in service.events(result.task_id)
-        ]
-        self.assertNotIn("task_succeeded", event_types)
-        self.assertIn("task_failed", event_types)
-        report = service.audit_lifecycle(result.task_id)
-        self.assertTrue(report["ok"], report["issues"])
+        self.assertNotIn(
+            "task_succeeded",
+            [
+                event.event_type
+                for event in service.events(result.task_id)
+            ],
+        )
 
     def test_evidence_invalidated_after_real_test_blocks_success(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -375,28 +464,54 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
         self.assertTrue(not huge.exists() or huge.stat().st_size < 90_000_000)
 
     def test_unconfirmed_termination_fails_closed(self) -> None:
-        root = Path(tempfile.mkdtemp())
-        workspace = root / "workspaces" / "demo"
-        workspace.mkdir(parents=True)
-        (workspace / "test_slow.py").write_text(SLOW, encoding="utf-8")
-        service = TaskService(root)
-        queued = service.enqueue(_request("test_slow", timeout_seconds=2))
-        self.task_ids.append(queued.task_id)
-        evidence = _probe_evidence(root, workspace, queued.task_id, IMAGE)
-        _bind_evidence(evidence, workspace, "test_slow", queued.task_id)
-        EvidenceStore(root).save_evidence(evidence)
-        queued.request.parameters["evidence_id"] = evidence["evidence_id"]
-        service.store.record_event_and_update(
-            queued.task_id, "test_fixture",
-            "2026-10-20T00:00:00.000+00:00",
-            updates={"request": queued.request},
+        service, queued = self._non_container_task(
+            "test_slow",
+            timeout_seconds=1,
         )
+
+        class UnconfirmedProcess:
+            def __init__(self) -> None:
+                import threading
+
+                self.killed = False
+                self.finished = threading.Event()
+
+            def communicate(self):
+                self.finished.wait()
+                return "", ""
+
+            def poll(self):
+                return None
+
+            def kill(self) -> None:
+                self.killed = True
+                self.finished.set()
+
+            def wait(self, timeout=None):
+                del timeout
+                self.finished.set()
+                return 0
+
+        process = UnconfirmedProcess()
+        service.container_popen = lambda *args, **kwargs: process
         service.container_terminator = lambda name: False
-        result = service.execute_task(queued.task_id)
+        with patch(
+            "zevorinth.evidence_store.EvidenceStore."
+            "verify_stored_evidence",
+            return_value={"state": "verified", "reasons": []},
+        ), patch(
+            "zevorinth.isolation._live_runtime_identity",
+            return_value={"runtime": "test-double"},
+        ), patch(
+            "zevorinth.isolation._live_image_digest",
+            return_value="python@sha256:" + "a" * 64,
+        ):
+            result = service.execute_task(queued.task_id)
         self.assertEqual(result.status, TaskStatus.FAILED)
         self.assertEqual(
             result.error.code, "container_termination_unverified"
         )
+        self.assertTrue(process.killed)
         resumed = service.resume(result.task_id)
         self.assertEqual(resumed.status, TaskStatus.FAILED)
         self.assertEqual(
@@ -406,7 +521,6 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
             ].count("tool_started"),
             1,
         )
-        _remove_containers_for(queued.task_id)
 
     def test_repeated_cancel_is_idempotent(self) -> None:
         root = Path(tempfile.mkdtemp())
@@ -417,9 +531,16 @@ class ContainerTimeoutCancelTests(unittest.TestCase):
             "    def test_ok(self):\n        self.assertTrue(True)\n",
             encoding="utf-8",
         )
-        service = TaskService(root)
-        task = service.enqueue(_request("test_ok", execution_backend="host",
-                                        host_authorization="local-maintenance"))
+        service, _, token = authorized_service(
+            root, workspace="demo", target="test_ok"
+        )
+        task = service.enqueue(
+            _request(
+                "test_ok",
+                execution_backend="host",
+                host_authorization=token,
+            )
+        )
         first = service.request_cancel(task.task_id, requested_by="t", reason="a")
         second = service.request_cancel(task.task_id, requested_by="t", reason="b")
         self.assertEqual(first.cancel_requested_at, second.cancel_requested_at)

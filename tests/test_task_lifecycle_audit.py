@@ -210,7 +210,9 @@ class TaskLifecycleAuditTests(unittest.TestCase):
                     "target": "test_ok",
                     "workspace": "missing",
                     "execution_backend": "host",
-                    "host_authorization": "local-maintenance",
+                    # Rejected by the workspace check before any grant
+                    # is consulted; never a usable authorization.
+                    "host_authorization": "0" * 32 + "." + "0" * 64,
                 },
             )
         )

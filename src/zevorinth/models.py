@@ -14,10 +14,13 @@ JsonObject = dict[str, Any]
 class TaskStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
+    AWAITING_APPROVAL = "awaiting_approval"
     AWAITING_CLARIFICATION = "awaiting_clarification"
     BLOCKED = "blocked"
     VERIFYING = "verifying"
     SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
     FAILED = "failed"
     PLANNING_FAILED = "planning_failed"
     INTERRUPTED = "interrupted"
@@ -112,6 +115,16 @@ class EventType(str, Enum):
     VERIFICATION_COMPLETED = "verification_completed"
     TASK_INTERRUPTED = "task_interrupted"
     TASK_RESUMED = "task_resumed"
+    PAUSE_REQUESTED = "pause_requested"
+    TASK_PAUSED = "task_paused"
+    STEP_STARTED = "step_started"
+    STEP_COMPLETED = "step_completed"
+    STEP_FAILED = "step_failed"
+    STEP_SKIPPED = "step_skipped"
+    STEP_APPROVAL_REQUIRED = "step_approval_required"
+    STEP_APPROVED = "step_approved"
+    STEPS_REPLANNED = "steps_replanned"
+    TASK_PARTIAL = "task_partial"
     TASK_SUCCEEDED = "task_succeeded"
     TASK_FAILED = "task_failed"
     TASK_CANCELLED = "task_cancelled"
@@ -171,6 +184,10 @@ class PlanStep:
     tool_name: str
     expected_result: str
     parameters: JsonObject
+    depends_on: list[str] = field(default_factory=list)
+    requires_approval: bool = False
+    max_attempts: int = 1
+    retry_on_not_executed: bool = False
 
     def to_dict(self) -> JsonObject:
         return {
@@ -178,15 +195,28 @@ class PlanStep:
             "tool_name": self.tool_name,
             "expected_result": self.expected_result,
             "parameters": self.parameters,
+            "depends_on": list(self.depends_on),
+            "requires_approval": self.requires_approval,
+            "max_attempts": self.max_attempts,
+            "retry_on_not_executed": self.retry_on_not_executed,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "PlanStep":
+        depends_on = data.get("depends_on", [])
+        if not isinstance(depends_on, list):
+            raise ValueError("plan step depends_on must be a list")
         return cls(
             step_id=str(data["step_id"]),
             tool_name=str(data["tool_name"]),
             expected_result=str(data["expected_result"]),
             parameters=dict(data.get("parameters", {})),
+            depends_on=[str(item) for item in depends_on],
+            requires_approval=bool(data.get("requires_approval", False)),
+            max_attempts=int(data.get("max_attempts", 1)),
+            retry_on_not_executed=bool(
+                data.get("retry_on_not_executed", False)
+            ),
         )
 
 
@@ -196,6 +226,7 @@ class Plan:
     planner_name: str
     deterministic: bool
     steps: list[PlanStep]
+    failure_policy: str = "fail_fast"
 
     def to_dict(self) -> JsonObject:
         return {
@@ -203,6 +234,7 @@ class Plan:
             "planner_name": self.planner_name,
             "deterministic": self.deterministic,
             "steps": [step.to_dict() for step in self.steps],
+            "failure_policy": self.failure_policy,
         }
 
     @classmethod
@@ -212,6 +244,82 @@ class Plan:
             planner_name=str(data["planner_name"]),
             deterministic=bool(data["deterministic"]),
             steps=[PlanStep.from_dict(step) for step in data.get("steps", [])],
+            failure_policy=str(data.get("failure_policy", "fail_fast")),
+        )
+
+
+@dataclass(slots=True)
+class StepResult:
+    step_id: str
+    tool_name: str
+    status: str
+    attempt_count: int
+    child_task_id: str | None
+    started_at: str | None
+    finished_at: str | None
+    artifact: "ArtifactEvidence | None" = None
+    verification: "VerificationResult | None" = None
+    error: "TaskError | None" = None
+    output: JsonObject = field(default_factory=dict)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "step_id": self.step_id,
+            "tool_name": self.tool_name,
+            "status": self.status,
+            "attempt_count": self.attempt_count,
+            "child_task_id": self.child_task_id,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "artifact": self.artifact.to_dict() if self.artifact else None,
+            "verification": (
+                self.verification.to_dict() if self.verification else None
+            ),
+            "error": self.error.to_dict() if self.error else None,
+            "output": self.output,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "StepResult":
+        artifact = data.get("artifact")
+        verification = data.get("verification")
+        error = data.get("error")
+        return cls(
+            step_id=str(data["step_id"]),
+            tool_name=str(data["tool_name"]),
+            status=str(data["status"]),
+            attempt_count=int(data.get("attempt_count", 1)),
+            child_task_id=(
+                str(data["child_task_id"])
+                if data.get("child_task_id") is not None
+                else None
+            ),
+            started_at=(
+                str(data["started_at"])
+                if data.get("started_at") is not None
+                else None
+            ),
+            finished_at=(
+                str(data["finished_at"])
+                if data.get("finished_at") is not None
+                else None
+            ),
+            artifact=(
+                ArtifactEvidence.from_dict(artifact)
+                if isinstance(artifact, Mapping)
+                else None
+            ),
+            verification=(
+                VerificationResult.from_dict(verification)
+                if isinstance(verification, Mapping)
+                else None
+            ),
+            error=(
+                TaskError.from_dict(error)
+                if isinstance(error, Mapping)
+                else None
+            ),
+            output=dict(data.get("output", {})),
         )
 
 
@@ -246,6 +354,50 @@ class ArtifactEvidence:
             claim_generation=(
                 int(data["claim_generation"])
                 if data.get("claim_generation") is not None
+                else None
+            ),
+        )
+
+
+@dataclass(slots=True)
+class ArtifactReadEvidence:
+    """Bounded bytes observed from one already-verified source artifact."""
+
+    source_task_id: str
+    relative_path: str
+    byte_count: int
+    sha256: str
+    content: str
+    source_attempt_id: str | None = None
+    source_claim_generation: int | None = None
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_task_id": self.source_task_id,
+            "relative_path": self.relative_path,
+            "byte_count": self.byte_count,
+            "sha256": self.sha256,
+            "content": self.content,
+            "source_attempt_id": self.source_attempt_id,
+            "source_claim_generation": self.source_claim_generation,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ArtifactReadEvidence":
+        return cls(
+            source_task_id=str(data["source_task_id"]),
+            relative_path=str(data["relative_path"]),
+            byte_count=int(data["byte_count"]),
+            sha256=str(data["sha256"]),
+            content=str(data["content"]),
+            source_attempt_id=(
+                str(data["source_attempt_id"])
+                if data.get("source_attempt_id") is not None
+                else None
+            ),
+            source_claim_generation=(
+                int(data["source_claim_generation"])
+                if data.get("source_claim_generation") is not None
                 else None
             ),
         )
@@ -333,6 +485,11 @@ class ToolResult:
     error_message: str | None = None
     test_evidence: "TestExecutionEvidence | None" = None
     workspace_effects: JsonObject | None = None
+    read_evidence: ArtifactReadEvidence | None = None
+    lineage: JsonObject | None = None
+    workspace_inspection: JsonObject | None = None
+    workspace_edit: JsonObject | None = None
+    research_evidence: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -351,6 +508,15 @@ class ToolResult:
                 else None
             ),
             "workspace_effects": self.workspace_effects,
+            "read_evidence": (
+                self.read_evidence.to_dict()
+                if self.read_evidence is not None
+                else None
+            ),
+            "lineage": self.lineage,
+            "workspace_inspection": self.workspace_inspection,
+            "workspace_edit": self.workspace_edit,
+            "research_evidence": self.research_evidence,
         }
 
     @classmethod
@@ -374,6 +540,31 @@ class ToolResult:
             workspace_effects=(
                 dict(data["workspace_effects"])
                 if data.get("workspace_effects")
+                else None
+            ),
+            read_evidence=(
+                ArtifactReadEvidence.from_dict(data["read_evidence"])
+                if data.get("read_evidence")
+                else None
+            ),
+            lineage=(
+                dict(data["lineage"])
+                if data.get("lineage")
+                else None
+            ),
+            workspace_inspection=(
+                dict(data["workspace_inspection"])
+                if data.get("workspace_inspection")
+                else None
+            ),
+            workspace_edit=(
+                dict(data["workspace_edit"])
+                if data.get("workspace_edit")
+                else None
+            ),
+            research_evidence=(
+                dict(data["research_evidence"])
+                if data.get("research_evidence")
                 else None
             ),
         )
@@ -411,6 +602,11 @@ class TestExecutionEvidence:
     container_name: str | None = None
     config_digest: str | None = None
     command_digest: str | None = None
+    #: Identity of the single-use host execution grant this run spent.  The
+    #: grant store keeps its own audit trail; this is the in-task half of the
+    #: chain from grant to task to evidence.
+    host_grant_id: str | None = None
+    host_grant_issuer: str | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -442,6 +638,8 @@ class TestExecutionEvidence:
             "container_name": self.container_name,
             "config_digest": self.config_digest,
             "command_digest": self.command_digest,
+            "host_grant_id": self.host_grant_id,
+            "host_grant_issuer": self.host_grant_issuer,
         }
 
     @classmethod
@@ -502,6 +700,16 @@ class TestExecutionEvidence:
             command_digest=(
                 str(data["command_digest"])
                 if data.get("command_digest") is not None
+                else None
+            ),
+            host_grant_id=(
+                str(data["host_grant_id"])
+                if data.get("host_grant_id") is not None
+                else None
+            ),
+            host_grant_issuer=(
+                str(data["host_grant_issuer"])
+                if data.get("host_grant_issuer") is not None
                 else None
             ),
         )
@@ -618,6 +826,16 @@ class Task:
     cancel_reason: str | None = None
     execution_plan_version: int | None = None
     execution_plan_snapshot: JsonObject | None = None
+    parent_task_id: str | None = None
+    step_results: list[StepResult] = field(default_factory=list)
+    current_step_id: str | None = None
+    pending_approval_step_id: str | None = None
+    approved_step_ids: list[str] = field(default_factory=list)
+    # step_id -> digest of the exact step content that was approved. Approval
+    # is a statement about content, not about an identifier (R-08).
+    approved_step_digests: dict[str, str] = field(default_factory=dict)
+    pause_requested_at: str | None = None
+    metadata: JsonObject = field(default_factory=dict)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -651,9 +869,19 @@ class Task:
             "cancel_reason": self.cancel_reason,
             "execution_plan_version": self.execution_plan_version,
             "execution_plan_snapshot": self.execution_plan_snapshot,
+            "parent_task_id": self.parent_task_id,
+            "step_results": [
+                result.to_dict() for result in self.step_results
+            ],
+            "current_step_id": self.current_step_id,
+            "pending_approval_step_id": self.pending_approval_step_id,
+            "approved_step_ids": list(self.approved_step_ids),
+            "approved_step_digests": dict(self.approved_step_digests),
+            "pause_requested_at": self.pause_requested_at,
             "planner_mode": self.planner_mode.value,
             "planning_metadata": self.planning_metadata,
             "clarification_questions": list(self.clarification_questions),
+            "metadata": dict(self.metadata),
         }
 
     @classmethod
@@ -727,11 +955,45 @@ class Task:
                 if data.get("execution_plan_snapshot") is not None
                 else None
             ),
+            parent_task_id=(
+                str(data["parent_task_id"])
+                if data.get("parent_task_id") is not None
+                else None
+            ),
+            step_results=[
+                StepResult.from_dict(item)
+                for item in data.get("step_results", [])
+            ],
+            current_step_id=(
+                str(data["current_step_id"])
+                if data.get("current_step_id") is not None
+                else None
+            ),
+            pending_approval_step_id=(
+                str(data["pending_approval_step_id"])
+                if data.get("pending_approval_step_id") is not None
+                else None
+            ),
+            approved_step_ids=[
+                str(item) for item in data.get("approved_step_ids", [])
+            ],
+            approved_step_digests={
+                str(key): str(value)
+                for key, value in (
+                    data.get("approved_step_digests", {}) or {}
+                ).items()
+            },
+            pause_requested_at=(
+                str(data["pause_requested_at"])
+                if data.get("pause_requested_at") is not None
+                else None
+            ),
             planner_mode=PlannerMode(data.get("planner_mode", "deterministic")),
             planning_metadata=dict(data.get("planning_metadata", {})),
             clarification_questions=[
                 str(item) for item in data.get("clarification_questions", [])
             ],
+            metadata=dict(data.get("metadata", {})),
         )
 
 

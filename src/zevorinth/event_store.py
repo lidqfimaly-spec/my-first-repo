@@ -1207,6 +1207,88 @@ class EventStore:
             connection.commit()
         return turn, message
 
+    def append_assistant_message(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        content: str,
+        *,
+        kind: str = "assistant_reply",
+        now: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Message:
+        """Record something the system said, inside the turn it belongs to.
+
+        The schema always allowed ``role='assistant'``; nothing wrote it, which
+        is why a conversation only ever contained the user's own words (R-05).
+        This method only appends — it never creates a turn, never changes a
+        turn status, and never touches task state.
+        """
+        if not isinstance(content, str) or not content:
+            raise ValueError("content must be a non-empty string")
+        timestamp = now or self._now()
+        message_id = str(uuid4())
+        encoded = content.encode("utf-8")
+        digest = hashlib.sha256(encoded).hexdigest()
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            turn_row = connection.execute(
+                """
+                SELECT 1 FROM conversation_turns
+                WHERE turn_id = ? AND conversation_id = ?
+                """,
+                (turn_id, conversation_id),
+            ).fetchone()
+            if turn_row is None:
+                raise ConversationNotFound(conversation_id)
+            message = Message(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                role=MessageRole.ASSISTANT,
+                kind=kind,
+                content=content,
+                content_sha256=digest,
+                byte_count=len(encoded),
+                client_message_id=None,
+                created_at=timestamp,
+                metadata=dict(metadata or {}),
+            )
+            connection.execute(
+                """
+                INSERT INTO messages(
+                    message_id, conversation_id, turn_id, role, kind,
+                    content, content_sha256, byte_count,
+                    client_message_id, created_at, metadata_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message.message_id,
+                    message.conversation_id,
+                    message.turn_id,
+                    message.role.value,
+                    message.kind,
+                    message.content,
+                    message.content_sha256,
+                    message.byte_count,
+                    message.client_message_id,
+                    message.created_at,
+                    json.dumps(
+                        message.metadata, ensure_ascii=False, sort_keys=True
+                    ),
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE conversations
+                SET updated_at = ?, version = version + 1
+                WHERE conversation_id = ?
+                """,
+                (timestamp, conversation_id),
+            )
+            connection.commit()
+        return message
+
     def list_conversation_messages(
         self,
         conversation_id: str,
@@ -1334,6 +1416,30 @@ class EventStore:
                 "conversation has more than one active task"
             )
         return Task.from_dict(json.loads(rows[0]["task_json"]))
+
+    def latest_task_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> Task | None:
+        """Most recently created task in a conversation, any status.
+
+        Used to answer "what happened?" after a task finished — the active-task
+        lookup deliberately returns None at that point, which made a status
+        question look like nothing had ever run.
+        """
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT task_json FROM tasks
+                WHERE conversation_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Task.from_dict(json.loads(row["task_json"]))
 
     def get_task_for_turn(self, turn_id: str) -> Task | None:
         with self._connection() as connection:
@@ -2250,11 +2356,49 @@ class EventStore:
         payload: Mapping[str, Any] | None = None,
         updates: Mapping[str, Any] | None = None,
         lease_token: str | None = None,
+        require_no_lease: bool = False,
+        expected_updated_at: str | None = None,
+        expected_plan_version: int | None = None,
+        expected_status: TaskStatus | None = None,
     ) -> tuple[Task, Event]:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = self._load_task(connection, task_id)
             self._require_lease(task, lease_token)
+            if (
+                expected_status is not None
+                and task.status is not expected_status
+            ):
+                raise PlanRevisionConflict(
+                    "task status changed before the transition committed"
+                )
+            if require_no_lease and task.lease_token is not None:
+                current_lease_state = lease_state(
+                    task.lease_token,
+                    task.lease_expires_at,
+                    occurred_at,
+                )
+                if current_lease_state == "active":
+                    raise PlanRevisionConflict(
+                        "task has an active execution lease"
+                    )
+                raise PlanRevisionConflict(
+                    "task has an expired execution lease requiring recovery"
+                )
+            if (
+                expected_updated_at is not None
+                and task.updated_at != expected_updated_at
+            ):
+                raise PlanRevisionConflict(
+                    "task changed before the transition committed"
+                )
+            if (
+                expected_plan_version is not None
+                and task.plan_version != expected_plan_version
+            ):
+                raise PlanRevisionConflict(
+                    "task plan version changed before the transition committed"
+                )
             ensure_transition(task.status, target)
             task.status = target
             task.updated_at = occurred_at
@@ -2277,11 +2421,19 @@ class EventStore:
         require_no_lease: bool = False,
         expected_updated_at: str | None = None,
         expected_plan_version: int | None = None,
+        expected_status: TaskStatus | None = None,
     ) -> tuple[Task, Event]:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = self._load_task(connection, task_id)
             self._require_lease(task, lease_token)
+            if (
+                expected_status is not None
+                and task.status is not expected_status
+            ):
+                raise PlanRevisionConflict(
+                    "task status changed before the control event committed"
+                )
             if require_no_lease and task.lease_token is not None:
                 current_lease_state = lease_state(
                     task.lease_token,
@@ -3023,6 +3175,10 @@ class EventStore:
                         },
                     )
                 )
+            elif task.status is TaskStatus.PAUSED:
+                task.phase = "paused_after_lease_expiry"
+            elif task.status is TaskStatus.AWAITING_APPROVAL:
+                task.phase = "awaiting_approval_after_lease_expiry"
             self._update_task(connection, task)
             self._insert_events(connection, events)
             connection.commit()

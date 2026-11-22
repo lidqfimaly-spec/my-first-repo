@@ -1770,7 +1770,7 @@
       "id": "capability_doctor_phase_regressed",
       "property": "doctor reports the current product stage",
       "path": "src/zevorinth/cli.py",
-      "old": "        \"phase\": \"3.75\",\n",
+      "old": "        \"phase\": product_stage,\n",
       "new": "        \"phase\": \"2\",\n",
       "tests": [
         "tests.test_cli.CliTests.test_doctor_reports_current_capabilities_without_overstating_model_support"

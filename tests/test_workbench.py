@@ -265,6 +265,53 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 404)
         caught.exception.close()
 
+    def test_multi_step_parent_artifact_is_available_through_http(
+        self,
+    ) -> None:
+        task = self.service.submit_plan(
+            "两步骤交付并验证",
+            [
+                {
+                    "step_id": "source",
+                    "tool_name": "write_text_artifact",
+                    "expected_result": "创建源文件",
+                    "parameters": {
+                        "artifact_path": "source.txt",
+                        "content": "source value",
+                    },
+                },
+                {
+                    "step_id": "copy",
+                    "tool_name": "write_text_artifact",
+                    "expected_result": "创建最终副本",
+                    "depends_on": ["source"],
+                    "parameters": {
+                        "artifact_path": "final.txt",
+                        "content": "${source.content}",
+                    },
+                },
+            ],
+        )
+        self.assertEqual(task.status, TaskStatus.SUCCEEDED, task.error)
+        self.assertIsNotNone(task.artifact)
+        self.assertEqual(task.artifact.relative_path, "final.txt")
+
+        detail_status, _, detail = self._json(
+            f"/api/tasks/{task.task_id}"
+        )
+        self.assertEqual(detail_status, 200)
+        self.assertEqual(
+            detail["task"]["artifact_observation"]["state"],
+            "current",
+        )
+
+        preview_status, _, preview = self._json(
+            f"/api/tasks/{task.task_id}/artifact"
+        )
+        self.assertEqual(preview_status, 200)
+        self.assertEqual(preview["content"], "source value")
+        self.assertEqual(preview["state"], "verified")
+
     def test_artifact_change_is_reported_without_restoring_it(self) -> None:
         artifact = (
             self.root
@@ -315,6 +362,159 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 404)
         caught.exception.close()
 
+    def test_events_stream_head_returns_sse_content_type(self) -> None:
+        request = Request(
+            f"{self.base}/api/tasks/{self.success.task_id}/events/stream",
+            method="HEAD",
+        )
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn(
+                "text/event-stream",
+                response.headers["Content-Type"],
+            )
+
+    def test_events_stream_is_read_only(self) -> None:
+        digest_before = _logical_database_digest(
+            self.root / "data" / "zevorinth.sqlite3"
+        )
+        request = Request(
+            f"{self.base}/api/tasks/{self.success.task_id}/events/stream",
+            method="HEAD",
+        )
+        with urlopen(request, timeout=5):
+            pass
+        digest_after = _logical_database_digest(
+            self.root / "data" / "zevorinth.sqlite3"
+        )
+        self.assertEqual(digest_before, digest_after)
+
+    def test_events_stream_rejects_unknown_task(self) -> None:
+        with self.assertRaises(HTTPError) as caught:
+            self._json(
+                f"/api/tasks/{uuid.uuid4()}/events/stream"
+            )
+        self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
+
+    def test_events_stream_rejects_mutations(self) -> None:
+        request = Request(
+            f"{self.base}/api/tasks/{self.success.task_id}/events/stream",
+            method="POST",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request, timeout=5)
+        self.assertEqual(caught.exception.code, 405)
+        caught.exception.close()
+
+    def test_task_events_since_returns_incremental_projections(self) -> None:
+        workbench = ReadOnlyWorkbench(self.root)
+        all_events = workbench.task_events_since(
+            self.success.task_id, 0
+        )
+        self.assertTrue(all_events)
+        max_seq = max(item["sequence"] for item in all_events)
+        self.assertEqual(
+            workbench.task_events_since(self.success.task_id, max_seq),
+            [],
+        )
+        self.assertEqual(
+            set(all_events[0]),
+            {
+                "sequence",
+                "event_id",
+                "task_id",
+                "event_type",
+                "occurred_at",
+                "payload_summary",
+            },
+        )
+
+    def test_model_usage_projection_has_required_shape(self) -> None:
+        _, _, detail = self._json(f"/api/tasks/{self.success.task_id}")
+        usage = detail["model_usage"]
+        self.assertTrue(usage["read_only"])
+        self.assertIn(
+            usage["measurement_note"],
+            {"no_model_call", "missing", "provider_reported"},
+        )
+        self.assertIsInstance(usage["calls"], list)
+        self.assertEqual(usage["call_count"], len(usage["calls"]))
+        self.assertIn("total_input_tokens", usage)
+        self.assertIn("total_output_tokens", usage)
+        self.assertIn("total_tokens", usage)
+        self.assertIn("total_latency_ms", usage)
+        self.assertIsNone(usage["cost_estimate"])
+        self.assertEqual(usage["cost_note"], "no_price_table")
+
+    def test_model_usage_aggregates_injected_planning_tokens(self) -> None:
+        from zevorinth.models import Event
+
+        event = Event(
+            sequence=0,
+            event_id=str(uuid.uuid4()),
+            task_id=self.success.task_id,
+            event_type="task_planned",
+            occurred_at="2026-11-21T00:00:00.000+00:00",
+            payload={
+                "planning_metadata": {
+                    "classification": "planned",
+                    "latency_ms": 523.1,
+                    "input_tokens": 120,
+                    "output_tokens": 45,
+                    "total_tokens": 165,
+                    "response_id": "resp_test_aggregate",
+                    "model_call_attempted": True,
+                }
+            },
+        )
+        self.service.store.append_event(self.success.task_id, event)
+        _, _, detail = self._json(f"/api/tasks/{self.success.task_id}")
+        usage = detail["model_usage"]
+        injected = [
+            call
+            for call in usage["calls"]
+            if call.get("response_id") == "resp_test_aggregate"
+        ]
+        self.assertEqual(len(injected), 1)
+        self.assertEqual(injected[0]["input_tokens"], 120)
+        self.assertEqual(injected[0]["output_tokens"], 45)
+        self.assertEqual(injected[0]["total_tokens"], 165)
+        self.assertEqual(injected[0]["latency_ms"], 523.1)
+        self.assertEqual(usage["measurement_note"], "provider_reported")
+        self.assertGreaterEqual(usage["total_input_tokens"], 120)
+        self.assertGreaterEqual(usage["total_output_tokens"], 45)
+        self.assertGreaterEqual(usage["total_tokens"], 165)
+
+    def test_model_usage_reports_missing_not_zero(self) -> None:
+        from zevorinth.models import Event
+
+        event = Event(
+            sequence=0,
+            event_id=str(uuid.uuid4()),
+            task_id=self.success.task_id,
+            event_type="task_planned",
+            occurred_at="2026-11-21T00:00:01.000+00:00",
+            payload={
+                "planning_metadata": {
+                    "classification": "failed",
+                    "latency_ms": 100.0,
+                    "model_call_attempted": True,
+                    "error_type": "TimeoutError",
+                }
+            },
+        )
+        self.service.store.append_event(self.success.task_id, event)
+        _, _, detail = self._json(f"/api/tasks/{self.success.task_id}")
+        usage = detail["model_usage"]
+        self.assertGreaterEqual(usage["missing_usage_count"], 1)
+        # Missing usage must never be reported as zero.
+        if not usage["has_complete_usage"]:
+            self.assertIsNone(usage["total_input_tokens"])
+            self.assertIsNone(usage["total_output_tokens"])
+
     def test_static_assets_have_no_external_dependencies(self) -> None:
         with urlopen(f"{self.base}/", timeout=5) as response:
             html = response.read().decode("utf-8")
@@ -331,6 +531,10 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.assertIn("只读", html)
         self.assertIn("任务列表", html)
         self.assertIn('id="create-task-form"', html)
+        self.assertIn('id="create-preview-goal"', html)
+        self.assertIn('id="create-structured-mode"', html)
+        self.assertIn('id="create-structured-parameters"', html)
+        self.assertIn('id="create-json-mode"', html)
         self.assertIn('id="create-and-submit"', html)
         self.assertNotIn("Skip to task detail", html)
         self.assertNotIn("Needs attention", html)
@@ -343,9 +547,33 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.assertNotIn("innerHTML", script)
         self.assertIn("textContent", script)
         self.assertIn('"/control/api/tasks"', script)
+        self.assertIn('"/control/api/preview"', script)
+        self.assertIn("createGoalPreview", script)
+        self.assertIn("createGuidedRoute", script)
+        self.assertIn("preview.guided_flow", script)
+        self.assertIn("selected_task_id: state.selectedTaskId", script)
+        self.assertIn("beginArtifactContinuation", script)
+        self.assertIn("continue_artifact", script)
+        self.assertIn("continuation_source_bound", script)
+        self.assertIn("createSelectField", script)
+        self.assertIn("modify_mode_append", script)
+        self.assertIn('operation.value === "run_tests"', script)
+        self.assertIn("create_missing_fields", script)
+        self.assertIn("guidedParametersComplete", script)
+        self.assertIn('operation === "edit_text_file"', script)
+        self.assertNotIn('compact.authorization = "local-code-edit"', script)
+        self.assertIn('operation === "research_report"', script)
+        self.assertIn("research_findings_rows", script)
+        self.assertIn("stateActionForm", script)
+        self.assertIn("approvalStepActionForm", script)
+        self.assertIn("replanActionForm", script)
         self.assertIn("taskNoteForm(", script)
         self.assertIn("conversationPanel(", script)
         self.assertEqual(translations["language"], "zh-CN")
+        self.assertIn("continue_artifact", translations["ui"])
+        self.assertIn("continuation_source_bound", translations["ui"])
+        self.assertIn("modify_mode_append", translations["ui"])
+        self.assertIn("modify_mode_replace", translations["ui"])
 
     def test_head_supported_and_non_loopback_rejected(self) -> None:
         request = Request(f"{self.base}/api/tasks", method="HEAD")
@@ -629,6 +857,12 @@ class WorkbenchProjectionTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertIn(key, translations["ui"])
         self.assertIn("create_task_copy", translations["ui"])
+        self.assertIn("create_interpret_goal", translations["ui"])
+        self.assertIn("create_preview_requires_interpretation", translations["ui"])
+        self.assertIn("create_assumptions", translations["ui"])
+        self.assertIn("create_structured_mode", translations["ui"])
+        self.assertIn("control_pause_title", translations["ui"])
+        self.assertIn("approve_step", translations["control_actions"])
         self.assertIn("task_conversation", translations["ui"])
         self.assertIn("add_task_note", translations["control_actions"])
         self.assertIn("task_note_added", translations["events"])
@@ -700,7 +934,7 @@ class WorkbenchProjectionTests(unittest.TestCase):
         self.assertIn("create_and_submit_query_hint", script)
         self.assertIn("submitTracker.pending()", script)
         self.assertIn("() => createSubmitTaskId", script)
-        self.assertIn('operation.value !== "write_text_artifact"', script)
+        self.assertIn('operation.value === "run_tests"', script)
         self.assertIn(
             'elements["global-message"].textContent =\n'
             '          ui("control_request_completed")',
@@ -745,6 +979,316 @@ class WorkbenchProjectionTests(unittest.TestCase):
         self.assertEqual(control.port, 8878)
 
 
+class ConversationEndpointTests(unittest.TestCase):
+    """P1-1: Conversational intake endpoints on the control surface."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.server = create_server(
+            self.root, port=0, control_enabled=True
+        )
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            daemon=True,
+        )
+        self.thread.start()
+        self.host, self.port = self.server.server_address[:2]
+        self.base = f"http://{self.host}:{self.port}"
+        status, _, session = self._get("/control/api/session")
+        self.assertEqual(status, 200)
+        self.token = session["token"]
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp.cleanup()
+
+    def _get(self, path: str) -> tuple[int, dict, dict]:
+        with urlopen(f"{self.base}{path}", timeout=5) as response:
+            return (
+                response.status,
+                dict(response.headers),
+                json.loads(response.read().decode("utf-8")),
+            )
+
+    def _post(
+        self,
+        path: str,
+        body: dict,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict]:
+        data = json.dumps(body).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-Zevorinth-Control-Token"] = token
+            headers["Origin"] = self.base
+        request = Request(
+            f"{self.base}{path}",
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5) as response:
+                return (
+                    response.status,
+                    json.loads(response.read().decode("utf-8")),
+                )
+        except HTTPError as exc:
+            payload = None
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            return exc.code, payload
+
+    def test_session_advertises_conversation_intake(self) -> None:
+        _, _, session = self._get("/control/api/session")
+        self.assertTrue(session["conversation_intake"])
+
+    def test_create_conversation_returns_id_and_active_task_none(self) -> None:
+        status, body = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        self.assertEqual(status, 201)
+        self.assertIn("conversation_id", body)
+        self.assertEqual(body["status"], "active")
+        self.assertIsNone(body["active_task_id"])
+        self.assertIsNone(body["active_task_status"])
+
+    def test_create_conversation_requires_control_token(self) -> None:
+        status, body = self._post(
+            "/control/api/conversations",
+            {},
+            token=None,
+        )
+        self.assertEqual(status, 403)
+
+    def test_submit_message_creates_task_for_new_task_intent(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        status, result = self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                "content": "创建一个 hello.txt，内容写 hello world。",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        self.assertEqual(status, 200)
+        # A fully stated goal now runs to completion from one message: the
+        # action and both parameters are understood, so nothing is asked
+        # (previously this returned three internal field names — R-01/R-18).
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(result["intent"]["kind"], "new_task")
+        self.assertIsNotNone(result["task"])
+        self.assertEqual(result["task"]["status"], "succeeded")
+        self.assertEqual(result["clarifications"], [])
+
+    def test_submit_message_requires_control_token(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        status, body = self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                "content": "test message",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=None,
+        )
+        self.assertEqual(status, 403)
+
+    def test_submit_message_rejects_empty_content(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        status, body = self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                "content": "   ",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "invalid_message_content")
+
+    def test_submit_message_unknown_conversation_returns_404(self) -> None:
+        fake_id = str(uuid.uuid4())
+        status, body = self._post(
+            f"/control/api/conversations/{fake_id}/messages",
+            {
+                "content": "test",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        self.assertEqual(status, 500)
+
+    def test_conversation_detail_returns_active_task_after_message(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                # Needs one missing detail, so the task stays active — which is
+                # what this test is about. (A fully specified goal now runs to
+                # completion immediately, leaving no active task.)
+                "content": "读取一下",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        status, _, detail = self._get(
+            f"/control/api/conversations/{conversation_id}"
+        )
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(detail["active_task_id"])
+        self.assertEqual(detail["active_task_status"], "awaiting_clarification")
+
+    def test_conversation_messages_history_returns_user_messages(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                "content": "创建 a.txt，内容写 aaa。",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        status, _, messages = self._get(
+            f"/control/api/conversations/{conversation_id}/messages?limit=50"
+        )
+        self.assertEqual(status, 200)
+        # The conversation now records what the system said as well: one user
+        # message and one assistant reply (F-03 / R-05).
+        self.assertEqual(messages["count"], 2)
+        self.assertEqual(messages["messages"][0]["role"], "user")
+        self.assertIn("a.txt", messages["messages"][0]["content"])
+        self.assertEqual(messages["messages"][1]["role"], "assistant")
+        self.assertTrue(messages["messages"][1]["content"].strip())
+
+    def test_conversation_messages_unknown_conversation_returns_404(self) -> None:
+        fake_id = str(uuid.uuid4())
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(
+                f"{self.base}/control/api/conversations/{fake_id}/messages",
+                timeout=5,
+            )
+        self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
+
+    def test_conversation_detail_unknown_conversation_returns_404(self) -> None:
+        fake_id = str(uuid.uuid4())
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(
+                f"{self.base}/control/api/conversations/{fake_id}",
+                timeout=5,
+            )
+        self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
+
+    def test_submit_message_rejects_unknown_fields(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        status, body = self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                "content": "test",
+                "client_message_id": str(uuid.uuid4()),
+                "unknown_field": "bad",
+            },
+            token=self.token,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "unknown_message_fields")
+
+    def test_status_query_returns_status_outcome(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations",
+            {},
+            token=self.token,
+        )
+        conversation_id = conv["conversation_id"]
+        status, result = self._post(
+            f"/control/api/conversations/{conversation_id}/messages",
+            {
+                "content": "状态",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["outcome"], "status")
+        self.assertEqual(result["intent"]["kind"], "status_query")
+
+    def test_list_conversations_returns_created_conversations(self) -> None:
+        self._post("/control/api/conversations", {}, token=self.token)
+        self._post("/control/api/conversations", {}, token=self.token)
+        status, _, body = self._get("/control/api/conversations?limit=10")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(body["count"], 2)
+        for conv in body["conversations"]:
+            self.assertIn("conversation_id", conv)
+            self.assertIn("status", conv)
+            self.assertIn("active_task_id", conv)
+
+    def test_list_conversations_shows_active_task_status(self) -> None:
+        _, conv = self._post(
+            "/control/api/conversations", {}, token=self.token,
+        )
+        self._post(
+            f"/control/api/conversations/{conv['conversation_id']}/messages",
+            {
+                # Leaves the task awaiting one missing detail, so the list view
+                # has an active task to show.
+                "content": "读取一下",
+                "client_message_id": str(uuid.uuid4()),
+            },
+            token=self.token,
+        )
+        status, _, body = self._get("/control/api/conversations?limit=10")
+        self.assertEqual(status, 200)
+        found = [
+            c for c in body["conversations"]
+            if c["conversation_id"] == conv["conversation_id"]
+        ]
+        self.assertEqual(len(found), 1)
+        self.assertIsNotNone(found[0]["active_task_id"])
+        self.assertEqual(
+            found[0]["active_task_status"], "awaiting_clarification"
+        )
+
+
 def _to_preview_object(report: dict):
     from zevorinth.recovery_preview import (
         RecoveryAction,
@@ -764,6 +1308,175 @@ def _to_preview_object(report: dict):
         ),
         audit=dict(report["audit"]),
     )
+
+
+class TaskRetryEndpointTests(unittest.TestCase):
+    """R3/R6: POST /control/api/tasks/{id}/retry is idempotent and real."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.server = create_server(
+            self.root, port=0, control_enabled=True
+        )
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            daemon=True,
+        )
+        self.thread.start()
+        self.host, self.port = self.server.server_address[:2]
+        self.base = f"http://{self.host}:{self.port}"
+        with urlopen(f"{self.base}/control/api/session", timeout=5) as response:
+            self.token = json.loads(response.read().decode("utf-8"))["token"]
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp.cleanup()
+
+    def _post(
+        self,
+        path: str,
+        body: dict,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict]:
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-Zevorinth-Control-Token"] = token
+            headers["Origin"] = self.base
+        request = Request(
+            f"{self.base}{path}",
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                return (
+                    response.status,
+                    json.loads(response.read().decode("utf-8")),
+                )
+        except HTTPError as exc:
+            return (exc.code, json.loads(exc.read().decode("utf-8")))
+
+    def _failed_shell_task(self, *, code: str = "timeout"):
+        from zevorinth.models import ExecutionMode, ToolResult
+
+        real = __import__(
+            "zevorinth.service", fromlist=["execute_controlled_shell"]
+        ).execute_controlled_shell
+        calls = {"n": 0}
+
+        def fake(**kwargs):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                return real(**kwargs)
+            return ToolResult(
+                attempt_id=kwargs["attempt_id"],
+                tool_name="controlled_shell",
+                execution_mode=ExecutionMode.REAL,
+                success=False,
+                started_at=kwargs["started_at"],
+                finished_at=kwargs["finished_at"],
+                error_code=code,
+                error_message=f"simulated {code}",
+            )
+
+        from unittest import mock
+
+        with mock.patch("zevorinth.service.execute_controlled_shell",
+                        side_effect=fake):
+            service = TaskService(self.root, recover_leases=False)
+            return service.submit(
+                TaskRequest(
+                    goal="列出受控目录内容",
+                    operation="controlled_shell",
+                    parameters={"command": "echo", "arguments": ["ok"]},
+                )
+            )
+
+    def _retry(self, task_id: str, body: dict, *, token: str | None = ""):
+        return self._post(
+            f"/control/api/tasks/{task_id}/retry",
+            body,
+            token=self.token if token == "" else token,
+        )
+
+    def test_retry_requires_control_token(self) -> None:
+        task = self._failed_shell_task()
+        status, payload = self._retry(
+            task.task_id, {"request_id": str(uuid.uuid4())}, token=None,
+        )
+        self.assertIn(status, (401, 403))
+        self.assertIn("error", payload)
+
+    def test_retry_requires_canonical_request_id(self) -> None:
+        task = self._failed_shell_task()
+        status, payload = self._retry(task.task_id, {})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_action_request_id")
+
+        status, payload = self._retry(
+            task.task_id, {"request_id": "not-a-uuid"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_action_request_id")
+
+    def test_retry_rejects_unknown_fields(self) -> None:
+        task = self._failed_shell_task()
+        status, payload = self._retry(
+            task.task_id,
+            {"request_id": str(uuid.uuid4()), "unexpected": 1},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "unknown_request_fields")
+
+    def test_retry_creates_task_and_repeats_are_idempotent(self) -> None:
+        task = self._failed_shell_task()
+        request_id = str(uuid.uuid4())
+
+        status, body = self._retry(
+            task.task_id, {"request_id": request_id},
+        )
+        self.assertEqual(status, 201)
+        self.assertTrue(body["retry"])
+        self.assertFalse(body["already_exists"])
+        self.assertEqual(body["task_id"], request_id)
+        self.assertEqual(body["retry_attempt"], 1)
+        self.assertEqual(body["original_task_id"], task.task_id)
+        self.assertEqual(body["status"], "succeeded")
+
+        status, repeat = self._retry(
+            task.task_id, {"request_id": request_id},
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(repeat["retry"])
+        self.assertTrue(repeat["already_exists"])
+        self.assertEqual(repeat["task_id"], request_id)
+
+        service = TaskService(self.root, recover_leases=False)
+        self.assertEqual(service._count_retry_attempts(task.task_id), 1)
+        original = service.store.require_task(task.task_id)
+        self.assertEqual(original.status, TaskStatus.FAILED)
+
+    def test_retry_reports_non_retryable_tasks(self) -> None:
+        service = TaskService(self.root, recover_leases=False)
+        task = service.submit(
+            TaskRequest(
+                goal="写入被拒绝的命令",
+                operation="controlled_shell",
+                parameters={"command": "rm", "arguments": ["x"]},
+            )
+        )
+        status, body = self._retry(
+            task.task_id, {"request_id": str(uuid.uuid4())},
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(body["retry"])
+        self.assertFalse(body["already_exists"])
+        self.assertIn("reason", body)
 
 
 if __name__ == "__main__":

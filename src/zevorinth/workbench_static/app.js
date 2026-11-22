@@ -7,6 +7,11 @@ const UI_FALLBACK = {
   task_unavailable: "任务不可用",
   task_detail_error: "无法读取任务详情",
   read_only: "只读",
+  progress_title: "进度",
+  progress_unavailable: "暂时读不到进度",
+  progress_dispatching: "已提交，正在后台执行…",
+  progress_cancel_requested: "已请求取消，将在下一个安全点停止",
+  artifact_download: "下载产物",
 };
 
 const state = {
@@ -17,6 +22,9 @@ const state = {
   tasks: [],
   nextOffset: null,
   selectedTaskId: null,
+  eventStream: null,
+  eventStreamTaskId: null,
+  eventRefreshTimer: null,
   attentionItems: [],
   loading: false,
   detailRequestGeneration: 0,
@@ -24,6 +32,21 @@ const state = {
   controlSession: null,
   controlSessionError: null,
   pendingControlRequests: loadPendingControlRequests(),
+  createGoalPreview: null,
+  createPreviewParameters: null,
+  createPreviewLoading: false,
+  createGuidedRoute: false,
+  createJsonMode: false,
+  createStructuredMode: false,
+  createContinuationContext: false,
+  conversation: null,
+  conversationMessages: [],
+  conversationTurns: [],
+  conversationSending: false,
+  conversationActiveTaskId: null,
+  workspaces: [],
+  workspacesLoaded: false,
+  workspaceError: null,
 };
 
 const elements = {};
@@ -52,15 +75,34 @@ document.addEventListener("DOMContentLoaded", async () => {
     "create-task-copy",
     "create-goal-label",
     "create-goal",
+    "create-preview-goal",
+    "create-structured-mode",
+    "create-json-mode-field",
+    "create-json-mode",
+    "create-json-mode-label",
+    "create-structured-mode-label",
     "create-operation-label",
     "create-operation",
     "create-parameters",
+    "create-structured-field",
+    "create-structured-parameters-label",
+    "create-structured-parameters",
     "create-task-preview",
     "create-confirm",
     "create-confirm-label",
     "create-only",
     "create-and-submit",
     "create-task-status",
+    "conversation-panel",
+    "conversation-messages",
+    "conversation-form",
+    "conversation-input",
+    "conversation-input-label",
+    "conversation-send",
+    "conversation-status",
+    "toggle-form-mode",
+    "conversation-select",
+    "new-conversation",
   ]) {
     elements[id] = document.getElementById(id);
   }
@@ -98,6 +140,45 @@ function bindEvents() {
     reloadTasks().catch(showGlobalError);
   });
   elements["load-more"].addEventListener("click", () => loadTasks(false));
+  if (elements["conversation-form"]) {
+    elements["conversation-form"].addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitConversationMessage();
+    });
+  }
+  if (elements["conversation-input"]) {
+    elements["conversation-input"].addEventListener("keydown", (event) => {
+      if (
+        event.key === "Enter"
+        && !event.shiftKey
+        && !event.isComposing
+      ) {
+        event.preventDefault();
+        submitConversationMessage();
+      }
+    });
+  }
+  if (elements["toggle-form-mode"]) {
+    elements["toggle-form-mode"].addEventListener("click", () => {
+      const showForm = elements["task-create-panel"].hidden;
+      elements["task-create-panel"].hidden = !showForm;
+      elements["conversation-panel"].hidden = showForm;
+      elements["toggle-form-mode"].textContent = showForm
+        ? "对话模式"
+        : "高级表单";
+    });
+  }
+  if (elements["conversation-select"]) {
+    elements["conversation-select"].addEventListener("change", () => {
+      const id = elements["conversation-select"].value;
+      if (id) switchConversation(id);
+    });
+  }
+  if (elements["new-conversation"]) {
+    elements["new-conversation"].addEventListener("click", () => {
+      createConversation().then(() => loadConversationList());
+    });
+  }
 }
 
 function loadPendingControlRequests() {
@@ -256,6 +337,135 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function loadWorkspaces() {
+  if (!state.controlSession) return;
+  try {
+    // The control token travels on reads too; Origin is only required on
+    // writes, because a same-origin GET legitimately has no Origin header.
+    const payload = await api("/control/api/workspaces", {
+      headers: {
+        "X-Zevorinth-Control-Token": state.controlSession.token,
+      },
+    });
+    state.workspaces = payload.workspaces || [];
+    state.workspaceSkipped = payload.skipped || [];
+    state.workspaceError = null;
+  } catch (error) {
+    state.workspaces = [];
+    state.workspaceSkipped = [];
+    state.workspaceError = error.code || "workspace_load_failed";
+  }
+  state.workspacesLoaded = true;
+}
+
+function workspaceOptionLabel(item) {
+  const marker = item.has_test_files
+    ? ui("workspace_has_tests")
+    : ui("workspace_no_tests");
+  return `${item.name} · ${marker} · ${item.file_count}`;
+}
+
+function fillWorkspaceOptions(select, selected = "") {
+  // Rebuilt from state, not appended to: a workspace created a moment ago must
+  // appear immediately, and its file counts must not go stale.
+  select.replaceChildren();
+  select.append(el("option", {
+    value: "",
+    textContent: state.workspaces.length
+      ? ui("workspace_choose")
+      : ui("workspace_none"),
+  }));
+  for (const item of state.workspaces) {
+    select.append(el("option", {
+      value: item.name,
+      textContent: workspaceOptionLabel(item),
+    }));
+  }
+  select.value = selected;
+  if (select.value !== selected) {
+    // The selected workspace is not in the list (removed outside the app).
+    select.value = "";
+  }
+  return select;
+}
+
+function createWorkspaceField(name, labelText, value = "") {
+  // A workspace is a controlled directory, so the user picks one or makes one
+  // here. Creating it is deliberately separate from the host execution
+  // grant: this control never authorizes a test run.
+  const wrapper = el("div", { className: "workspace-field" });
+  const label = el("label", { className: "form-field" });
+  label.append(el("span", { textContent: labelText }));
+  const select = el("select");
+  select.dataset.createParameter = name;
+  fillWorkspaceOptions(select, value);
+  select.addEventListener("input", renderCreateTaskPreview);
+  select.addEventListener("change", renderCreateTaskPreview);
+  label.append(select);
+  if (state.workspaceError) {
+    label.append(el("p", {
+      className: "field-note field-note-warn",
+      textContent: ui("workspace_load_failed", { code: state.workspaceError }),
+    }));
+  }
+  wrapper.append(label);
+
+  const row = el("div", { className: "workspace-create-row" });
+  const nameInput = el("input", { type: "text" });
+  nameInput.placeholder = ui("workspace_new_placeholder");
+  nameInput.autocomplete = "off";
+  nameInput.setAttribute("aria-label", ui("workspace_new_label"));
+  const button = el("button", {
+    type: "button",
+    className: "secondary",
+    textContent: ui("workspace_create_button"),
+  });
+  const result = el("p", { className: "field-note" });
+  button.addEventListener("click", async () => {
+    const candidate = nameInput.value.trim();
+    if (!candidate) {
+      nameInput.focus();
+      return;
+    }
+    button.disabled = true;
+    result.className = "field-note";
+    result.textContent = ui("workspace_creating");
+    try {
+      const created = await api("/control/api/workspaces", {
+        method: "POST",
+        headers: {
+          "X-Zevorinth-Control-Token": state.controlSession.token,
+        },
+        body: { name: candidate },
+      });
+      await loadWorkspaces();
+      fillWorkspaceOptions(select, created.name);
+      nameInput.value = "";
+      // Show the resolved path so the claim "it worked" is checkable.
+      result.className = "field-note field-note-ok";
+      result.textContent = ui("workspace_created_at", {
+        path: created.absolute_path,
+      });
+      renderCreateTaskPreview();
+    } catch (error) {
+      result.className = "field-note field-note-warn";
+      // Translate the code into words instead of showing a bare identifier.
+      result.textContent = ui("workspace_create_failed", {
+        detail: displayError(error),
+      });
+    } finally {
+      button.disabled = false;
+    }
+  });
+  row.append(nameInput, button);
+  wrapper.append(row, result);
+  wrapper.append(el("p", {
+    className: "audit-boundary",
+    textContent: ui("workspace_not_authorized_note"),
+  }));
+  return wrapper;
+}
+
 async function loadControlSession() {
   try {
     const session = await api("/control/api/session");
@@ -271,7 +481,13 @@ async function loadControlSession() {
       elements["mode-badge"].title = ui("controlled_actions_title");
       elements["mode-badge"].classList.add("control-mode");
       elements["footer-copy"].textContent = ui("control_footer");
-      elements["task-create-panel"].hidden = false;
+      if (session.conversation_intake) {
+        elements["conversation-panel"].hidden = false;
+        await initConversation();
+      } else {
+        elements["task-create-panel"].hidden = false;
+      }
+      await loadWorkspaces();
     } else {
       const error = new Error(ui("control_session_invalid"));
       error.code = "control_session_invalid";
@@ -282,19 +498,426 @@ async function loadControlSession() {
   }
 }
 
+const CONVERSATION_STORAGE_KEY = "zevorinth.conversation_id";
+
+function loadStoredConversationId() {
+  try {
+    return localStorage.getItem(CONVERSATION_STORAGE_KEY) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function storeConversationId(conversationId) {
+  try {
+    localStorage.setItem(CONVERSATION_STORAGE_KEY, conversationId);
+  } catch (_) {
+    /* localStorage may be unavailable */
+  }
+}
+
+async function initConversation() {
+  if (!state.controlSession) return;
+  const existingId = loadStoredConversationId();
+  if (existingId) {
+    try {
+      const detail = await api(
+        `/control/api/conversations/${encodeURIComponent(existingId)}`,
+      );
+      state.conversation = detail;
+      state.conversationActiveTaskId = detail.active_task_id || null;
+      await loadConversationHistory(existingId);
+      renderConversationMessages();
+      if (state.conversationActiveTaskId) {
+        openTask(state.conversationActiveTaskId);
+      }
+      await loadConversationList();
+      return;
+    } catch (error) {
+      if (error.status !== 404) {
+        elements["conversation-status"].textContent = displayError(error);
+        return;
+      }
+    }
+  }
+  await createConversation();
+}
+
+async function loadConversationList() {
+  if (!state.controlSession) return;
+  const select = elements["conversation-select"];
+  if (!select) return;
+  try {
+    const payload = await api("/control/api/conversations?limit=20");
+    const currentId = state.conversation
+      ? state.conversation.conversation_id
+      : null;
+    select.replaceChildren();
+    for (const conv of payload.conversations || []) {
+      const option = el("option", {
+        value: conv.conversation_id,
+        textContent: formatConversationLabel(conv),
+      });
+      if (conv.conversation_id === currentId) {
+        option.selected = true;
+      }
+      select.append(option);
+    }
+  } catch (_) {
+    /* conversation list unavailable */
+  }
+}
+
+function formatConversationLabel(conv) {
+  const date = conv.updated_at
+    ? conv.updated_at.slice(5, 16).replace("T", " ")
+    : "未知";
+  const taskInfo = conv.active_task_status
+    ? ` [${conv.active_task_status}]`
+    : "";
+  return `${date}${taskInfo}`;
+}
+
+async function switchConversation(conversationId) {
+  if (!state.controlSession) return;
+  closeEventStream();
+  try {
+    const detail = await api(
+      `/control/api/conversations/${encodeURIComponent(conversationId)}`,
+    );
+    state.conversation = detail;
+    state.conversationActiveTaskId = detail.active_task_id || null;
+    storeConversationId(conversationId);
+    await loadConversationHistory(conversationId);
+    renderConversationMessages();
+    if (state.conversationActiveTaskId) {
+      openTask(state.conversationActiveTaskId);
+    }
+  } catch (error) {
+    elements["conversation-status"].textContent = displayError(error);
+  }
+}
+
+async function createConversation() {
+  if (!state.controlSession) return;
+  try {
+    const conversation = await api("/control/api/conversations", {
+      method: "POST",
+      headers: {
+        "X-Zevorinth-Control-Token": state.controlSession.token,
+      },
+      body: {},
+    });
+    state.conversation = conversation;
+    state.conversationMessages = [];
+    state.conversationTurns = [];
+    state.conversationActiveTaskId = null;
+    storeConversationId(conversation.conversation_id);
+    renderConversationMessages();
+    await loadConversationList();
+    elements["conversation-input"].focus();
+  } catch (error) {
+    elements["conversation-status"].textContent = displayError(error);
+  }
+}
+
+async function loadConversationHistory(conversationId) {
+  try {
+    const payload = await api(
+      `/control/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=100`,
+    );
+    state.conversationMessages = payload.messages || [];
+    state.conversationTurns = state.conversationMessages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+      result: null,
+    }));
+  } catch (error) {
+    state.conversationMessages = [];
+    state.conversationTurns = [];
+  }
+}
+
+async function submitConversationMessage() {
+  if (!state.controlSession || !state.conversation || state.conversationSending) {
+    return;
+  }
+  const input = elements["conversation-input"];
+  const status = elements["conversation-status"];
+  const content = input.value.trim();
+  if (!content) return;
+  state.conversationSending = true;
+  elements["conversation-send"].disabled = true;
+  input.value = "";
+  status.textContent = "正在处理...";
+  state.conversationTurns.push({
+    role: "user",
+    content,
+    result: null,
+  });
+  renderConversationMessages();
+  try {
+    const result = await api(
+      `/control/api/conversations/${encodeURIComponent(state.conversation.conversation_id)}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "X-Zevorinth-Control-Token": state.controlSession.token,
+        },
+        body: {
+          content,
+          client_message_id: crypto.randomUUID(),
+        },
+      },
+    );
+    const lastTurn = state.conversationTurns[state.conversationTurns.length - 1];
+    if (lastTurn && lastTurn.role === "user") {
+      lastTurn.result = result;
+    }
+    renderConversationMessages();
+    handleConversationResult(result);
+    status.textContent = "";
+  } catch (error) {
+    const lastTurn = state.conversationTurns[state.conversationTurns.length - 1];
+    if (lastTurn && lastTurn.role === "user") {
+      lastTurn.result = {
+        outcome: "error",
+        intent: { reason: displayError(error) },
+        error: displayError(error),
+      };
+    }
+    renderConversationMessages();
+    status.textContent = displayError(error);
+  } finally {
+    state.conversationSending = false;
+    elements["conversation-send"].disabled = false;
+    input.focus();
+  }
+}
+
+async function answerClarification(questionId, answer) {
+  if (!state.controlSession || !state.conversation || state.conversationSending) {
+    return;
+  }
+  const status = elements["conversation-status"];
+  state.conversationSending = true;
+  elements["conversation-send"].disabled = true;
+  status.textContent = "正在提交回答...";
+  state.conversationTurns.push({
+    role: "user",
+    content: answer,
+    result: null,
+  });
+  renderConversationMessages();
+  try {
+    const result = await api(
+      `/control/api/conversations/${encodeURIComponent(state.conversation.conversation_id)}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "X-Zevorinth-Control-Token": state.controlSession.token,
+        },
+        body: {
+          content: answer,
+          client_message_id: crypto.randomUUID(),
+          answer_to: questionId,
+        },
+      },
+    );
+    const lastTurn = state.conversationTurns[state.conversationTurns.length - 1];
+    if (lastTurn && lastTurn.role === "user") {
+      lastTurn.result = result;
+    }
+    renderConversationMessages();
+    handleConversationResult(result);
+    status.textContent = "";
+  } catch (error) {
+    const lastTurn = state.conversationTurns[state.conversationTurns.length - 1];
+    if (lastTurn && lastTurn.role === "user") {
+      lastTurn.result = {
+        outcome: "error",
+        intent: { reason: displayError(error) },
+        error: displayError(error),
+      };
+    }
+    renderConversationMessages();
+    status.textContent = displayError(error);
+  } finally {
+    state.conversationSending = false;
+    elements["conversation-send"].disabled = false;
+  }
+}
+
+function handleConversationResult(result) {
+  if (!result) return;
+  if (result.task && result.task.task_id) {
+    state.conversationActiveTaskId = result.task.task_id;
+    reloadTasks().catch(() => {});
+    openTask(result.task.task_id);
+  } else if (result.outcome === "awaiting_clarification" && result.task) {
+    state.conversationActiveTaskId = result.task.task_id;
+    openTask(result.task.task_id);
+  }
+}
+
+function renderConversationMessages() {
+  const container = elements["conversation-messages"];
+  if (!container) return;
+  const fragment = document.createDocumentFragment();
+  for (const turn of state.conversationTurns) {
+    if (turn.role === "user") {
+      fragment.append(el("div", {
+        className: "msg-user",
+        textContent: turn.content,
+      }));
+    }
+    if (turn.result) {
+      fragment.append(renderConversationSystemTurn(turn.result));
+    }
+  }
+  container.replaceChildren(fragment);
+  container.scrollTop = container.scrollHeight;
+}
+
+function renderConversationSystemTurn(result) {
+  const wrapper = el("div", { className: "msg-system" });
+  const outcomeLabel = outcomeToLabel(result.outcome);
+  wrapper.append(el("div", {
+    className: "msg-outcome",
+    textContent: outcomeLabel,
+  }));
+  if (result.intent && result.intent.reason) {
+    wrapper.append(el("div", {
+      className: "msg-reason",
+      textContent: result.intent.reason,
+    }));
+  }
+  if (result.task && result.task.task_id) {
+    const link = el("button", {
+      className: "msg-task-link",
+      textContent: `查看任务 ${result.task.task_id.slice(0, 8)}… (${result.task.status || "未知状态"})`,
+    });
+    link.addEventListener("click", () => {
+      if (result.task && result.task.task_id) {
+        openTask(result.task.task_id);
+      }
+    });
+    wrapper.append(link);
+  }
+  if (result.clarifications && result.clarifications.length) {
+    const clarWrap = el("div", { className: "msg-clarifications" });
+    clarWrap.append(el("strong", { textContent: "需要补充信息：" }));
+    const isOpen = result.outcome === "awaiting_clarification";
+    for (const q of result.clarifications) {
+      const qRow = el("div", { className: "msg-clarification-row" });
+      qRow.append(el("label", {
+        className: "msg-clarification-label",
+        textContent: `${q.field_name}: ${q.question_text}`,
+      }));
+      if (isOpen && q.status === "open" && state.conversation) {
+        const input = el("input", {
+          type: "text",
+          className: "msg-clarification-input",
+          placeholder: `输入 ${q.field_name}…`,
+          autocomplete: "off",
+        });
+        const submitBtn = el("button", {
+          type: "button",
+          className: "button button-quiet msg-clarification-submit",
+          textContent: "回答",
+        });
+        const submitAnswer = () => {
+          const value = input.value.trim();
+          if (!value) return;
+          input.disabled = true;
+          submitBtn.disabled = true;
+          answerClarification(q.question_id, value);
+        };
+        submitBtn.addEventListener("click", submitAnswer);
+        input.addEventListener("keydown", (event) => {
+          if (
+            event.key === "Enter"
+            && !event.shiftKey
+            && !event.isComposing
+          ) {
+            event.preventDefault();
+            submitAnswer();
+          }
+        });
+        qRow.append(input, submitBtn);
+      }
+      clarWrap.append(qRow);
+    }
+    wrapper.append(clarWrap);
+  }
+  if (result.error) {
+    wrapper.append(el("div", {
+      className: "msg-error",
+      textContent: result.error,
+    }));
+  }
+  return wrapper;
+}
+
+function outcomeToLabel(outcome) {
+  const labels = {
+    completed: "任务已完成",
+    awaiting_clarification: "需要补充信息",
+    ambiguous: "意图不明确",
+    status: "已查询状态",
+    requires_confirmation: "需要确认",
+    requires_structured_update: "需要结构化更新",
+    requires_cancel_confirmation: "需要确认取消",
+    requires_recovery: "需要恢复操作",
+    active_task_conflict: "已有进行中的任务",
+    needs_question_binding: "需要绑定问题",
+    question_not_found: "未找到问题",
+    question_mismatch: "问题不匹配",
+    answer_conflict: "回答冲突",
+    answer_pending: "回答待处理",
+    answer_rejected: "回答被拒绝",
+    already_processed: "已处理过",
+    error: "处理出错",
+  };
+  if (outcome in labels) return labels[outcome];
+  if (outcome) {
+    const knownStatuses = [
+      "queued", "running", "blocked", "verifying", "succeeded",
+      "partial", "failed", "planning_failed", "interrupted",
+      "cancelled", "simulated", "paused", "awaiting_approval",
+    ];
+    if (knownStatuses.includes(outcome)) {
+      return `任务状态: ${outcome}`;
+    }
+  }
+  return outcome || "已处理";
+}
+
 let createTaskRequestId = loadPendingTaskCreation();
 let createSubmitTaskId = null;
 
 function initializeCreateTaskForm() {
   const goal = elements["create-goal"];
+  const previewGoal = elements["create-preview-goal"];
+  const structured = elements["create-structured-mode"];
+  const jsonMode = elements["create-json-mode"];
+  const structuredField = elements["create-structured-field"];
+  const structuredParameters = elements["create-structured-parameters"];
   const operation = elements["create-operation"];
   const confirmation = elements["create-confirm"];
   const createOnly = elements["create-only"];
   const createAndSubmit = elements["create-and-submit"];
   const status = elements["create-task-status"];
   let submitTracker;
+  operation.disabled = true;
   elements["create-task-copy"].textContent = ui("create_task_copy");
   elements["create-goal-label"].textContent = ui("create_goal_label");
+  previewGoal.textContent = ui("create_interpret_goal");
+  elements["create-structured-mode-label"].textContent =
+    ui("create_structured_mode");
+  elements["create-json-mode-label"].textContent = ui("create_json_mode");
+  elements["create-structured-parameters-label"].textContent =
+    ui("create_structured_parameters");
   elements["create-operation-label"].textContent = ui("create_operation_label");
   elements["create-confirm-label"].textContent = ui("create_confirm_label");
   createOnly.textContent = ui("create_task_only");
@@ -302,17 +925,48 @@ function initializeCreateTaskForm() {
 
   const update = () => {
     renderCreateParameters();
-    const valid = Boolean(goal.value.trim()) && confirmation.checked;
+    const interpreted = state.createStructuredMode
+      ? Boolean(operation.value)
+      : Boolean(
+        state.createGoalPreview
+        && state.createGoalPreview.supported
+        && ["write_text_artifact", "modify_text_artifact"].includes(
+          state.createGoalPreview.operation,
+        ),
+      );
+    const parameters = createParameterValues();
+    const complete = state.createStructuredMode && state.createJsonMode
+      ? isValidStructuredParameters(structuredParameters.value)
+      : guidedParametersComplete(operation.value, parameters);
+    const valid = interpreted && complete && confirmation.checked;
+    const submitUnsupported = !operation.value
+      || operation.value === "run_tests";
     const pendingSubmit = submitTracker.pending()
       || pendingControlRequestCount("start_queued_task") > 0
       || Boolean(createTaskRequestId);
     createOnly.disabled = !valid || pendingSubmit;
     createAndSubmit.disabled = !valid
       || pendingSubmit
-      || operation.value !== "write_text_artifact";
-    createAndSubmit.title = operation.value === "write_text_artifact"
-      ? ""
-      : ui("create_run_tests_create_only");
+      || submitUnsupported
+      || state.createPreviewLoading;
+    createAndSubmit.title = submitUnsupported
+      ? ui("create_run_tests_create_only")
+      : "";
+    operation.disabled = !state.createStructuredMode;
+    structuredField.hidden = !state.createStructuredMode;
+    elements["create-json-mode-field"].hidden = !state.createStructuredMode;
+    jsonMode.checked = state.createJsonMode;
+    structuredField.hidden = !state.createStructuredMode
+      || !state.createJsonMode;
+    elements["create-parameters"].hidden = state.createStructuredMode
+      && state.createJsonMode;
+    previewGoal.disabled = state.createStructuredMode
+      || !goal.value.trim()
+      || state.createPreviewLoading
+      || pendingSubmit;
+    previewGoal.textContent = state.createPreviewLoading
+      ? ui("create_interpreting_goal")
+      : ui("create_interpret_goal");
     renderCreateTaskPreview();
   };
   submitTracker = createControlRequestTracker(
@@ -367,9 +1021,110 @@ function initializeCreateTaskForm() {
     status.textContent = ui("original_request_abandoned");
     update();
   });
-  goal.addEventListener("input", update);
-  operation.addEventListener("change", update);
+  goal.addEventListener("input", () => {
+    const current = goal.value.trim();
+    if (
+      state.createGoalPreview
+      && state.createGoalPreview.goal !== current
+    ) {
+      state.createGoalPreview = null;
+      state.createPreviewParameters = null;
+      state.createGuidedRoute = false;
+      state.createStructuredMode = false;
+      structured.checked = false;
+      state.createJsonMode = false;
+      jsonMode.checked = false;
+      operation.value = "";
+      elements["create-task-preview"].textContent =
+        ui("create_preview_requires_interpretation");
+      elements["create-parameters"].replaceChildren();
+    }
+    update();
+  });
+  structured.addEventListener("change", () => {
+    state.createStructuredMode = structured.checked;
+    state.createJsonMode = false;
+    state.createGuidedRoute = false;
+    if (state.createStructuredMode) {
+      state.createGoalPreview = null;
+      state.createPreviewParameters = null;
+      operation.value = "";
+      elements["create-task-preview"].textContent =
+        ui("create_structured_preview");
+    } else {
+      operation.value = "";
+      elements["create-task-preview"].textContent =
+        ui("create_preview_requires_interpretation");
+    }
+    update();
+  });
+  jsonMode.addEventListener("change", () => {
+    state.createJsonMode = jsonMode.checked;
+    update();
+  });
+  structuredParameters.addEventListener("input", update);
+  operation.addEventListener("change", () => {
+    state.createJsonMode = operation.value === "execute_plan";
+    update();
+  });
   confirmation.addEventListener("change", update);
+  previewGoal.addEventListener("click", async () => {
+    const current = goal.value.trim();
+    if (!current) {
+      status.textContent = ui("create_goal_required");
+      goal.focus();
+      return;
+    }
+    state.createPreviewLoading = true;
+    status.textContent = ui("create_interpreting_goal");
+    update();
+    try {
+      const preview = await api("/control/api/preview", {
+        method: "POST",
+        headers: {
+          "X-Zevorinth-Control-Token": state.controlSession.token,
+        },
+        body: {
+          goal: current,
+          selected_task_id: state.selectedTaskId,
+        },
+      });
+      state.createGoalPreview = preview;
+      state.createPreviewParameters = preview.parameters || {};
+      state.createContinuationContext = Boolean(preview.continuation_context);
+      if (preview.guided_flow && preview.guided_flow !== "file") {
+        state.createStructuredMode = true;
+        structured.checked = true;
+        state.createJsonMode = preview.guided_flow === "complex";
+        jsonMode.checked = state.createJsonMode;
+      }
+      operation.value = preview.operation || "";
+      state.createGuidedRoute = Boolean(
+        preview.guided_flow && preview.guided_flow !== "file",
+      );
+      if (state.createGuidedRoute) {
+        state.createStructuredMode = true;
+        structured.checked = true;
+        state.createJsonMode = preview.operation === "execute_plan";
+        jsonMode.checked = state.createJsonMode;
+      }
+      status.textContent = preview.supported
+        ? ui("create_preview_ready")
+        : ui("create_preview_unsupported");
+    } catch (error) {
+      state.createGoalPreview = null;
+      state.createPreviewParameters = null;
+      state.createGuidedRoute = false;
+      state.createContinuationContext = false;
+      operation.value = "";
+      status.textContent = ui("create_preview_error", {
+        message: displayError(error),
+      });
+    } finally {
+      state.createPreviewLoading = false;
+      update();
+    }
+  });
 
   elements["create-task-form"].addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -441,6 +1196,13 @@ function renderCreateParameters() {
   const host = elements["create-parameters"];
   const values = createParameterValues();
   host.replaceChildren();
+  if (!state.createStructuredMode && !state.createGoalPreview) {
+    host.append(el("p", {
+      className: "audit-boundary",
+      textContent: ui("create_preview_requires_interpretation"),
+    }));
+    return;
+  }
   if (operation === "write_text_artifact") {
     host.append(createInputField("artifact_path", ui("artifact_path"), values.artifact_path));
     host.append(createInputField("content", ui("artifact_content"), values.content, true));
@@ -448,8 +1210,61 @@ function renderCreateParameters() {
     host.append(createInputField("constraints", ui("create_constraints"), values.constraints, true));
     host.append(createInputField("expected_artifact", ui("create_expected_artifact"), values.expected_artifact, true));
     host.append(createInputField("acceptance", ui("create_acceptance"), values.acceptance, true));
+  } else if (operation === "read_text_artifact") {
+    host.append(createInputField("source_task_id", ui("source_task_id"), values.source_task_id));
+    host.append(createInputField("artifact_path", ui("artifact_path"), values.artifact_path));
+    host.append(createInputField("expected_sha256", ui("expected_sha256"), values.expected_sha256));
+  } else if (operation === "modify_text_artifact") {
+    if (state.createContinuationContext) {
+      host.append(el("p", {
+        className: "audit-boundary",
+        textContent: ui("continuation_source_bound", {
+          path: values.artifact_path,
+        }),
+      }));
+    } else {
+      host.append(createInputField("source_task_id", ui("source_task_id"), values.source_task_id));
+      host.append(createInputField("artifact_path", ui("artifact_path"), values.artifact_path));
+      host.append(createInputField("expected_sha256", ui("expected_sha256"), values.expected_sha256));
+    }
+    host.append(createInputField("output_path", ui("output_path"), values.output_path));
+    host.append(createInputField("content", ui("artifact_content"), values.content, true));
+    host.append(createSelectField(
+      "mode",
+      ui("modify_mode"),
+      [
+        ["", ui("modify_mode_choose")],
+        ["append", ui("modify_mode_append")],
+        ["replace", ui("modify_mode_replace")],
+      ],
+      values.mode,
+    ));
+  } else if (operation === "inspect_workspace") {
+    host.append(createWorkspaceField("workspace", labelField("workspace"), values.workspace));
+    host.append(createInputField("path", ui("workspace_path"), values.path));
+    host.append(createInputField("query", ui("workspace_query"), values.query));
+  } else if (operation === "edit_text_file") {
+    host.append(createWorkspaceField("workspace", labelField("workspace"), values.workspace));
+    host.append(createInputField("path", ui("workspace_path"), values.path));
+    host.append(createInputField("expected_sha256", ui("expected_sha256"), values.expected_sha256));
+    host.append(createInputField("old_text", ui("old_text"), values.old_text, true));
+    host.append(createInputField("new_text", ui("new_text"), values.new_text, true));
+    host.append(createInputField("test_target", labelField("test_target"), values.test_target));
+  } else if (operation === "research_report") {
+    host.append(createWorkspaceField("workspace", labelField("workspace"), values.workspace));
+    host.append(createInputField("sources", ui("research_sources"), values.sources, true));
+    host.append(createInputField("title", ui("research_title"), values.title));
+    host.append(createInputField("output_path", ui("output_path"), values.output_path));
+    host.append(createInputField("findings_rows", ui("research_findings_rows"), values.findings_rows, true));
+  } else if (operation === "execute_plan") {
+    state.createJsonMode = true;
+    jsonMode.checked = true;
+    host.append(el("p", {
+      className: "audit-boundary",
+      textContent: ui("create_plan_json_required"),
+    }));
   } else {
-    host.append(createInputField("workspace", labelField("workspace"), values.workspace));
+    host.append(createWorkspaceField("workspace", labelField("workspace"), values.workspace));
     host.append(createInputField("target", labelField("test_target"), values.target));
     host.append(el("p", {
       className: "audit-boundary",
@@ -472,9 +1287,29 @@ function createInputField(name, labelText, value = "", multiline = false) {
   return label;
 }
 
+function createSelectField(name, labelText, choices, value = "") {
+  const label = el("label", { className: "form-field" });
+  label.append(el("span", { textContent: labelText }));
+  const select = el("select");
+  select.dataset.createParameter = name;
+  for (const [choiceValue, choiceLabel] of choices) {
+    const option = el("option", {
+      value: choiceValue,
+      textContent: choiceLabel,
+    });
+    option.value = choiceValue;
+    select.append(option);
+  }
+  select.value = value;
+  select.addEventListener("input", renderCreateTaskPreview);
+  select.addEventListener("change", renderCreateTaskPreview);
+  label.append(select);
+  return label;
+}
+
 function createParameterValues() {
   const values = {
-    artifact_path: "task-output.txt",
+    artifact_path: state.createPreviewParameters?.artifact_path || "",
     content: "",
     workspace: "",
     target: "",
@@ -482,6 +1317,19 @@ function createParameterValues() {
     constraints: "",
     expected_artifact: "",
     acceptance: "",
+    source_task_id: "",
+    output_path: "",
+    mode: "",
+    expected_sha256: "",
+    path: "",
+    query: "",
+    old_text: "",
+    new_text: "",
+    test_target: "",
+    sources: "",
+    title: "",
+    findings_rows: "",
+    ...(state.createPreviewParameters || {}),
   };
   for (const input of elements["create-parameters"].querySelectorAll(
     "[data-create-parameter]",
@@ -492,6 +1340,16 @@ function createParameterValues() {
 }
 
 function createParameters() {
+  if (state.createStructuredMode && state.createJsonMode) {
+    try {
+      const parsed = JSON.parse(
+        elements["create-structured-parameters"].value || "{}",
+      );
+      return isValidStructuredObject(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
   const operation = elements["create-operation"].value;
   const values = createParameterValues();
   if (operation === "write_text_artifact") {
@@ -510,31 +1368,293 @@ function createParameters() {
     }
     return parameters;
   }
-  const parameters = { runner: "unittest" };
-  if (values.workspace.trim()) parameters.workspace = values.workspace.trim();
-  if (values.target.trim()) parameters.target = values.target.trim();
-  return parameters;
+  const compact = {};
+  for (const field of [
+    "source_task_id", "workspace", "path", "query", "target",
+    "test_target", "artifact_path", "output_path", "expected_sha256",
+    "old_text", "new_text", "title",
+  ]) {
+    if (values[field]?.trim()) compact[field] = values[field].trim();
+  }
+  if (operation === "run_tests") {
+    return { runner: "unittest", ...compact };
+  }
+  if (operation === "modify_text_artifact") {
+    if (values.content !== "") compact.content = values.content;
+    if (values.mode.trim()) compact.mode = values.mode.trim();
+  } else if (values.content !== "") {
+    compact.content = values.content;
+  }
+  if (operation === "research_report") {
+    compact.sources = values.sources.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+    compact.findings = values.findings_rows.split(/\r?\n/)
+      .map((row) => row.trim()).filter(Boolean).map(parseFindingRow);
+  }
+  return compact;
+}
+
+function parseFindingRow(row) {
+  const [confidence, sourcePath, quote, ...statementParts] = row.split("|");
+  return {
+    statement: statementParts.join("|").trim(),
+    confidence: confidence.trim(),
+    citations: [{
+      source_path: sourcePath.trim(),
+      quote: quote.trim(),
+    }],
+  };
+}
+
+function guidedParametersComplete(operation, values) {
+  if (operation === "write_text_artifact") {
+    return Boolean(values.artifact_path.trim()) && values.content !== "";
+  }
+  if (operation === "read_text_artifact") {
+    return Boolean(values.source_task_id.trim() && values.artifact_path.trim());
+  }
+  if (operation === "modify_text_artifact") {
+    return Boolean(
+      values.source_task_id.trim()
+      && values.artifact_path.trim()
+      && values.content !== ""
+      && values.expected_sha256.trim()
+      && values.mode.trim(),
+    );
+  }
+  if (operation === "inspect_workspace") {
+    return Boolean(values.workspace.trim());
+  }
+  if (operation === "edit_text_file") {
+    return Boolean(
+      values.workspace.trim()
+      && values.path.trim()
+      && values.old_text
+      && values.new_text !== ""
+      && values.expected_sha256.trim(),
+    );
+  }
+  if (operation === "research_report") {
+    return Boolean(
+      values.workspace.trim()
+      && values.sources.trim()
+      && values.title.trim()
+      && values.output_path.trim()
+      && values.findings_rows.trim(),
+    );
+  }
+  return Boolean(operation);
+}
+
+function defaultVersionedArtifactName(value) {
+  const name = String(value || "").trim();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return `${name || "artifact"}-v2`;
+  return `${name.slice(0, dot)}-v2${name.slice(dot)}`;
+}
+
+function beginArtifactContinuation(task) {
+  if (
+    !task?.artifact
+    || task.status !== "succeeded"
+    || !task.verification?.passed
+    || task.artifact_observation?.state !== "current"
+  ) {
+    return;
+  }
+  const goalText = `继续修改 ${task.artifact.relative_path}`;
+  const parameters = {
+    source_task_id: task.task_id,
+    artifact_path: task.artifact.relative_path,
+    expected_sha256: task.artifact.sha256,
+    output_path: defaultVersionedArtifactName(task.artifact.relative_path),
+    mode: "",
+  };
+  state.createStructuredMode = false;
+  state.createJsonMode = false;
+  state.createGuidedRoute = false;
+  state.createContinuationContext = true;
+  state.createPreviewParameters = parameters;
+  state.createGoalPreview = {
+    supported: true,
+    guided_flow: "file",
+    goal: goalText,
+    operation: "modify_text_artifact",
+    operation_label: ui("continue_artifact_label"),
+    parameters,
+    missing_fields: ["content", "mode"],
+    assumptions: [ui("continuation_source_bound", {
+      path: task.artifact.relative_path,
+    })],
+    limits: [ui("continuation_boundary")],
+    confirmation_required: false,
+  };
+  elements["create-structured-mode"].checked = false;
+  elements["create-json-mode"].checked = false;
+  elements["create-operation"].value = "modify_text_artifact";
+  elements["create-goal"].value = goalText;
+  elements["create-confirm"].checked = false;
+  elements["create-parameters"].replaceChildren();
+  elements["task-create-panel"].hidden = false;
+  elements["create-goal"].dispatchEvent(new Event("input", { bubbles: true }));
+  elements["task-create-panel"].scrollIntoView({ behavior: "smooth", block: "start" });
+  elements["create-parameters"]
+    .querySelector("[data-create-parameter='content']")
+    ?.focus({ preventScroll: true });
+}
+
+function isValidStructuredObject(value) {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value),
+  );
+}
+
+function isValidStructuredParameters(value) {
+  try {
+    return isValidStructuredObject(JSON.parse(value || "{}"));
+  } catch (_) {
+    return false;
+  }
 }
 
 function renderCreateTaskPreview() {
   const goal = elements["create-goal"].value.trim();
-  const operation = elements["create-operation"].value;
   const parameters = createParameters();
   const host = elements["create-task-preview"];
   if (!goal) {
     host.textContent = ui("create_preview_empty");
     return;
   }
-  host.replaceChildren(
+  if (state.createStructuredMode) {
+    if (state.createGoalPreview && state.createGuidedRoute) {
+      const preview = state.createGoalPreview;
+      host.replaceChildren(
+        el("strong", { textContent: ui("create_preview_title") }),
+        el("p", {
+          textContent: `${ui("create_operation_label")}：${
+            preview.operation_label || ui("unknown_operation")
+          }`,
+        }),
+        el("p", {
+          textContent: `${ui("create_missing_fields")}：${
+            (preview.missing_fields || []).map(labelField)
+              .join(ui("list_separator"))
+          }`,
+        }),
+        el("p", {
+          textContent: `${ui("create_limits")}：${
+            (preview.limits || []).join(ui("list_separator"))
+          }`,
+        }),
+        el("p", {
+          className: "audit-boundary",
+          textContent: preview.reason || ui("create_structured_preview"),
+        }),
+        el("p", {
+          className: "audit-boundary",
+          textContent: ui("create_stage_boundary"),
+        }),
+      );
+      return;
+    }
+    host.textContent = ui("create_structured_preview");
+    return;
+  }
+  const preview = state.createGoalPreview;
+  if (!preview) {
+    host.textContent = ui("create_preview_requires_interpretation");
+    return;
+  }
+  const children = [
     el("strong", { textContent: ui("create_preview_title") }),
-    el("p", { textContent: `${ui("create_goal_label")}：${goal}` }),
-    el("p", { textContent: `${ui("create_operation_label")}：${labelOperation(operation)}` }),
+    el("p", { textContent: `${ui("create_interpreted_goal")}：${preview.goal}` }),
+    el("p", {
+      textContent: `${ui("create_operation_label")}：${
+        preview.operation_label || ui("unknown_operation")
+      }`,
+    }),
     el("pre", { textContent: JSON.stringify(parameters, null, 2) }),
     el("p", {
-      className: "audit-boundary",
-      textContent: ui("create_stage_boundary"),
+      textContent: `${ui("create_assumptions")}：${
+        (preview.assumptions || []).join(ui("list_separator"))
+        || ui("none")
+      }`,
     }),
-  );
+    el("p", {
+      textContent: `${ui("create_missing_fields")}：${
+        (preview.missing_fields || []).map(labelField).join(ui("list_separator"))
+        || ui("none")
+      }`,
+    }),
+    el("p", {
+      textContent: `${ui("create_plan_steps")}：${
+        (preview.plan_steps || []).map((step) => step.expected_result)
+          .join(ui("list_separator"))
+        || ui("none")
+      }`,
+    }),
+    el("p", {
+      textContent: `${ui("create_limits")}：${
+        (preview.limits || []).join(ui("list_separator"))
+      }`,
+    }),
+  ];
+  if (preview.reason) {
+    children.push(el("p", {
+      className: "audit-boundary",
+      textContent: preview.reason,
+    }));
+  }
+  children.push(el("p", {
+    className: "audit-boundary",
+    textContent: ui("create_stage_boundary"),
+  }));
+  host.replaceChildren(...children);
+}
+
+// Start a queued task without blocking the request on its execution.
+//
+// The preferred path is the background dispatch endpoint: it returns in a few
+// milliseconds and the task keeps running if the user closes the tab. Older
+// servers (or a saturated executor) fall back to the inline action, which is
+// slower but still correct.
+async function startTaskInBackground(taskId, requestId, preview) {
+  const encoded = encodeURIComponent(taskId);
+  try {
+    const dispatched = await api(`/control/api/tasks/${encoded}/dispatch`, {
+      method: "POST",
+      headers: {
+        "X-Zevorinth-Control-Token": state.controlSession.token,
+      },
+      body: { request_id: requestId },
+    });
+    return { background: true, task_status: dispatched.task_status };
+  } catch (error) {
+    const code = error && error.code;
+    const recoverable = [
+      "not_found",
+      "method_not_allowed",
+      "control_disabled",
+      "executor_unavailable",
+      "http_error",
+    ].includes(code) || (error && error.status === 404);
+    if (!recoverable) throw error;
+  }
+  const result = await api(`/control/api/tasks/${encoded}/actions`, {
+    method: "POST",
+    headers: {
+      "X-Zevorinth-Control-Token": state.controlSession.token,
+    },
+    body: {
+      action: "start_queued_task",
+      request_id: requestId,
+      confirmed: true,
+      expected_updated_at: preview.task_updated_at,
+      expected_plan_version: preview.plan_version,
+    },
+  });
+  return { background: false, task_status: result.task_status };
 }
 
 async function submitCreatedTask(taskId, status, tracker, onStateChange) {
@@ -561,25 +1681,12 @@ async function submitCreatedTask(taskId, status, tracker, onStateChange) {
   tracker.begin();
   const requestId = tracker.requestId();
   try {
-    const result = await api(
-      `/control/api/tasks/${encodeURIComponent(taskId)}/actions`,
-      {
-        method: "POST",
-        headers: {
-          "X-Zevorinth-Control-Token": state.controlSession.token,
-        },
-        body: {
-          action: "start_queued_task",
-          request_id: requestId,
-          confirmed: true,
-          expected_updated_at: preview.task_updated_at,
-          expected_plan_version: preview.plan_version,
-        },
-      },
-    );
-    tracker.succeed(ui("create_and_submit_result", {
-      status: labelStatus(result.task_status),
-    }));
+    const result = await startTaskInBackground(taskId, requestId, preview);
+    tracker.succeed(result.background
+      ? ui("progress_dispatching")
+      : ui("create_and_submit_result", {
+        status: labelStatus(result.task_status),
+      }));
   } catch (error) {
     tracker.fail(error, displayError(error));
     status.textContent = ui("create_and_submit_error", {
@@ -600,6 +1707,9 @@ async function loadAll() {
   const results = await Promise.allSettled([
     loadTasks(true),
     loadAttention(),
+    // Workspace counts go stale as soon as anything writes into a workspace,
+    // so the refresh button refreshes them too.
+    state.controlSession ? loadWorkspaces() : Promise.resolve(),
   ]);
   const messages = results
     .filter((item) => item.status === "rejected")
@@ -771,7 +1881,81 @@ function renderTaskList() {
   elements["load-more"].hidden = state.nextOffset === null;
 }
 
+function closeEventStream() {
+  if (state.eventRefreshTimer !== null) {
+    clearTimeout(state.eventRefreshTimer);
+    state.eventRefreshTimer = null;
+  }
+  if (state.eventStream) {
+    state.eventStream.close();
+    state.eventStream = null;
+  }
+  state.eventStreamTaskId = null;
+}
+
+function openEventStream(taskId, since) {
+  closeEventStream();
+  if (typeof EventSource === "undefined") return;
+  const url =
+    `/api/tasks/${encodeURIComponent(taskId)}/events/stream?since=${since}`;
+  const source = new EventSource(url);
+  state.eventStream = source;
+  state.eventStreamTaskId = taskId;
+  source.onmessage = () => {
+    if (state.selectedTaskId !== taskId) return;
+    if (state.eventRefreshTimer !== null) {
+      clearTimeout(state.eventRefreshTimer);
+    }
+    state.eventRefreshTimer = setTimeout(() => {
+      state.eventRefreshTimer = null;
+      refreshSelectedTaskDetail(taskId);
+    }, 300);
+  };
+}
+
+async function refreshSelectedTaskDetail(taskId) {
+  if (state.selectedTaskId !== taskId) return;
+  const generation = state.detailRequestGeneration;
+  try {
+    let controlError = null;
+    const controlRequest = state.controlSession
+      ? api(
+          `/control/api/tasks/${encodeURIComponent(taskId)}/actions`,
+        ).catch((error) => {
+          controlError = error;
+          return null;
+        })
+      : Promise.resolve(null);
+    const [detail, controlPreview] = await Promise.all([
+      api(`/api/tasks/${encodeURIComponent(taskId)}`),
+      controlRequest,
+    ]);
+    if (
+      generation !== state.detailRequestGeneration
+      || state.selectedTaskId !== taskId
+    ) return;
+    renderTaskDetail(detail, controlPreview, controlError);
+    const maxSeq =
+      detail.events && detail.events.length
+        ? Math.max(...detail.events.map((item) => item.sequence))
+        : 0;
+    if (
+      state.eventStreamTaskId === taskId
+      && state.eventStream
+    ) {
+      const nextUrl =
+        `/api/tasks/${encodeURIComponent(taskId)}/events/stream?since=${maxSeq}`;
+      if (state.eventStream.url !== nextUrl) {
+        openEventStream(taskId, maxSeq);
+      }
+    }
+  } catch (error) {
+    // Silent refresh failure; the next event or manual refresh retries.
+  }
+}
+
 async function openTask(taskId, sourceRow) {
+  closeEventStream();
   const generation = ++state.detailRequestGeneration;
   state.selectedTaskId = taskId;
   for (const row of elements["task-list"].querySelectorAll(".task-row")) {
@@ -800,6 +1984,11 @@ async function openTask(taskId, sourceRow) {
       || state.selectedTaskId !== taskId
     ) return;
     renderTaskDetail(detail, controlPreview, controlError);
+    const maxSeq =
+      detail.events && detail.events.length
+        ? Math.max(...detail.events.map((item) => item.sequence))
+        : 0;
+    openEventStream(taskId, maxSeq);
   } catch (error) {
     if (
       generation !== state.detailRequestGeneration
@@ -835,6 +2024,45 @@ function renderDetailError(taskId, error) {
   elements["task-detail"].replaceChildren(fragment);
 }
 
+function progressPanel(taskId) {
+  const panel = el("section", { className: "panel progress-panel" });
+  panel.append(el("h3", { textContent: ui("progress_title") }));
+  const line = el("p", {
+    className: "progress-line",
+    textContent: ui("progress_dispatching"),
+  });
+  const meta = el("p", { className: "panel-copy progress-meta", textContent: "" });
+  panel.append(line, meta);
+  fillProgress(taskId, line, meta);
+  return panel;
+}
+
+// Reads the read-only progress projection. Never computes a percentage: the
+// server reports "step n of m + what is happening now", and inventing a
+// percentage here would be a number nobody can defend.
+async function fillProgress(taskId, line, meta) {
+  try {
+    const progress = await api(
+      `/api/tasks/${encodeURIComponent(taskId)}/progress`,
+    );
+    if (!line.isConnected) return;
+    line.textContent = progress.text;
+    const parts = [];
+    if (progress.steps_total > 0) {
+      parts.push(`${progress.steps_done}/${progress.steps_total}`);
+    }
+    if (progress.last_event && progress.last_event.text) {
+      parts.push(progress.last_event.text);
+    }
+    if (progress.cancel_requested) {
+      parts.push(ui("progress_cancel_requested"));
+    }
+    meta.textContent = parts.join(" · ");
+  } catch (_) {
+    if (line.isConnected) line.textContent = ui("progress_unavailable");
+  }
+}
+
 function renderTaskDetail(detail, controlPreview = null, controlError = null) {
   const task = detail.task;
   const audit = detail.lifecycle_audit || {};
@@ -868,6 +2096,7 @@ function renderTaskDetail(detail, controlPreview = null, controlError = null) {
   facts.append(fact(ui("updated"), shortTime(task.updated_at)));
   grid.append(facts);
 
+  grid.append(progressPanel(task.task_id));
   grid.append(statusGuidance(task, controlPreview));
   grid.append(attentionCallout(task, audit));
   grid.append(summaryPanel(task));
@@ -895,11 +2124,27 @@ function renderTaskDetail(detail, controlPreview = null, controlError = null) {
   evidenceGrid.append(verificationCard(task));
   artifactAndVerification.append(evidenceGrid);
   if (task.artifact) artifactAndVerification.append(previewControl(task));
+  if (
+    task.artifact
+    && task.status === "succeeded"
+    && task.verification?.passed
+    && task.artifact_observation?.state === "current"
+    && state.controlSession
+  ) {
+    const continueButton = el("button", {
+      className: "button button-secondary",
+      type: "button",
+      textContent: ui("continue_artifact"),
+    });
+    continueButton.addEventListener("click", () => beginArtifactContinuation(task));
+    artifactAndVerification.append(continueButton);
+  }
   grid.append(artifactAndVerification);
 
   grid.append(recoveryPanel(preview));
   grid.append(conversationPanel(detail.events || []));
   grid.append(eventPanel(detail.events || []));
+  if (detail.model_usage) grid.append(modelUsagePanel(detail.model_usage));
   grid.append(auditPanel(audit));
 
   grid.append(el("a", {
@@ -910,6 +2155,71 @@ function renderTaskDetail(detail, controlPreview = null, controlError = null) {
   fragment.append(grid);
   elements["task-detail"].replaceChildren(fragment);
   elements["task-detail"].focus({ preventScroll: true });
+}
+
+function fmtToken(value) {
+  if (value === null || value === undefined) return "未记录";
+  return String(value);
+}
+
+function modelUsagePanel(usage) {
+  const section = el("section", { className: "panel model-usage-panel" });
+  section.append(el("h3", { textContent: "模型资源与耗时" }));
+  const noteMap = {
+    no_model_call: "本任务未调用模型（确定性规划）",
+    provider_reported: "用量由模型服务方报告",
+    missing: "部分调用缺少用量数据",
+  };
+  const note = noteMap[usage.measurement_note] || usage.measurement_note;
+  const facts = el("dl", { className: "fact-strip" });
+  facts.append(fact("调用次数", String(usage.call_count)));
+  facts.append(fact("用量来源", note));
+  facts.append(fact("输入 token", fmtToken(usage.total_input_tokens)));
+  facts.append(fact("输出 token", fmtToken(usage.total_output_tokens)));
+  facts.append(fact("合计 token", fmtToken(usage.total_tokens)));
+  facts.append(
+    fact(
+      "规划耗时",
+      usage.total_latency_ms === null || usage.total_latency_ms === undefined
+        ? "未记录"
+        : `${usage.total_latency_ms} ms`,
+    ),
+  );
+  if (usage.missing_usage_count > 0) {
+    facts.append(fact("缺少用量的调用", String(usage.missing_usage_count)));
+  }
+  facts.append(fact("费用估算", "未配置价格表，不估算"));
+  section.append(facts);
+  if (Array.isArray(usage.calls) && usage.calls.length > 0) {
+    const list = el("ol", { className: "event-list model-call-list" });
+    for (const call of usage.calls) {
+      const item = el("li");
+      const lines = [];
+      lines.push(`事件 #${call.event_sequence} · ${call.event_type}`);
+      if (call.classification) lines.push(`分类：${call.classification}`);
+      if (call.response_id) lines.push(`响应 ID：${call.response_id}`);
+      const modelName = call.model_name || call.model || call.provider;
+      if (modelName) lines.push(`模型：${modelName}`);
+      if (call.latency_ms !== null && call.latency_ms !== undefined) {
+        lines.push(`耗时：${call.latency_ms} ms`);
+      }
+      lines.push(
+        `输入/输出/合计：${fmtToken(call.input_tokens)} / ${fmtToken(call.output_tokens)} / ${fmtToken(call.total_tokens)}`,
+      );
+      if (call.model_call_attempted === false) {
+        lines.push("未发起模型调用");
+      }
+      if (call.error_type) lines.push(`错误：${call.error_type}`);
+      item.append(el("p", { textContent: lines.join("　") }));
+      list.append(item);
+    }
+    section.append(list);
+  }
+  section.append(el("p", {
+    className: "panel-copy",
+    textContent: "用量数据来自规划事件的持久化记录，缺失时显示「未记录」，不计为零。",
+  }));
+  return section;
 }
 
 function statusGuidance(task, controlPreview) {
@@ -1125,6 +2435,13 @@ function artifactEvidenceCard(task) {
   }
   const list = el("ul", { className: "evidence-list" });
   list.append(evidenceRow(ui("artifact_path"), task.artifact.relative_path));
+  // Deliverable, not just inspectable: the download re-checks the registered
+  // digest server-side, so a file changed after verification is refused.
+  const download = el("a", {
+    className: "button artifact-download",
+    href: `/api/tasks/${encodeURIComponent(task.task_id)}/artifact?download=1`,
+    textContent: ui("artifact_download"),
+  });
   list.append(evidenceRow(ui("artifact_size"), `${task.artifact.byte_count} 字节`));
   list.append(evidenceRow(ui("artifact_sha"), task.artifact.sha256));
   list.append(evidenceRow(
@@ -1142,7 +2459,223 @@ function artifactEvidenceCard(task) {
     ));
   }
   card.append(list);
+  card.append(download);
+  const lineage = lineageBlock(task);
+  if (lineage) {
+    card.append(lineage);
+  }
+  card.append(continuationBlock(task));
   return card;
+}
+
+function lineageBlock(task) {
+  const block = el("div", { className: "lineage" });
+  const lineage = task.lineage;
+  if (lineage) {
+    block.append(el("h5", { textContent: ui("lineage_title") }));
+    const list = el("ul", { className: "evidence-list" });
+    list.append(evidenceRow(
+      ui("lineage_source_task"),
+      lineage.source_task_id,
+    ));
+    list.append(evidenceRow(
+      ui("lineage_source_path"),
+      lineage.source_artifact_path,
+    ));
+    list.append(evidenceRow(
+      ui("lineage_mode"),
+      lineage.mode === "append"
+        ? ui("lineage_mode_append")
+        : ui("lineage_mode_replace"),
+    ));
+    list.append(evidenceRow(ui("lineage_source_sha"), lineage.source_sha256));
+    list.append(evidenceRow(ui("lineage_result_sha"), lineage.result_sha256));
+    block.append(list);
+  }
+  // Downstream is the only honest notion of "later version" here: a task that
+  // recorded this artifact as its source. Same file names elsewhere are not
+  // versions of anything.
+  const derived = task.derived_tasks;
+  if (derived === null || derived === undefined) {
+    block.append(el("h5", { textContent: ui("lineage_derived_title") }));
+    block.append(el("p", {
+      className: "audit-boundary",
+      textContent: ui("lineage_derived_unavailable"),
+    }));
+    return block;
+  }
+  if (!derived.length) {
+    if (!lineage) {
+      // Nothing upstream and nothing downstream: no lineage block at all is
+      // more truthful than an empty one implying a chain exists.
+      return null;
+    }
+    block.append(el("h5", { textContent: ui("lineage_derived_title") }));
+    block.append(el("p", {
+      className: "panel-copy",
+      textContent: ui("lineage_derived_empty"),
+    }));
+    return block;
+  }
+  block.append(el("h5", { textContent: ui("lineage_derived_title") }));
+  const items = el("ul", { className: "evidence-list" });
+  for (const item of derived) {
+    const row = el("li");
+    row.append(el("span", {
+      textContent: `${item.artifact_path || ui("not_recorded")} · ${
+        labelStatus(item.status)
+      }`,
+    }));
+    row.append(el("button", {
+      className: "button button-quiet",
+      type: "button",
+      textContent: ui("lineage_open"),
+      "data-task-id": item.task_id,
+    }));
+    row.lastChild.addEventListener("click", () => {
+      openTask(item.task_id, null);
+    });
+    items.append(row);
+  }
+  block.append(items);
+  return block;
+}
+
+function continuationReason(reason) {
+  const key = `continue_reason_${reason || "unknown"}`;
+  return ui(key) === key ? ui("continue_unavailable") : ui(key);
+}
+
+// "Continue on top of this" (F-15): the digest is filled in by the server, so
+// the user never types a hash. The form only asks for what a human actually
+// knows — which text to put in, and whether it replaces or appends.
+function continuationBlock(task) {
+  const block = el("div", { className: "continuation" });
+  block.append(el("h5", { textContent: ui("continue_title") }));
+  const continuation = task.continuation;
+  if (!continuation || !continuation.available) {
+    block.append(el("p", {
+      className: "audit-boundary",
+      textContent: continuationReason(continuation && continuation.reason),
+    }));
+    return block;
+  }
+  block.append(el("p", {
+    className: "panel-copy",
+    textContent: ui("continue_copy", {
+      path: continuation.artifact_path,
+    }),
+  }));
+  const form = el("form", { className: "control-form" });
+  const modeField = el("label", { className: "form-field" });
+  modeField.append(el("span", { textContent: ui("continue_mode") }));
+  const mode = el("select");
+  for (const option of continuation.modes || []) {
+    mode.append(el("option", {
+      value: option,
+      textContent: option === "append"
+        ? ui("lineage_mode_append")
+        : ui("lineage_mode_replace"),
+    }));
+  }
+  modeField.append(mode);
+  form.append(modeField);
+
+  const outputField = el("label", { className: "form-field" });
+  outputField.append(el("span", { textContent: ui("continue_output_path") }));
+  const outputPath = el("input", {
+    type: "text",
+    value: continuation.suggested_output_path,
+    autocomplete: "off",
+  });
+  outputField.append(outputPath);
+  form.append(outputField);
+
+  const contentField = el("label", { className: "form-field" });
+  contentField.append(el("span", { textContent: ui("continue_content") }));
+  const content = el("textarea", { rows: "3" });
+  content.required = true;
+  contentField.append(content);
+  form.append(contentField);
+
+  const confirmation = el("label", { className: "confirm-row" });
+  const checkbox = el("input", { type: "checkbox" });
+  confirmation.append(checkbox);
+  confirmation.append(el("span", { textContent: ui("continue_confirm") }));
+  form.append(confirmation);
+
+  const submit = el("button", {
+    className: "button button-primary",
+    type: "submit",
+    textContent: ui("continue_submit"),
+  });
+  submit.disabled = true;
+  checkbox.addEventListener("change", () => {
+    submit.disabled = !checkbox.checked;
+  });
+  form.append(submit);
+
+  const status = el("p", {
+    className: "control-status",
+    role: "status",
+    "aria-live": "polite",
+  });
+  form.append(status);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!content.value.trim()) {
+      status.textContent = ui("continue_content_required");
+      return;
+    }
+    submit.disabled = true;
+    status.textContent = ui("continue_creating");
+    let created;
+    try {
+      created = await api("/control/api/tasks", {
+        method: "POST",
+        headers: {
+          "X-Zevorinth-Control-Token": state.controlSession.token,
+        },
+        body: {
+          request_id: crypto.randomUUID(),
+          confirmed: true,
+          goal: ui("continue_goal", { path: continuation.artifact_path }),
+          operation: continuation.operation,
+          parameters: {
+            source_task_id: continuation.source_task_id,
+            artifact_path: continuation.artifact_path,
+            expected_sha256: continuation.expected_sha256,
+            content: content.value,
+            output_path: outputPath.value.trim()
+              || continuation.suggested_output_path,
+            mode: mode.value,
+          },
+        },
+      });
+    } catch (error) {
+      status.textContent = ui("continue_error", {
+        message: displayError(error),
+      });
+      submit.disabled = !checkbox.checked;
+      return;
+    }
+    status.textContent = ui("create_task_created", {
+      task: created.task_id,
+      status: labelStatus(created.task_status),
+    });
+    const tracker = createControlRequestTracker(
+      form,
+      created.task_id,
+      () => {},
+      "continue_from_artifact",
+    );
+    await submitCreatedTask(created.task_id, status, tracker, () => {});
+    await loadAll();
+    await openTask(created.task_id, null);
+  });
+  block.append(form);
+  return block;
 }
 
 function verificationCard(task) {
@@ -1584,6 +3117,17 @@ function renderControlActions(taskId, host, preview) {
       );
     } else if (action.action === "add_task_note") {
       section.append(taskNoteForm(taskId, preview));
+    } else if (action.action === "pause_task") {
+      section.append(stateActionForm(taskId, action, preview));
+    } else if (action.action === "resume_task") {
+      section.append(stateActionForm(taskId, action, preview));
+    } else if (
+      action.action === "approve_step"
+      || action.action === "reject_step"
+    ) {
+      section.append(approvalStepActionForm(taskId, action, preview));
+    } else if (action.action === "replan_pending_steps") {
+      section.append(replanActionForm(taskId, action, preview));
     }
   }
   section.append(el("p", {
@@ -1591,6 +3135,345 @@ function renderControlActions(taskId, host, preview) {
     textContent: ui("control_read_only_api_note"),
   }));
   host.replaceChildren(section);
+}
+
+function stateActionForm(taskId, action, preview) {
+  const form = el("form", { className: "control-form" });
+  const pause = action.action === "pause_task";
+  form.append(el("h4", {
+    textContent: ui(pause ? "control_pause_title" : "control_resume_title"),
+  }));
+  form.append(el("p", {
+    className: "panel-copy",
+    textContent: ui(
+      pause ? "control_pause_copy" : "control_resume_copy",
+    ),
+  }));
+  if (action.pause_request_only) {
+    form.append(el("p", {
+      className: "audit-boundary",
+      textContent: ui("control_pause_running_copy"),
+    }));
+  }
+  const confirmation = el("label", { className: "confirm-row" });
+  const checkbox = el("input", { type: "checkbox" });
+  confirmation.append(checkbox);
+  confirmation.append(el("span", {
+    textContent: ui(
+      pause ? "control_confirm_pause" : "control_confirm_resume",
+    ),
+  }));
+  form.append(confirmation);
+  const submit = el("button", {
+    className: "button button-primary",
+    type: "submit",
+    textContent: ui(pause ? "control_submit_pause" : "control_submit_resume"),
+  });
+  submit.disabled = true;
+  checkbox.addEventListener("change", () => {
+    submit.disabled = !checkbox.checked;
+  });
+  form.append(submit);
+  const tracker = createControlRequestTracker(
+    form,
+    taskId,
+    () => {},
+    action.action,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    tracker.begin();
+    submit.disabled = true;
+    submit.textContent = ui("control_submitting");
+    const requestId = tracker.requestId();
+    try {
+      await api(
+        `/control/api/tasks/${encodeURIComponent(taskId)}/actions`,
+        {
+          method: "POST",
+          headers: {
+            "X-Zevorinth-Control-Token": state.controlSession.token,
+          },
+          body: {
+            action: action.action,
+            request_id: requestId,
+            confirmed: true,
+            expected_updated_at: preview.task_updated_at,
+            expected_plan_version: preview.plan_version,
+          },
+        },
+      );
+      tracker.succeed(ui(
+        pause ? "control_pause_success" : "control_resume_success",
+      ));
+      await refreshAfterControl(taskId);
+    } catch (error) {
+      const message = displayError(error);
+      const statusUnknown = tracker.fail(error, message);
+      submit.disabled = statusUnknown || !checkbox.checked;
+      submit.textContent = ui(
+        pause ? "control_submit_pause" : "control_submit_resume",
+      );
+    }
+  });
+  return form;
+}
+
+function approvalFormBody(report) {
+  const block = el("div", { className: "approval-detail" });
+  const step = report.step;
+  block.append(el("p", {
+    className: "approval-headline",
+    textContent: step.tool_label,
+  }));
+  if (step.expected_result) {
+    block.append(el("p", {
+      className: "panel-copy",
+      textContent: ui("control_approval_expected", {
+        result: step.expected_result,
+      }),
+    }));
+  }
+  block.append(el("p", {
+    className: "audit-boundary",
+    textContent: step.side_effect_sentence,
+  }));
+  if (Array.isArray(step.parameters) && step.parameters.length) {
+    block.append(el("h5", {
+      textContent: ui("control_approval_parameters"),
+    }));
+    const list = el("dl", { className: "approval-parameters" });
+    for (const row of step.parameters) {
+      list.append(el("dt", { textContent: row.name }));
+      list.append(el("dd", {
+        className: row.deferred ? "approval-deferred" : "",
+        textContent: row.value,
+      }));
+    }
+    block.append(list);
+    if (step.parameters_truncated) {
+      block.append(el("p", {
+        className: "audit-boundary",
+        textContent: ui("control_approval_truncated"),
+      }));
+    }
+  }
+  if (
+    Array.isArray(step.deferred_parameters)
+    && step.deferred_parameters.length
+  ) {
+    block.append(el("p", {
+      className: "approval-warning",
+      textContent: ui("control_approval_deferred", {
+        fields: step.deferred_parameters.join("、"),
+      }),
+    }));
+  }
+  block.append(el("h5", { textContent: ui("control_approval_target") }));
+  if (report.target) {
+    block.append(el("p", {
+      className: "panel-copy",
+      textContent: report.target.path,
+    }));
+    block.append(el("p", {
+      className: "audit-boundary",
+      textContent: report.target.sentence,
+    }));
+  } else {
+    block.append(el("p", {
+      className: "panel-copy",
+      textContent: ui("control_approval_no_target"),
+    }));
+  }
+  if (report.approval.state === "approval_content_changed") {
+    block.append(el("p", {
+      className: "approval-warning",
+      textContent: ui("control_approval_content_changed"),
+    }));
+  }
+  block.append(el("p", {
+    className: "audit-boundary",
+    textContent: ui("control_approval_digest", {
+      digest: String(report.approval.digest || "").slice(0, 16),
+    }),
+  }));
+  return block;
+}
+
+function approvalStepActionForm(taskId, action, preview) {
+  const form = el("form", { className: "control-form" });
+  const approve = action.action === "approve_step";
+  form.append(el("h4", {
+    textContent: ui(
+      approve ? "control_approve_step_title" : "control_reject_step_title",
+    ),
+  }));
+  form.append(el("p", {
+    className: "panel-copy",
+    textContent: ui("control_approval_step_copy", {
+      step: action.step_id,
+    }),
+  }));
+  const report = action.approval_form;
+  const readable = Boolean(report && report.step && report.approval);
+  if (readable) {
+    form.append(approvalFormBody(report));
+  } else {
+    form.append(el("p", {
+      className: "approval-warning",
+      textContent: ui("control_approval_form_missing"),
+    }));
+  }
+  const confirmation = el("label", { className: "confirm-row" });
+  const checkbox = el("input", { type: "checkbox" });
+  confirmation.append(checkbox);
+  confirmation.append(el("span", {
+    textContent: ui(
+      approve ? "control_confirm_approve_step" : "control_confirm_reject_step",
+    ),
+  }));
+  form.append(confirmation);
+  const submit = el("button", {
+    className: approve ? "button button-primary" : "button button-danger",
+    type: "submit",
+    textContent: ui(
+      approve ? "control_submit_approve_step" : "control_submit_reject_step",
+    ),
+  });
+  // Failing closed on consent: with no readable detail of what will run,
+  // the approve button stays dead. Rejecting is always offered.
+  submit.disabled = true;
+  checkbox.addEventListener("change", () => {
+    submit.disabled = !checkbox.checked || (approve && !readable);
+  });
+  form.append(submit);
+  const tracker = createControlRequestTracker(
+    form,
+    taskId,
+    () => {},
+    action.action,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    tracker.begin();
+    submit.disabled = true;
+    submit.textContent = ui("control_submitting");
+    const requestId = tracker.requestId();
+    try {
+      await api(
+        `/control/api/tasks/${encodeURIComponent(taskId)}/actions`,
+        {
+          method: "POST",
+          headers: {
+            "X-Zevorinth-Control-Token": state.controlSession.token,
+          },
+          body: {
+            action: action.action,
+            request_id: requestId,
+            confirmed: true,
+            expected_updated_at: preview.task_updated_at,
+            expected_plan_version: preview.plan_version,
+            step_id: action.step_id,
+          },
+        },
+      );
+      tracker.succeed(ui("control_approval_step_success"));
+      await refreshAfterControl(taskId);
+    } catch (error) {
+      const message = displayError(error);
+      const statusUnknown = tracker.fail(error, message);
+      submit.disabled = statusUnknown
+        || !checkbox.checked
+        || (approve && !readable);
+      submit.textContent = ui(
+        approve ? "control_submit_approve_step" : "control_submit_reject_step",
+      );
+    }
+  });
+  return form;
+}
+
+function replanActionForm(taskId, action, preview) {
+  const form = el("form", { className: "control-form" });
+  form.append(el("h4", { textContent: ui("control_replan_title") }));
+  form.append(el("p", {
+    className: "panel-copy",
+    textContent: ui("control_replan_copy"),
+  }));
+  const label = el("label", { className: "form-field" });
+  label.append(el("span", { textContent: ui("control_replan_steps") }));
+  const steps = el("textarea", { rows: "8", spellcheck: "false" });
+  steps.value = "[]";
+  label.append(steps);
+  form.append(label);
+  const confirmation = el("label", { className: "confirm-row" });
+  const checkbox = el("input", { type: "checkbox" });
+  confirmation.append(checkbox);
+  confirmation.append(el("span", {
+    textContent: ui("control_confirm_replan"),
+  }));
+  form.append(confirmation);
+  const submit = el("button", {
+    className: "button button-primary",
+    type: "submit",
+    textContent: ui("control_submit_replan"),
+  });
+  submit.disabled = true;
+  checkbox.addEventListener("change", () => {
+    submit.disabled = !checkbox.checked;
+  });
+  form.append(submit);
+  const tracker = createControlRequestTracker(
+    form,
+    taskId,
+    () => {},
+    "replan_pending_steps",
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    tracker.begin();
+    let replacement;
+    try {
+      replacement = JSON.parse(steps.value || "[]");
+    } catch (_) {
+      tracker.status.textContent = labelError("invalid_replan_steps");
+      return;
+    }
+    if (!Array.isArray(replacement) || !replacement.length) {
+      tracker.status.textContent = labelError("invalid_replan_steps");
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = ui("control_submitting");
+    const requestId = tracker.requestId();
+    try {
+      await api(
+        `/control/api/tasks/${encodeURIComponent(taskId)}/actions`,
+        {
+          method: "POST",
+          headers: {
+            "X-Zevorinth-Control-Token": state.controlSession.token,
+          },
+          body: {
+            action: action.action,
+            request_id: requestId,
+            confirmed: true,
+            expected_updated_at: preview.task_updated_at,
+            expected_plan_version: preview.plan_version,
+            steps: replacement,
+          },
+        },
+      );
+      tracker.succeed(ui("control_replan_success"));
+      await refreshAfterControl(taskId);
+    } catch (error) {
+      const message = displayError(error);
+      const statusUnknown = tracker.fail(error, message);
+      submit.disabled = statusUnknown || !checkbox.checked;
+      submit.textContent = ui("control_submit_replan");
+    }
+  });
+  return form;
 }
 
 function createControlRequestTracker(

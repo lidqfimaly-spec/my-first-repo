@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -67,6 +68,12 @@ def _workspace(
     return workspace
 
 
+#: A deliberately unusable token.  Policy-ordering tests must fail for the
+#: reason under test, not because a grant is missing; real execution tests
+#: issue a grant with ``_authorize``.
+UNUSABLE_TOKEN = "0" * 32 + "." + "0" * 64
+
+
 def _request(
     workspace: str = "demo", target: str = "test_demo", **extra: Any
 ) -> TaskRequest:
@@ -75,7 +82,7 @@ def _request(
         "target": target,
         "workspace": workspace,
         "execution_backend": "host",
-        "host_authorization": "local-maintenance",
+        "host_authorization": UNUSABLE_TOKEN,
     }
     parameters.update(extra)
     return TaskRequest(
@@ -87,13 +94,40 @@ def _events(service: TaskService, task_id: str) -> list[str]:
     return [event.event_type for event in service.events(task_id)]
 
 
+def _grant_store(root: Path):
+    """Grant store kept beside the temporary project root, never in $HOME."""
+    from zevorinth.host_authorization import HostGrantStore
+
+    return HostGrantStore(root / "host-grants")
+
+
+def _authorize(
+    store,
+    workspace: str = "demo",
+    target: str = "test_demo",
+    *,
+    ttl_minutes: int = 30,
+) -> str:
+    return store.issue(
+        workspace=workspace,
+        target=target,
+        issuer="pytest",
+        ttl_minutes=ttl_minutes,
+    )["token"]
+
+
+def _service(root: Path):
+    store = _grant_store(root)
+    return TaskService(root, host_grant_store=store), store
+
+
 class LocalTestExecutionTests(unittest.TestCase):
     def test_passing_target_succeeds_with_real_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root)
-            task = service.submit(_request())
+            service, store = _service(root)
+            task = service.submit(_request(host_authorization=_authorize(store)))
             self.assertEqual(task.status, TaskStatus.SUCCEEDED)
             evidence = task.tool_result.test_evidence
             self.assertEqual(evidence.exit_code, 0)
@@ -111,8 +145,10 @@ class LocalTestExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files={"test_bad.py": FAILING})
-            service = TaskService(root)
-            task = service.submit(_request(target="test_bad"))
+            service, store = _service(root)
+            task = service.submit(
+                _request(target="test_bad", host_authorization=_authorize(store, target="test_bad"))
+            )
             self.assertEqual(task.status, TaskStatus.FAILED)
             self.assertEqual(task.error.code, "tests_failed")
             self.assertEqual(task.tool_result.test_evidence.exit_code, 1)
@@ -123,8 +159,10 @@ class LocalTestExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root)
-            task = service.submit(_request(max_output_bytes=4096))
+            service, store = _service(root)
+            task = service.submit(
+                _request(max_output_bytes=4096, host_authorization=_authorize(store))
+            )
             evidence = task.tool_result.test_evidence
             self.assertFalse(evidence.truncated)
             # ``unittest -q`` writes its progress dots to stderr.
@@ -138,9 +176,13 @@ class LocalTestExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files={"test_noisy.py": NOISY})
-            service = TaskService(root)
+            service, store = _service(root)
             task = service.submit(
-                _request(target="test_noisy", max_output_bytes=256)
+                _request(
+                    target="test_noisy",
+                    max_output_bytes=256,
+                    host_authorization=_authorize(store, target="test_noisy"),
+                )
             )
             evidence = task.tool_result.test_evidence
             self.assertTrue(evidence.truncated)
@@ -159,6 +201,13 @@ class LocalTestExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
+            # The CLI resolves grants from the operator's HOME, so the grant is
+            # issued into a throw-away HOME rather than the developer's.
+            home = root / "home"
+            grant_root = home / ".zevorinth" / "host-grants"
+            from zevorinth.host_authorization import HostGrantStore
+
+            token = _authorize(HostGrantStore(grant_root))
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -173,7 +222,8 @@ class LocalTestExecutionTests(unittest.TestCase):
                     "test_demo",
                     "--backend",
                     "host",
-                    "--allow-host",
+                    "--host-authorization",
+                    token,
                     "--json",
                 ],
                 cwd=PROJECT_ROOT,
@@ -181,6 +231,7 @@ class LocalTestExecutionTests(unittest.TestCase):
                 text=True,
                 env={
                     **os.environ,
+                    "HOME": str(home),
                     "PYTHONPATH": str(PROJECT_ROOT / "src"),
                     "PYTHONDONTWRITEBYTECODE": "1",
                     "OPENAI_API_KEY": "",
@@ -192,6 +243,46 @@ class LocalTestExecutionTests(unittest.TestCase):
             self.assertEqual(payload["status"], "succeeded")
             self.assertEqual(
                 payload["tool_result"]["test_evidence"]["exit_code"], 0
+            )
+
+    def test_cli_entry_requires_a_grant_for_host_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _workspace(root)
+            home = root / "home"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "zevorinth.cli",
+                    "--home",
+                    str(root),
+                    "test",
+                    "--workspace",
+                    "demo",
+                    "--target",
+                    "test_demo",
+                    "--backend",
+                    "host",
+                    "--json",
+                ],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HOME": str(home),
+                    "PYTHONPATH": str(PROJECT_ROOT / "src"),
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "OPENAI_API_KEY": "",
+                },
+                timeout=120,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(
+                payload["error"]["code"], "host_authorization_required"
             )
 
 
@@ -336,10 +427,14 @@ class LocalTestSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files={"test_slow.py": SLOW})
-            service = TaskService(root)
+            service, store = _service(root)
             started = time.monotonic()
             task = service.submit(
-                _request(target="test_slow", timeout_seconds=1)
+                _request(
+                    target="test_slow",
+                    timeout_seconds=1,
+                    host_authorization=_authorize(store, target="test_slow"),
+                )
             )
             elapsed = time.monotonic() - started
             evidence = task.tool_result.test_evidence
@@ -355,8 +450,10 @@ class LocalTestSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root)
-            service = TaskService(root)
-            task = service.enqueue(_request())
+            service, store = _service(root)
+            task = service.enqueue(
+                _request(host_authorization=_authorize(store))
+            )
             service.request_cancel(
                 task.task_id, requested_by="t", reason="stop"
             )
@@ -368,9 +465,13 @@ class LocalTestSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             _workspace(root, files={"test_slow.py": SLOW})
-            service = TaskService(root)
+            service, store = _service(root)
             task = service.enqueue(
-                _request(target="test_slow", timeout_seconds=30)
+                _request(
+                    target="test_slow",
+                    timeout_seconds=30,
+                    host_authorization=_authorize(store, target="test_slow"),
+                )
             )
 
             def cancel() -> None:
@@ -449,7 +550,7 @@ class TestVerifierBoundaryTests(unittest.TestCase):
             "target": "test_demo",
             "workspace": "demo",
             "execution_backend": "host",
-        "host_authorization": "local-maintenance",
+            "host_authorization": UNUSABLE_TOKEN,
         }
         expected.update(params)
         return TestResultVerifier().verify(

@@ -38,6 +38,11 @@ from zevorinth.service import (  # noqa: E402
     TaskService,
     _test_execution_plan_mismatch,
 )
+from tests.host_grant_support import authorized_service  # noqa: E402
+
+
+#: A well-formed but never-issued token; shape tests must not need a store.
+_TOKEN = "a" * 32 + "." + "b" * 64
 
 
 def _base(**overrides):
@@ -106,7 +111,7 @@ class ParameterNormalizationTests(unittest.TestCase):
                 image="python:3.13-alpine",
                 config_digest="a" * 64,
                 command_digest="b" * 64,
-                host_authorization="local-maintenance",
+                host_authorization=_TOKEN,
                 required_artifacts=["report.json", "./sub/out.xml"],
                 disk_limit_bytes=2 * 1024 * 1024,
                 workspace_budget_bytes=4096,
@@ -117,9 +122,7 @@ class ParameterNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized["image"], "python:3.13-alpine")
         self.assertEqual(normalized["config_digest"], "a" * 64)
         self.assertEqual(normalized["command_digest"], "b" * 64)
-        self.assertEqual(
-            normalized["host_authorization"], "local-maintenance"
-        )
+        self.assertEqual(normalized["host_authorization"], _TOKEN)
         self.assertEqual(
             normalized["required_artifacts"],
             ["report.json", "sub/out.xml"],
@@ -218,7 +221,7 @@ class LlmPlanPropagationTests(unittest.TestCase):
             image="python:3.13-alpine",
             config_digest="a" * 64,
             command_digest="b" * 64,
-            host_authorization="local-maintenance",
+            host_authorization=_TOKEN,
             required_artifacts=["report.json"],
             disk_limit_bytes=2 * 1024 * 1024,
             workspace_budget_bytes=4096,
@@ -363,6 +366,10 @@ class ExecutionWiringTests(unittest.TestCase):
             raise AssertionError("host fallback must not be used")
 
         service.test_runner = host_fallback
+        # What is under test is the wiring (provision -> container -> verifier),
+        # not whether this machine has a reachable container runtime: the live
+        # probes are pinned so a stopped Docker daemon cannot turn a wiring
+        # assertion into an environment report.
         with patch(
             "zevorinth.evidence_provisioning.provision_evidence",
             side_effect=fake_provision,
@@ -371,6 +378,12 @@ class ExecutionWiringTests(unittest.TestCase):
         ), patch(
             "zevorinth.evidence_store.EvidenceStore.verify_stored_evidence",
             return_value={"state": "verified", "reasons": []},
+        ), patch(
+            "zevorinth.isolation._live_runtime_identity",
+            return_value="stub-runtime",
+        ), patch(
+            "zevorinth.isolation._live_image_digest",
+            return_value="python@sha256:" + "a" * 64,
         ):
             task = service.submit(
                 TaskRequest(
@@ -567,6 +580,14 @@ class ExecutionWiringTests(unittest.TestCase):
                 ), patch(
                     "zevorinth.evidence_store.EvidenceStore.verify_stored_evidence",
                     return_value={"state": state, "reasons": [code]},
+                ), patch(
+                    # The revalidation probe must not depend on whether a
+                    # Docker daemon happens to be running on this machine.
+                    "zevorinth.isolation._live_runtime_identity",
+                    return_value="docker@test",
+                ), patch(
+                    "zevorinth.isolation._live_image_digest",
+                    return_value="python@sha256:" + "a" * 64,
                 ):
                     task = service.submit(
                         TaskRequest(
@@ -592,7 +613,9 @@ class ExecutionWiringTests(unittest.TestCase):
 
     def test_run_tests_failure_records_run_tests_tool_name(self) -> None:
         root, _ = _workspace(self)
-        service = TaskService(root)
+        service, _, grant_token = authorized_service(
+            root, workspace="demo", target="test_ok"
+        )
 
         def failing_runner(**kwargs):
             del kwargs
@@ -608,7 +631,7 @@ class ExecutionWiringTests(unittest.TestCase):
                     "target": "test_ok",
                     "workspace": "demo",
                     "execution_backend": "host",
-                    "host_authorization": "local-maintenance",
+                    "host_authorization": grant_token,
                 },
             )
         )

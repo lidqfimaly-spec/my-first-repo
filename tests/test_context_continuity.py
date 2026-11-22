@@ -334,7 +334,10 @@ class ContextContinuityTests(unittest.TestCase):
             )
             created = service.process_message(
                 "conversation-1",
-                "创建一个文件",
+                # Under-specified on purpose: "创建一个文件" is now understood as
+                # write_text_artifact, so it would skip the operation question
+                # this test is built around.
+                "帮我弄一下",
                 client_message_id="m1",
                 now=NOW,
             )

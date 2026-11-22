@@ -57,7 +57,12 @@ class ClarificationWorkflowTests(unittest.TestCase):
 
             created = service.process_message(
                 "conversation-1",
-                "创建一个文件",
+                # An under-specified goal on purpose: "创建一个文件" is now
+                # understood as write_text_artifact by the deterministic
+                # extractor, so it no longer starts a clarification chain.
+                # This test is about the *chain*, so the goal must genuinely
+                # lack an action.
+                "帮我弄一下",
                 client_message_id="m1",
                 now=NOW,
             )
@@ -108,9 +113,18 @@ class ClarificationWorkflowTests(unittest.TestCase):
             self.assertEqual(completed.outcome, "completed")
             assert completed.task is not None
             self.assertEqual(completed.task.status, TaskStatus.SUCCEEDED)
-            self.assertEqual(
-                len(service.history("conversation-1")),
-                4,
+            # The conversation now carries what the system said as well as what
+            # the user said (previously only user messages existed — R-05), so
+            # the invariant is per role: four user turns, one reply each.
+            history = service.history("conversation-1")
+            user_messages = [m for m in history if m.role.value == "user"]
+            assistant_messages = [
+                m for m in history if m.role.value == "assistant"
+            ]
+            self.assertEqual(len(user_messages), 4)
+            self.assertEqual(len(assistant_messages), 4)
+            self.assertTrue(
+                all(m.content.strip() for m in assistant_messages)
             )
 
             repeated = service.process_message(
@@ -165,14 +179,20 @@ class ClarificationWorkflowTests(unittest.TestCase):
                 now=NOW,
             )
             self.assertEqual(result.outcome, "ambiguous")
-            self.assertEqual(
-                len(service.history("conversation-1")),
-                1,
-            )
-            self.assertEqual(
-                len(service.history("conversation-2")),
-                1,
-            )
+            # The cross-conversation answer must not leak a *user* message into
+            # conversation-1. System replies are counted separately now.
+            conv1_user = [
+                m
+                for m in service.history("conversation-1")
+                if m.role.value == "user"
+            ]
+            self.assertEqual(len(conv1_user), 1)
+            conv2_user = [
+                m
+                for m in service.history("conversation-2")
+                if m.role.value == "user"
+            ]
+            self.assertEqual(len(conv2_user), 1)
 
     def test_answers_do_not_duplicate_remaining_open_questions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -183,7 +203,10 @@ class ClarificationWorkflowTests(unittest.TestCase):
             )
             created = service.process_message(
                 "conversation-1",
-                "创建一个文件",
+                # Under-specified on purpose; see the note above. This test is
+                # about replay not duplicating questions, not about which
+                # action a phrase maps to.
+                "帮我弄一下",
                 client_message_id="m1",
                 now=NOW,
             )
@@ -502,7 +525,8 @@ class ClarificationWorkflowTests(unittest.TestCase):
             )
             created = service.process_message(
                 "conversation-1",
-                "创建一个文件",
+                # Under-specified on purpose; see the note above.
+                "帮我弄一下",
                 client_message_id="m1",
                 now=NOW,
             )

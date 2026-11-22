@@ -12,6 +12,7 @@ class InvalidTransition(ValueError):
 TERMINAL_STATUSES = frozenset(
     {
         TaskStatus.SUCCEEDED,
+        TaskStatus.PARTIAL,
         TaskStatus.FAILED,
         TaskStatus.PLANNING_FAILED,
         TaskStatus.CANCELLED,
@@ -24,6 +25,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.QUEUED: frozenset(
         {
             TaskStatus.RUNNING,
+            TaskStatus.PAUSED,
             TaskStatus.AWAITING_CLARIFICATION,
             TaskStatus.BLOCKED,
             TaskStatus.PLANNING_FAILED,
@@ -43,6 +45,8 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.RUNNING: frozenset(
         {
             TaskStatus.VERIFYING,
+            TaskStatus.PAUSED,
+            TaskStatus.AWAITING_APPROVAL,
             TaskStatus.SIMULATED,
             TaskStatus.BLOCKED,
             TaskStatus.FAILED,
@@ -53,6 +57,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.VERIFYING: frozenset(
         {
             TaskStatus.SUCCEEDED,
+            TaskStatus.PARTIAL,
             TaskStatus.FAILED,
             TaskStatus.INTERRUPTED,
             TaskStatus.CANCELLED,
@@ -61,6 +66,8 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.INTERRUPTED: frozenset(
         {
             TaskStatus.RUNNING,
+            TaskStatus.PAUSED,
+            TaskStatus.AWAITING_APPROVAL,
             TaskStatus.VERIFYING,
             TaskStatus.AWAITING_CLARIFICATION,
             TaskStatus.BLOCKED,
@@ -77,7 +84,23 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
             TaskStatus.CANCELLED,
         }
     ),
+    TaskStatus.PAUSED: frozenset(
+        {
+            TaskStatus.RUNNING,
+            TaskStatus.CANCELLED,
+            TaskStatus.FAILED,
+        }
+    ),
+    TaskStatus.AWAITING_APPROVAL: frozenset(
+        {
+            TaskStatus.RUNNING,
+            TaskStatus.PAUSED,
+            TaskStatus.CANCELLED,
+            TaskStatus.FAILED,
+        }
+    ),
     TaskStatus.SUCCEEDED: frozenset(),
+    TaskStatus.PARTIAL: frozenset(),
     TaskStatus.FAILED: frozenset(),
     TaskStatus.PLANNING_FAILED: frozenset(),
     TaskStatus.CANCELLED: frozenset(),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import sys
@@ -9,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +61,23 @@ def _evidence(issued_at: float | None = None, ttl: float = 60.0) -> dict:
         issued_at=time.time() if issued_at is None else issued_at,
         ttl_seconds=ttl,
     )
+
+
+@contextlib.contextmanager
+def _stubbed_runtime(evidence):
+    """Pin the live probes to the evidence identity.
+
+    The evidence gate is what these tests assert; without stubbing, a machine
+    with no running Docker daemon would fail for an unrelated reason.
+    """
+    with mock.patch(
+        "zevorinth.isolation._live_runtime_identity",
+        return_value=evidence["runtime_identity"],
+    ), mock.patch(
+        "zevorinth.isolation._live_image_digest",
+        return_value=evidence["image_digest"],
+    ):
+        yield
 
 
 def _verify(evidence, **overrides):
@@ -169,7 +188,9 @@ class EvidenceLifecycleTests(unittest.TestCase):
 
     def test_expired_evidence_never_starts_a_process(self) -> None:
         evidence = _evidence(issued_at=time.time() - 3600, ttl=60)
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, _stubbed_runtime(
+            evidence
+        ):
             record = run_protected_container(
                 workspace=Path(temp_dir),
                 argv=["true"],
@@ -184,7 +205,9 @@ class EvidenceLifecycleTests(unittest.TestCase):
     def test_failed_reverification_never_starts_a_process(self) -> None:
         evidence = _evidence()
         evidence["command_digest"] = "0" * 64  # tampered after issuance
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, _stubbed_runtime(
+            evidence
+        ):
             record = run_protected_container(
                 workspace=Path(temp_dir),
                 argv=["true"],

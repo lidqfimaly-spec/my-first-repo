@@ -16,6 +16,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from tests.host_grant_support import authorized_service  # noqa: E402
 from zevorinth.event_store import ClaimLost, EventStore  # noqa: E402
 from zevorinth.models import TaskRequest, TaskStatus  # noqa: E402
 from zevorinth.service import TaskService  # noqa: E402
@@ -36,7 +37,9 @@ def _host_task() -> tuple[Path, TaskService, object]:
         "    def test_ok(self):\n        self.assertTrue(True)\n",
         encoding="utf-8",
     )
-    service = TaskService(root, clock=lambda: NOW)
+    service, _, token = authorized_service(
+        root, workspace="demo", target="test_ok", clock=lambda: NOW
+    )
     task = service.enqueue(
         TaskRequest(
             goal="run test_ok",
@@ -46,7 +49,7 @@ def _host_task() -> tuple[Path, TaskService, object]:
                 "target": "test_ok",
                 "workspace": "demo",
                 "execution_backend": "host",
-                "host_authorization": "local-maintenance",
+                "host_authorization": token,
             },
         )
     )

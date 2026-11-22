@@ -103,7 +103,9 @@ def _matrix() -> dict[str, Any]:
                     "target": "tests.test_demo",
                     "workspace": "missing",
                     "execution_backend": "host",
-                    "host_authorization": "local-maintenance",
+                    # Rejected by the workspace check before any grant
+                    # is consulted; never a usable authorization.
+                    "host_authorization": "0" * 32 + "." + "0" * 64,
                 },
             )
         )

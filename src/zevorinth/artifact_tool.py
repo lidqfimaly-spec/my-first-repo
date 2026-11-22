@@ -215,6 +215,30 @@ def read_artifact(artifacts_root: Path, task_id: str, artifact_name: str) -> byt
         os.close(directory_fd)
 
 
+def read_artifact_text(
+    artifacts_root: Path,
+    task_id: str,
+    artifact_name: str,
+    *,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> tuple[str, bytes, str]:
+    """Read one bounded UTF-8 artifact and return text, bytes and digest."""
+    raw = read_artifact(artifacts_root, task_id, artifact_name)
+    if len(raw) > max_bytes:
+        raise ArtifactToolError(
+            "content_too_large",
+            f"artifact exceeds the {max_bytes} byte limit",
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ArtifactToolError(
+            "invalid_artifact_encoding",
+            "artifact is not valid UTF-8 text",
+        ) from exc
+    return text, raw, hashlib.sha256(raw).hexdigest()
+
+
 def _fsync_directory(directory_fd: int) -> None:
     try:
         os.fsync(directory_fd)

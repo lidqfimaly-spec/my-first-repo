@@ -44,10 +44,19 @@ MIN_DISK_LIMIT_BYTES = 1024 * 1024
 
 
 class TestExecutionError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        #: Structured, non-secret context for the failure record (for example
+        #: which grant was already spent when a spawn failed). Callers merge a
+        #: whitelisted subset into the event payload.
+        self.details = dict(details or {})
 
 
 def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -255,6 +264,16 @@ def validate_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
             "invalid_auto_provision_isolation",
             "auto_provision_isolation requires the container backend",
         )
+    # Host execution runs workspace code with the operator's privileges, so it
+    # is never an implicit fallback: a one-time human-issued grant is required.
+    # The grant is verified and consumed again at execution time, bound to the
+    # exact workspace and target that will run.
+    if backend == "host" and not host_authorization:
+        raise TestExecutionError(
+            "host_authorization_required",
+            "host execution requires a one-time grant issued with"
+            " `zevorinth authorize-host-test`",
+        )
 
     return {
         "runner": runner,
@@ -351,22 +370,57 @@ def run_unittest(
     project_root: Path,
     parameters: dict[str, Any],
     cancel_check: Callable[[], bool] | None = None,
+    grant_store: Any = None,
 ) -> dict[str, Any]:
-    """Run one approved unittest target under resource limits."""
+    """Run one approved unittest target under resource limits.
+
+    Host execution is authorized by a single-use grant that is consumed here,
+    immediately before the process starts, bound to the exact workspace and
+    target that are about to run. The grant is never restored, including when
+    the test run fails.
+    """
+    from . import host_authorization as host_grants
+
     normalized = validate_parameters(parameters)
     workspace = resolve_workspace(project_root, normalized["workspace"])
     command = build_command(normalized["target"])
+    grant: dict[str, Any] | None = None
+    if normalized["execution_backend"] == "host":
+        store = grant_store if grant_store is not None else host_grants.HostGrantStore()
+        try:
+            grant = store.consume(
+                normalized["host_authorization"],
+                workspace=normalized["workspace"],
+                target=normalized["target"],
+            )
+        except host_grants.HostAuthorizationError as exc:
+            raise TestExecutionError(exc.code, exc.message) from exc
     limit = normalized["max_output_bytes"]
     started_at = time.time()
-    process = subprocess.Popen(
-        command,
-        cwd=workspace,
-        env=_child_environment(workspace),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            env=_child_environment(workspace),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        # ``test_spawn_failed`` means exactly one thing: the process could not
+        # be created. A test that ran and exited non-zero is a test outcome and
+        # must never be reported as a spawn failure. The grant was consumed
+        # above, so it is spent; it is not handed back.
+        raise TestExecutionError(
+            "test_spawn_failed",
+            f"the test process could not be started: {type(exc).__name__}",
+            details={
+                "host_grant_id": (grant or {}).get("grant_id"),
+                "host_grant_issuer": (grant or {}).get("issuer"),
+                "spawn_error": type(exc).__name__,
+            },
+        ) from exc
     assert process.stdout is not None and process.stderr is not None
     collected: dict[str, tuple[bytes, int]] = {}
 
@@ -429,6 +483,8 @@ def run_unittest(
         "timeout_seconds": normalized["timeout_seconds"],
         "command": command,
         "workspace_path": str(workspace),
+        "host_grant_id": (grant or {}).get("grant_id"),
+        "host_grant_issuer": (grant or {}).get("issuer"),
     }
 
 

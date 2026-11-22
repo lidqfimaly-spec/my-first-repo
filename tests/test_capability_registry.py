@@ -25,14 +25,42 @@ from zevorinth.policy import SUPPORTED_OPERATIONS  # noqa: E402
 
 
 class CapabilityRegistryTests(unittest.TestCase):
-    def test_policy_and_planner_share_the_registry_operations(self) -> None:
+    def test_policy_and_llm_planner_use_bounded_operation_sets(self) -> None:
         schema_operations = set(
             CANDIDATE_JSON_SCHEMA["properties"]["operation"]["anyOf"][0][
                 "enum"
             ]
         )
         self.assertEqual(SUPPORTED_OPERATIONS, SUPPORTED_TASK_OPERATIONS)
-        self.assertEqual(schema_operations, set(SUPPORTED_TASK_OPERATIONS))
+        self.assertEqual(
+            schema_operations,
+            {"write_text_artifact", "run_tests"},
+        )
+        registry_model_operations = {
+            operation
+            for operation, details in CAPABILITY_REGISTRY[
+                "task_operations"
+            ].items()
+            if "llm_planner" in details["access"]
+        }
+        self.assertEqual(schema_operations, registry_model_operations)
+        self.assertNotIn(
+            "llm_planner",
+            CAPABILITY_REGISTRY["task_operations"]["read_text_artifact"][
+                "access"
+            ],
+        )
+        self.assertNotIn(
+            "llm_planner",
+            CAPABILITY_REGISTRY["task_operations"]["modify_text_artifact"][
+                "access"
+            ],
+        )
+        self.assertTrue(
+            schema_operations.issubset(set(SUPPORTED_TASK_OPERATIONS))
+        )
+        self.assertIn("read_text_artifact", SUPPORTED_TASK_OPERATIONS)
+        self.assertIn("modify_text_artifact", SUPPORTED_TASK_OPERATIONS)
         self.assertEqual(
             set(task_operation_names()), set(SUPPORTED_TASK_OPERATIONS)
         )
@@ -270,7 +298,7 @@ class CapabilityRegistryTests(unittest.TestCase):
         self.assertIn("cli:control-center", details["access"])
         joined = " ".join(details["limitations"]).lower()
         self.assertIn(
-            "task creation, add_task_note, answer_clarification, revise_unstarted_task, start_queued_task and cancel_queued_task",
+            "task creation, task notes, clarification, revision, start, queued cancellation, pause, resume, step approval/rejection and pending-step replanning",
             joined,
         )
         self.assertIn("read-only /api", joined)
@@ -290,7 +318,12 @@ class CapabilityRegistryTests(unittest.TestCase):
             [
                 "add_task_note",
                 "answer_clarification",
+                "approve_step",
                 "cancel_queued_task",
+                "pause_task",
+                "reject_step",
+                "replan_pending_steps",
+                "resume_task",
                 "revise_unstarted_task",
                 "start_queued_task",
             ],
